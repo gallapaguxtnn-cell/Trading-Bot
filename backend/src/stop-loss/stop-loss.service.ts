@@ -1,0 +1,165 @@
+import { Injectable, Logger } from '@nestjs/common';
+import { Cron, CronExpression } from '@nestjs/schedule';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
+import { Trade } from '../strategies/trade.entity';
+import { StrategiesService } from '../strategies/strategies.service';
+import { ExchangeService } from '../exchange/exchange.service';
+import { Exchange } from '../strategies/strategy.entity';
+import { EncryptionUtil } from '../utils/encryption.util';
+import axios from 'axios';
+import * as crypto from 'crypto';
+
+@Injectable()
+export class StopLossService {
+  private readonly logger = new Logger(StopLossService.name);
+
+  constructor(
+    @InjectRepository(Trade)
+    private tradesRepository: Repository<Trade>,
+    private strategiesService: StrategiesService,
+    private exchangeService: ExchangeService,
+  ) {}
+
+  @Cron(CronExpression.EVERY_5_SECONDS)
+  async monitorStopLoss() {
+    const openTrades = await this.tradesRepository.find({ where: { status: 'OPEN' } });
+
+    if (openTrades.length === 0) return;
+
+    for (const trade of openTrades) {
+      try {
+        await this.checkStopLoss(trade);
+      } catch (error) {
+        this.logger.error(`Error checking stop-loss for trade ${trade.id}: ${error.message}`);
+      }
+    }
+  }
+
+  private async checkStopLoss(trade: Trade) {
+    const strategy = await this.strategiesService.findOne(trade.strategyId);
+    if (!strategy || strategy.isDryRun) return;
+    if (!strategy.stopLossPercentage) return;
+
+    const currentPrice = await this.getCurrentPrice(trade, strategy);
+    if (!currentPrice) return;
+
+    const stopLossPrice = this.calculateStopLoss(trade, strategy);
+
+    const shouldTrigger =
+      (trade.side === 'BUY' && currentPrice <= stopLossPrice) ||
+      (trade.side === 'SELL' && currentPrice >= stopLossPrice);
+
+    if (shouldTrigger) {
+      this.logger.warn(`[STOP-LOSS TRIGGERED] ${trade.symbol} at ${currentPrice} (SL: ${stopLossPrice})`);
+      await this.closePosition(trade, strategy, currentPrice, 'STOP_LOSS');
+    }
+  }
+
+  private calculateStopLoss(trade: Trade, strategy: any): number {
+    const slPercent = strategy.stopLossPercentage / 100;
+    const entryPrice = parseFloat(trade.entryPrice as any);
+
+    if (trade.side === 'BUY') {
+      return entryPrice * (1 - slPercent);
+    } else {
+      return entryPrice * (1 + slPercent);
+    }
+  }
+
+  private async getCurrentPrice(trade: Trade, strategy: any): Promise<number> {
+    try {
+      const apiKey = (await EncryptionUtil.decrypt(strategy.apiKey)).trim();
+      const apiSecret = (await EncryptionUtil.decrypt(strategy.apiSecret)).trim();
+
+      const exchange = strategy.exchange || Exchange.BINANCE;
+
+      if (strategy.isTestnet && exchange === Exchange.BINANCE) {
+        const baseURL = 'https://testnet.binancefuture.com/fapi/v1';
+        const response = await axios.get(`${baseURL}/ticker/price?symbol=${trade.symbol}`);
+        return parseFloat(response.data.price);
+      } else {
+        const exchangeInstance = await this.exchangeService.getExchange(
+          exchange,
+          apiKey,
+          apiSecret,
+          strategy.isTestnet
+        );
+
+        const ticker = await exchangeInstance.fetchTicker(trade.symbol);
+        return ticker.last;
+      }
+    } catch (error) {
+      this.logger.error(`Failed to get current price for ${trade.symbol}: ${error.message}`);
+      return 0;
+    }
+  }
+
+  private async closePosition(trade: Trade, strategy: any, exitPrice: number, reason: string) {
+    try {
+      const apiKey = (await EncryptionUtil.decrypt(strategy.apiKey)).trim();
+      const apiSecret = (await EncryptionUtil.decrypt(strategy.apiSecret)).trim();
+
+      const exchange = strategy.exchange || Exchange.BINANCE;
+      const closeSide = trade.side === 'BUY' ? 'SELL' : 'BUY';
+      const quantity = parseFloat(trade.quantity as any);
+
+      if (strategy.isTestnet && exchange === Exchange.BINANCE) {
+        const baseURL = 'https://testnet.binancefuture.com/fapi/v1';
+        const endpoint = '/order';
+
+        const params = new URLSearchParams();
+        params.append('symbol', trade.symbol);
+        params.append('side', closeSide);
+        params.append('type', 'MARKET');
+        params.append('quantity', quantity.toFixed(3));
+        params.append('timestamp', Date.now().toString());
+
+        const queryString = params.toString();
+        const signature = crypto.createHmac('sha256', apiSecret).update(queryString).digest('hex');
+        const body = `${queryString}&signature=${signature}`;
+
+        await axios.post(`${baseURL}${endpoint}`, body, {
+          headers: {
+            'X-MBX-APIKEY': apiKey,
+            'Content-Type': 'application/x-www-form-urlencoded'
+          }
+        });
+
+        this.logger.log(`[CLOSED] ${trade.symbol} via ${reason} at ${exitPrice}`);
+      } else {
+        const exchangeInstance = await this.exchangeService.getExchange(
+          exchange,
+          apiKey,
+          apiSecret,
+          strategy.isTestnet
+        );
+
+        await exchangeInstance.createMarketOrder(trade.symbol, closeSide.toLowerCase(), quantity);
+        this.logger.log(`[CLOSED] ${trade.symbol} via ${reason} at ${exitPrice}`);
+      }
+
+      const pnl = this.calculatePnL(trade, exitPrice);
+
+      trade.status = 'CLOSED';
+      trade.pnl = pnl;
+      await this.tradesRepository.save(trade);
+
+      this.logger.log(`[P&L] ${pnl > 0 ? '+' : ''}${pnl.toFixed(2)} USDT`);
+
+    } catch (error) {
+      this.logger.error(`Failed to close position: ${error.message}`);
+    }
+  }
+
+  private calculatePnL(trade: Trade, exitPrice: number): number {
+    const entryPrice = parseFloat(trade.entryPrice as any);
+    const quantity = parseFloat(trade.quantity as any);
+
+    if (trade.side === 'BUY') {
+      return (exitPrice - entryPrice) * quantity;
+    } else {
+      return (entryPrice - exitPrice) * quantity;
+    }
+  }
+}

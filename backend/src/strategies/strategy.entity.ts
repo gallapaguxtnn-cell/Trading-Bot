@@ -1,0 +1,81 @@
+import { Entity, Column, PrimaryGeneratedColumn, CreateDateColumn, UpdateDateColumn } from 'typeorm';
+
+export enum StrategyDirection {
+  LONG = 'LONG',
+  SHORT = 'SHORT',
+  BOTH = 'BOTH',
+}
+
+export enum MarginMode {
+  ISOLATED = 'ISOLATED',
+  CROSS = 'CROSS',
+}
+
+export enum Exchange {
+  BINANCE = 'binance',
+  BYBIT = 'bybit',
+}
+
+@Entity()
+export class Strategy {
+  @PrimaryGeneratedColumn('uuid')
+  id: string;
+
+  @Column()
+  name: string;
+
+  @Column()
+  asset: string;
+
+  @Column({ type: 'enum', enum: Exchange, default: Exchange.BINANCE })
+  exchange: Exchange;
+
+  @Column({ type: 'enum', enum: StrategyDirection, default: StrategyDirection.LONG })
+  direction: StrategyDirection;
+
+  @Column({ default: true })
+  isActive: boolean;
+
+  @Column({ default: true })
+  isDryRun: boolean;
+
+  @Column({ default: false })
+  isTestnet: boolean;
+
+  @Column({ type: 'text', nullable: true, select: false }) 
+  apiKey: string; // Will be encrypted
+
+  @Column({ type: 'text', nullable: true, select: false })
+  apiSecret: string; // Will be encrypted
+
+  @Column({ type: 'int', default: 1 })
+  leverage: number;
+
+  @Column({ type: 'enum', enum: MarginMode, default: MarginMode.ISOLATED })
+  marginMode: MarginMode;
+
+  @Column({ type: 'float', default: 0.002 })
+  defaultQuantity: number;
+
+  // Risk Management
+  @Column({ type: 'float', nullable: true })
+  stopLossPercentage: number;
+
+  @Column({ type: 'float', nullable: true })
+  takeProfitPercentage1: number;
+
+  @Column({ type: 'float', nullable: true })
+  takeProfitPercentage2: number;
+
+  @Column({ type: 'float', nullable: true })
+  takeProfitPercentage3: number;
+
+  @Column({ default: false })
+  moveSLToBreakeven: boolean;
+
+  @CreateDateColumn()
+  createdAt: Date;
+
+  @UpdateDateColumn()
+  updatedAt: Date;
+}
