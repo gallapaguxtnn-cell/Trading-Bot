@@ -22,16 +22,32 @@ import { WebSocketModule } from './websocket/websocket.module';
     }]),
     TypeOrmModule.forRootAsync({
       imports: [ConfigModule],
-      useFactory: (configService: ConfigService) => ({
-        type: 'postgres',
-        host: configService.get<string>('DB_HOST', 'localhost'),
-        port: configService.get<number>('DB_PORT', 5432),
-        username: configService.get<string>('DB_USER', 'admin'),
-        password: configService.get<string>('DB_PASSWORD', 'admin123'),
-        database: configService.get<string>('DB_NAME', 'trading_bot'),
-        autoLoadEntities: true,
-        synchronize: true,
-      }),
+      useFactory: (configService: ConfigService) => {
+        const dbUrl = configService.get<string>('DATABASE_URL');
+        // Configuration for Cloud Deployment (Railway) using DATABASE_URL
+        if (dbUrl) {
+          return {
+            type: 'postgres',
+            url: dbUrl,
+            autoLoadEntities: true,
+            synchronize: true, // Note: Set to false in production if using migrations
+            ssl: {
+              rejectUnauthorized: false,
+            },
+          };
+        }
+        // Configuration for Local Development
+        return {
+          type: 'postgres',
+          host: configService.get<string>('DB_HOST', 'localhost'),
+          port: configService.get<number>('DB_PORT', 5432),
+          username: configService.get<string>('DB_USER', 'admin'),
+          password: configService.get<string>('DB_PASSWORD', 'admin123'),
+          database: configService.get<string>('DB_NAME', 'trading_bot'),
+          autoLoadEntities: true,
+          synchronize: true,
+        };
+      },
       inject: [ConfigService],
     }),
     WebhookModule,
