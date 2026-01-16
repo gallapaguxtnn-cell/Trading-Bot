@@ -69,6 +69,18 @@ export class Strategy {
   @Column({ type: 'float', nullable: true })
   takeProfitPercentage3: number;
 
+  @Column({ type: 'float', default: 33 })
+  takeProfitQuantity1: number;
+
+  @Column({ type: 'float', default: 33 })
+  takeProfitQuantity2: number;
+
+  @Column({ type: 'float', default: 34 })
+  takeProfitQuantity3: number;
+
+  @Column({ default: false })
+  breakAgain: boolean;
+
   @Column({ default: false })
   moveSLToBreakeven: boolean;
 

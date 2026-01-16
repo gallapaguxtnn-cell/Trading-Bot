@@ -110,6 +110,48 @@ export class WebhookService {
     }
   }
 
+  private async getPositionSize(
+    symbol: string,
+    exchange: Exchange,
+    apiKey: string,
+    apiSecret: string,
+    isTestnet: boolean
+  ): Promise<number> {
+    try {
+        if (exchange === Exchange.BYBIT) {
+             const positions = await this.bybitClient.getPositions(apiKey, apiSecret, isTestnet, symbol);
+             const pos = positions.find(p => p.symbol === symbol && parseFloat(p.size) > 0);
+             return pos ? parseFloat(pos.size) : 0;
+        } else {
+            // Binance
+            const baseURL = isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
+            const endpoint = '/fapi/v2/positionRisk'; // Use v2 for better info
+            const timestamp = Date.now();
+            const queryString = `symbol=${symbol}&timestamp=${timestamp}`;
+            const signature = crypto.createHmac('sha256', apiSecret).update(queryString).digest('hex');
+
+            const response = await axios.get(`${baseURL}${endpoint}?${queryString}&signature=${signature}`, {
+                 headers: { 'X-MBX-APIKEY': apiKey }
+            });
+            
+            // Binance returns array (sometimes 1 item per side in hedge mode, or just 1 in one-way)
+            // We sum up absolute amounts if multiple, but usually one-way has one.
+            const data = response.data;
+            let size = 0;
+            if (Array.isArray(data)) {
+                 const pos = data.find((p: any) => parseFloat(p.positionAmt) !== 0);
+                 if (pos) size = Math.abs(parseFloat(pos.positionAmt));
+            } else {
+                 if (parseFloat(data.positionAmt) !== 0) size = Math.abs(parseFloat(data.positionAmt));
+            }
+            return size;
+        }
+    } catch (err) {
+        this.logger.error(`Failed to get position size: ${err.message}`);
+        throw err;
+    }
+  }
+
   private async configureBinancePositionSettings(
     symbol: string,
     leverage: number,
@@ -162,6 +204,32 @@ export class WebhookService {
       this.logger.log(`[BINANCE] Leverage set to ${leverage}x for ${symbol}`);
     } catch (error: any) {
       this.logger.warn(`[BINANCE] Failed to set leverage: ${error.response?.data?.msg || error.message}`);
+    }
+  }
+
+  private async cancelAllBinanceOrders(
+    apiKey: string,
+    apiSecret: string,
+    isTestnet: boolean,
+    symbol: string
+  ): Promise<void> {
+    const baseURL = isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
+    const endpoint = '/fapi/v1/allOpenOrders';
+
+    const params = new URLSearchParams();
+    params.append('symbol', symbol);
+    params.append('timestamp', Date.now().toString());
+
+    const queryString = params.toString();
+    const signature = crypto.createHmac('sha256', apiSecret).update(queryString).digest('hex');
+
+    try {
+      await axios.delete(`${baseURL}${endpoint}?${queryString}&signature=${signature}`, {
+        headers: { 'X-MBX-APIKEY': apiKey }
+      });
+      this.logger.log(`[BINANCE] Cancelled all open orders for ${symbol}`);
+    } catch (error: any) {
+       this.logger.warn(`[BINANCE] Failed to cancel open orders: ${error.response?.data?.msg || error.message}`);
     }
   }
 
@@ -250,7 +318,7 @@ export class WebhookService {
       params.append('type', 'TAKE_PROFIT_MARKET');
       params.append('quantity', this.formatQuantity(quantity, symbol));
       params.append('stopPrice', this.formatPrice(takeProfitPrice, symbol));
-      params.append('closePosition', 'false');
+      params.append('reduceOnly', 'true');
       params.append('workingType', 'MARK_PRICE');
 
       const response = await this.createBinanceOrder(params, apiKey, apiSecret, isTestnet);
@@ -299,6 +367,76 @@ export class WebhookService {
     const exchange = strategy.exchange || Exchange.BINANCE;
     const normalizedSymbol = this.normalizeSymbol(signal.symbol, exchange);
     const side = signal.action.toUpperCase() as 'BUY' | 'SELL';
+
+    // --- ONE-WAY POSITION MANAGEMENT ---
+    // Check for existing open trades for this strategy/symbol
+    const openTrades = await this.tradesService.findOpenTrades();
+    const activeTrade = openTrades.find(t => t.symbol === normalizedSymbol && t.strategyId === strategy.id);
+
+    if (activeTrade) {
+        if (activeTrade.side === side) {
+            this.logger.warn(`[ONE-WAY] Ignoring duplicate ${side} signal for ${normalizedSymbol}. Position already open.`);
+            return { status: 'skipped', message: 'Position already open (One-Way Mode)' };
+        } else {
+            this.logger.log(`[ONE-WAY] Flipping position! Closing ${activeTrade.side} to open ${side}.`);
+            // Close existing position logic (Generic close via Market)
+            try {
+                const decryptedKey = (await EncryptionUtil.decrypt(strategy.apiKey)).trim();
+                const decryptedSecret = (await EncryptionUtil.decrypt(strategy.apiSecret)).trim();
+
+                this.logger.log(`[ONE-WAY] Cancelling all open orders for ${normalizedSymbol}...`);
+                if (exchange === Exchange.BYBIT) {
+                    await this.bybitClient.cancelAllOrders(decryptedKey, decryptedSecret, strategy.isTestnet, normalizedSymbol);
+                } else {
+                    await this.cancelAllBinanceOrders(decryptedKey, decryptedSecret, strategy.isTestnet, normalizedSymbol);
+                }
+
+                let closeQty = 0;
+                try {
+                     closeQty = await this.getPositionSize(activeTrade.symbol, exchange, decryptedKey, decryptedSecret, strategy.isTestnet);
+                } catch (e) {
+                     this.logger.warn(`[ONE-WAY] Failed to fetch live position size, falling back to DB: ${e.message}`);
+                     closeQty = parseFloat(activeTrade.quantity as any);
+                }
+
+                if (closeQty <= 0) {
+                     this.logger.warn(`[ONE-WAY] Position size is 0, assuming already closed.`);
+                     await this.tradesService.updateTrade(activeTrade.id, { status: 'CLOSED' });
+                } else {
+                    const closeSide = activeTrade.side === 'BUY' ? 'SELL' : 'BUY';
+                    this.logger.log(`[ONE-WAY] Closing ${activeTrade.symbol} (${closeQty}) before reversal.`);
+
+                    if (exchange === Exchange.BYBIT) {
+                        await this.bybitClient.createOrder(decryptedKey, decryptedSecret, strategy.isTestnet, {
+                            symbol: normalizedSymbol,
+                            side: closeSide === 'BUY' ? 'Buy' : 'Sell',
+                            orderType: 'Market',
+                            qty: this.formatQuantity(closeQty, normalizedSymbol),
+                            reduceOnly: true
+                        });
+                    } else {
+                        const params = new URLSearchParams();
+                        params.append('symbol', normalizedSymbol);
+                        params.append('side', closeSide);
+                        params.append('type', 'MARKET');
+                        params.append('quantity', this.formatQuantity(closeQty, normalizedSymbol));
+                        params.append('reduceOnly', 'true');
+                        await this.createBinanceOrder(params, decryptedKey, decryptedSecret, strategy.isTestnet);
+                    }
+                    this.logger.log(`[ONE-WAY] Position closed successfully.`);
+                }
+
+                 // Update DB
+                 await this.tradesService.updateTrade(activeTrade.id, { status: 'CLOSED', pnl: 0 }); 
+                 this.logger.log(`[ONE-WAY] Waiting 2s before new entry...`);
+                 await new Promise(r => setTimeout(r, 2000)); 
+
+            } catch (err) {
+                 this.logger.error(`[ONE-WAY] CRITICAL: Failed to close opposite position: ${err.message}`);
+                 return { status: 'error', message: `One-Way Mode: Failed to close opposite position. ${err.message}` };
+            }
+        }
+    }
 
     let isLimitOrder = signal.orderType === OrderType.LIMIT && !!signal.price;
     let effectivePrice = signal.price;
@@ -447,6 +585,7 @@ export class WebhookService {
       tradeData.entryPrice = entryPrice;
       tradeData.exchangeOrderId = tradeDetails.id;
 
+      // --- STOP LOSS ---
       let stopLossPrice: number | null = null;
       if (signal.stopLoss) {
         stopLossPrice = signal.stopLoss;
@@ -456,87 +595,65 @@ export class WebhookService {
         this.logger.log(`[SL] Calculated stop loss from strategy (${strategy.stopLossPercentage}%): ${stopLossPrice}`);
       }
 
-      let takeProfitPrice: number | null = null;
-      if (signal.takeProfit) {
-        takeProfitPrice = signal.takeProfit;
-        this.logger.log(`[TP] Using absolute take profit from signal: ${takeProfitPrice}`);
-      } else {
-        const takeProfitPercentage = strategy.takeProfitPercentage3 ||
-                                      strategy.takeProfitPercentage2 ||
-                                      strategy.takeProfitPercentage1;
-
-        if (takeProfitPercentage && takeProfitPercentage > 0) {
-          takeProfitPrice = this.calculateTakeProfitPrice(side, entryPrice, takeProfitPercentage);
-          this.logger.log(`[TP] Calculated take profit from strategy (${takeProfitPercentage}%): ${takeProfitPrice}`);
-        }
+      if (stopLossPrice) {
+          if (exchange === Exchange.BYBIT) {
+             // Bybit handles logic in executeBybitOrder or via TradingStop, assuming similar separation
+             // Use legacy method for now or enhance
+             const bybitSide = side === 'BUY' ? 'Buy' : 'Sell';
+             await this.bybitClient.setTradingStop(
+                decryptedKey, decryptedSecret, strategy.isTestnet,
+                normalizedSymbol, bybitSide, this.formatPrice(stopLossPrice, normalizedSymbol), undefined
+             );
+          } else {
+             stopLossOrderId = await this.createBinanceStopLossOrder(
+                normalizedSymbol, side, quantity, stopLossPrice, decryptedKey, decryptedSecret, strategy.isTestnet
+             );
+          }
       }
 
-      if (exchange === Exchange.BYBIT) {
-        if (stopLossPrice || takeProfitPrice) {
-          const bybitSide = side === 'BUY' ? 'Buy' : 'Sell';
-          const slPrice = stopLossPrice ? this.formatPrice(stopLossPrice, normalizedSymbol) : undefined;
-          const tpPrice = takeProfitPrice ? this.formatPrice(takeProfitPrice, normalizedSymbol) : undefined;
+      // --- MULTI-PARTIAL TAKE PROFITS ---
+      const tpConfigs = [
+          { percent: strategy.takeProfitPercentage1, qtyPercent: strategy.takeProfitQuantity1 || 33, id: 1 },
+          { percent: strategy.takeProfitPercentage2, qtyPercent: strategy.takeProfitQuantity2 || 33, id: 2 },
+          { percent: strategy.takeProfitPercentage3, qtyPercent: strategy.takeProfitQuantity3 || 34, id: 3 },
+      ];
 
-          const success = await this.bybitClient.setTradingStop(
-            decryptedKey,
-            decryptedSecret,
-            strategy.isTestnet,
-            normalizedSymbol,
-            bybitSide,
-            slPrice,
-            tpPrice
-          );
+      for (const tp of tpConfigs) {
+          if (tp.percent && tp.percent > 0) {
+              const tpPrice = this.calculateTakeProfitPrice(side, entryPrice, tp.percent);
+              const tpQty = (quantity * tp.qtyPercent) / 100;
+              
+              if (tpQty <= 0) continue;
 
-          if (success) {
-            if (stopLossPrice) {
-              stopLossOrderId = 'BYBIT_TRADING_STOP_SL';
-              tradeData.stopLossOrderId = stopLossOrderId;
-            }
-            if (takeProfitPrice) {
-              takeProfitOrderId = 'BYBIT_TRADING_STOP_TP';
-              tradeData.takeProfitOrderId = takeProfitOrderId;
-            }
+              this.logger.log(`[TP${tp.id}] Placing partial TP at ${tpPrice} for ${tpQty.toFixed(4)} coins (${tp.qtyPercent}%)`);
+
+              if (exchange === Exchange.BYBIT) {
+                 // Bybit partial TP usually requires Limit Reduce-Only orders rather than a single TP attached to position
+                   await this.bybitClient.createOrder(
+                      decryptedKey, decryptedSecret, strategy.isTestnet,
+                      {
+                          symbol: normalizedSymbol,
+                          side: side === 'BUY' ? 'Sell' : 'Buy', // Close side
+                          orderType: 'Limit',
+                          qty: this.formatQuantity(tpQty, normalizedSymbol),
+                          price: this.formatPrice(tpPrice, normalizedSymbol),
+                          reduceOnly: true
+                      }
+                  );
+              } else {
+                  // Binance Partial TP
+                  await this.createBinanceTakeProfitOrder(
+                      normalizedSymbol, side, tpQty, tpPrice, decryptedKey, decryptedSecret, strategy.isTestnet
+                  );
+              }
           }
-        }
-      } else {
-        if (stopLossPrice) {
-          stopLossOrderId = await this.createBinanceStopLossOrder(
-            normalizedSymbol,
-            side,
-            quantity,
-            stopLossPrice,
-            decryptedKey,
-            decryptedSecret,
-            strategy.isTestnet
-          );
-
-          if (stopLossOrderId) {
-            tradeData.stopLossOrderId = stopLossOrderId;
-          }
-        }
-
-        if (takeProfitPrice) {
-          takeProfitOrderId = await this.createBinanceTakeProfitOrder(
-            normalizedSymbol,
-            side,
-            quantity,
-            takeProfitPrice,
-            decryptedKey,
-            decryptedSecret,
-            strategy.isTestnet
-          );
-
-          if (takeProfitOrderId) {
-            tradeData.takeProfitOrderId = takeProfitOrderId;
-          }
-        }
       }
 
       await this.tradesService.updateTrade(savedTrade.id, {
         entryPrice: tradeData.entryPrice,
         exchangeOrderId: tradeData.exchangeOrderId,
-        stopLossOrderId: tradeData.stopLossOrderId,
-        takeProfitOrderId: tradeData.takeProfitOrderId,
+        stopLossOrderId: stopLossOrderId || undefined,
+        // takeProfitOrderId field might need deprecating or storing array. For now we leave last or empty.
       });
 
       this.logger.log(`[TRADE] Updated trade ${savedTrade.id} with order details`);
@@ -556,9 +673,6 @@ export class WebhookService {
       
       this.logger.error(`Error executing real trade: [${errorCode}] ${errorMsg}`);
       
-      // Do not log the full error object as it contains circular references and is huge
-      // this.logger.debug(error); 
-
       if (savedTrade && savedTrade.id) {
         await this.tradesService.updateTrade(savedTrade.id, {
           status: 'ERROR',

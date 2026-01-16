@@ -24,6 +24,10 @@ const DEFAULT_FORM_DATA = {
   nextCandlePercentage: 0.2,
   useAccountPercentage: false,
   accountPercentage: 10,
+  takeProfitQuantity1: 33,
+  takeProfitQuantity2: 33,
+  takeProfitQuantity3: 34,
+  breakAgain: false,
 };
 
 export default function StrategiesPage() {
@@ -71,6 +75,10 @@ export default function StrategiesPage() {
       nextCandlePercentage: strategy.nextCandlePercentage || 0.2,
       useAccountPercentage: strategy.useAccountPercentage || false,
       accountPercentage: strategy.accountPercentage || 10,
+      takeProfitQuantity1: strategy.takeProfitQuantity1 || 33,
+      takeProfitQuantity2: strategy.takeProfitQuantity2 || 33,
+      takeProfitQuantity3: strategy.takeProfitQuantity3 || 34,
+      breakAgain: strategy.breakAgain || false,
     });
     window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
   }
@@ -115,6 +123,10 @@ export default function StrategiesPage() {
       nextCandlePercentage: formData.nextCandleEntry ? Number(formData.nextCandlePercentage) : null,
       useAccountPercentage: formData.useAccountPercentage,
       accountPercentage: formData.useAccountPercentage ? Number(formData.accountPercentage) : null,
+      takeProfitQuantity1: Number(formData.takeProfitQuantity1),
+      takeProfitQuantity2: Number(formData.takeProfitQuantity2),
+      takeProfitQuantity3: Number(formData.takeProfitQuantity3),
+      breakAgain: formData.breakAgain,
     };
 
     if (formData.apiKey) payload.apiKey = formData.apiKey;
@@ -571,58 +583,106 @@ export default function StrategiesPage() {
                 </div>
               </div>
 
-              <div className="grid grid-cols-3 gap-4 mb-4">
                 <div className="space-y-1">
-                  <label className="text-sm font-medium text-emerald-400">Take Profit 1 (%)</label>
-                  <input
-                    type="number"
-                    step="0.1"
-                    name="takeProfit1"
-                    className="w-full bg-slate-900 border border-emerald-500/30 rounded-lg p-3 text-white focus:border-emerald-500 outline-none transition"
-                    value={formData.takeProfit1}
-                    onChange={handleChange}
-                  />
-                  <p className="text-xs text-slate-500">Closes 33%</p>
+                  <div className="flex justify-between">
+                     <label className="text-sm font-medium text-emerald-400">TP 1 (%)</label>
+                     <label className="text-sm font-medium text-slate-400">Qty (%)</label>
+                  </div>
+                  <div className="flex gap-2">
+                     <input
+                        type="number"
+                        step="0.1"
+                        name="takeProfit1"
+                        className="w-full bg-slate-900 border border-emerald-500/30 rounded-lg p-3 text-white focus:border-emerald-500 outline-none transition"
+                        value={formData.takeProfit1}
+                        onChange={handleChange}
+                     />
+                     <input
+                        type="number"
+                        step="1"
+                        name="takeProfitQuantity1"
+                        className="w-1/2 bg-slate-900 border border-slate-600 rounded-lg p-3 text-white focus:border-slate-400 outline-none transition text-center"
+                        value={formData.takeProfitQuantity1}
+                        onChange={handleChange}
+                     />
+                  </div>
                 </div>
 
                 <div className="space-y-1">
-                  <label className="text-sm font-medium text-emerald-400">Take Profit 2 (%)</label>
-                  <input
-                    type="number"
-                    step="0.1"
-                    name="takeProfit2"
-                    className="w-full bg-slate-900 border border-emerald-500/30 rounded-lg p-3 text-white focus:border-emerald-500 outline-none transition"
-                    value={formData.takeProfit2}
-                    onChange={handleChange}
-                  />
-                  <p className="text-xs text-slate-500">Closes 50%</p>
+                  <div className="flex justify-between">
+                     <label className="text-sm font-medium text-emerald-400">TP 2 (%)</label>
+                     <label className="text-sm font-medium text-slate-400">Qty (%)</label>
+                  </div>
+                  <div className="flex gap-2">
+                     <input
+                        type="number"
+                        step="0.1"
+                        name="takeProfit2"
+                        className="w-full bg-slate-900 border border-emerald-500/30 rounded-lg p-3 text-white focus:border-emerald-500 outline-none transition"
+                        value={formData.takeProfit2}
+                        onChange={handleChange}
+                     />
+                     <input
+                        type="number"
+                        step="1"
+                        name="takeProfitQuantity2"
+                        className="w-1/2 bg-slate-900 border border-slate-600 rounded-lg p-3 text-white focus:border-slate-400 outline-none transition text-center"
+                        value={formData.takeProfitQuantity2}
+                        onChange={handleChange}
+                     />
+                  </div>
                 </div>
 
                 <div className="space-y-1">
-                  <label className="text-sm font-medium text-emerald-400">Take Profit 3 (%)</label>
-                  <input
-                    type="number"
-                    step="0.1"
-                    name="takeProfit3"
-                    className="w-full bg-slate-900 border border-emerald-500/30 rounded-lg p-3 text-white focus:border-emerald-500 outline-none transition"
-                    value={formData.takeProfit3}
-                    onChange={handleChange}
-                  />
-                  <p className="text-xs text-slate-500">Closes 100%</p>
+                  <div className="flex justify-between">
+                     <label className="text-sm font-medium text-emerald-400">TP 3 (%)</label>
+                     <label className="text-sm font-medium text-slate-400">Qty (%)</label>
+                  </div>
+                  <div className="flex gap-2">
+                     <input
+                        type="number"
+                        step="0.1"
+                        name="takeProfit3"
+                        className="w-full bg-slate-900 border border-emerald-500/30 rounded-lg p-3 text-white focus:border-emerald-500 outline-none transition"
+                        value={formData.takeProfit3}
+                        onChange={handleChange}
+                     />
+                     <input
+                        type="number"
+                        step="1"
+                        name="takeProfitQuantity3"
+                        className="w-1/2 bg-slate-900 border border-slate-600 rounded-lg p-3 text-white focus:border-slate-400 outline-none transition text-center"
+                        value={formData.takeProfitQuantity3}
+                        onChange={handleChange}
+                     />
+                  </div>
                 </div>
               </div>
 
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  name="moveSLToBreakeven"
-                  className="w-4 h-4 accent-emerald-500"
-                  checked={formData.moveSLToBreakeven}
-                  onChange={handleChange}
-                />
-                <span className="text-sm text-slate-300">Move SL to Breakeven after TP2</span>
-              </label>
-            </div>
+              <div className="flex flex-col gap-2">
+                 <label className="flex items-center gap-2 cursor-pointer">
+                   <input
+                     type="checkbox"
+                     name="moveSLToBreakeven"
+                     className="w-4 h-4 accent-emerald-500"
+                     checked={formData.moveSLToBreakeven}
+                     onChange={handleChange}
+                   />
+                   <span className="text-sm text-slate-300">Move SL to Breakeven after TP2</span>
+                 </label>
+
+                 <label className="flex items-center gap-2 cursor-pointer">
+                   <input
+                     type="checkbox"
+                     name="breakAgain"
+                     className="w-4 h-4 accent-blue-500"
+                     checked={formData.breakAgain}
+                     onChange={handleChange}
+                   />
+                   <span className="text-sm text-slate-300 font-semibold text-blue-400">Enable "Break Again" (Trail SL to last TP)</span>
+                 </label>
+              </div>
+
 
             <button
               type="submit"

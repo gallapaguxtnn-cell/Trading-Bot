@@ -88,6 +88,7 @@ export class BybitClientService {
       stopLoss?: string;
       takeProfit?: string;
       positionIdx?: number;
+      reduceOnly?: boolean;
     }
   ): Promise<BybitOrderResponse> {
     const baseUrl = this.getBaseUrl(isTestnet);
@@ -100,6 +101,7 @@ export class BybitClientService {
       orderType: params.orderType,
       qty: params.qty,
       positionIdx: params.positionIdx ?? 0,
+      reduceOnly: params.reduceOnly ?? false,
     };
 
     if (params.orderType === 'Limit' && params.price) {
@@ -496,6 +498,39 @@ export class BybitClientService {
       return false;
     } catch (error: any) {
       this.logger.error(`[BYBIT] Failed to set trading stop: ${error.response?.data?.retMsg || error.message}`);
+      return false;
+    }
+  }
+
+  async cancelAllOrders(
+    apiKey: string,
+    apiSecret: string,
+    isTestnet: boolean,
+    symbol: string
+  ): Promise<boolean> {
+    const baseUrl = this.getBaseUrl(isTestnet);
+    const endpoint = '/v5/order/cancel-all';
+
+    const body = {
+      category: 'linear',
+      symbol,
+    };
+
+    const bodyString = JSON.stringify(body);
+    const headers = this.getHeaders(apiKey, apiSecret, bodyString);
+
+    try {
+      const response = await axios.post(`${baseUrl}${endpoint}`, body, { headers });
+
+      if (response.data.retCode === 0) {
+        this.logger.log(`[BYBIT] All orders cancelled for ${symbol}`);
+        return true;
+      }
+
+      this.logger.warn(`[BYBIT] Cancel all orders response: ${response.data.retMsg}`);
+      return false;
+    } catch (error: any) {
+      this.logger.debug(`[BYBIT] Failed to cancel all orders: ${error.response?.data?.retMsg || error.message}`);
       return false;
     }
   }

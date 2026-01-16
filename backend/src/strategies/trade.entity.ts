@@ -56,6 +56,9 @@ export class Trade {
   @Column({ type: 'text', nullable: true })
   error: string | null;
 
+  @Column("decimal", { precision: 18, scale: 8, nullable: true })
+  currentStopLoss: number | null;
+
   @CreateDateColumn()
   timestamp: Date;
 }
