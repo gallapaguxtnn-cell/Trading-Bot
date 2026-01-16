@@ -199,7 +199,7 @@ export default function LogsPage() {
             {level}
             {level !== 'ALL' && (
               <span className="ml-2 text-xs opacity-70">
-                ({logs.filter(l => level === 'ALL' ? true : getLogLevel(l) === level).length})
+                ({logs.filter(l => (level as string) === 'ALL' ? true : getLogLevel(l) === level).length})
               </span>
             )}
           </button>

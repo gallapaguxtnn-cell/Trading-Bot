@@ -35,6 +35,10 @@ export class StrategiesService {
         'takeProfitPercentage2',
         'takeProfitPercentage3',
         'moveSLToBreakeven',
+        'nextCandleEntry',
+        'nextCandlePercentage',
+        'useAccountPercentage',
+        'accountPercentage',
         'apiKey',
         'apiSecret'
       ]
@@ -60,7 +64,12 @@ export class StrategiesService {
         'takeProfitPercentage1',
         'takeProfitPercentage2',
         'takeProfitPercentage3',
-        'moveSLToBreakeven'
+        'takeProfitPercentage3',
+        'moveSLToBreakeven',
+        'nextCandleEntry',
+        'nextCandlePercentage',
+        'useAccountPercentage',
+        'accountPercentage'
       ]
     });
   }

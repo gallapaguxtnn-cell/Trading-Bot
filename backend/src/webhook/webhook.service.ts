@@ -300,24 +300,81 @@ export class WebhookService {
     const normalizedSymbol = this.normalizeSymbol(signal.symbol, exchange);
     const side = signal.action.toUpperCase() as 'BUY' | 'SELL';
 
-    const isLimitOrder = signal.orderType === OrderType.LIMIT && !!signal.price;
+    let isLimitOrder = signal.orderType === OrderType.LIMIT && !!signal.price;
+    let effectivePrice = signal.price;
+
+    // Next Candle / Percent Offset Logic
+    if (strategy.nextCandleEntry && strategy.nextCandlePercentage && signal.price) {
+      const offset = signal.price * (strategy.nextCandlePercentage / 100);
+      if (side === 'BUY') {
+        effectivePrice = signal.price - offset;
+      } else {
+        effectivePrice = signal.price + offset;
+      }
+      isLimitOrder = true;
+      // Update signal to reflect the forced limit order so downstream methods use the correct price
+      signal.price = effectivePrice;
+      signal.orderType = OrderType.LIMIT;
+      
+      this.logger.log(`[NEXT CANDLE] Adjusted entry price to ${effectivePrice} (${strategy.nextCandlePercentage}% offset)`);
+    }
 
     this.logger.log(
-      `[ORDER CONFIG] Exchange: ${exchange} | orderType: ${signal.orderType || 'undefined'} | ` +
-      `price: ${signal.price || 'undefined'} | isLimitOrder: ${isLimitOrder}`
+      `[ORDER CONFIG] Exchange: ${exchange} | orderType: ${isLimitOrder ? 'LIMIT' : 'MARKET'} | ` +
+      `price: ${effectivePrice || 'undefined'} | isLimitOrder: ${isLimitOrder}`
     );
 
     let quantity: number;
+    let notional = 0;
+
     if (signal.quantity) {
       quantity = signal.quantity;
-      this.logger.log(`Using explicit quantity from signal: ${quantity}`);
-    } else if (signal.accountPercentage && signal.price) {
+      notional = quantity * effectivePrice!;
+      this.logger.log(`Using explicit quantity from signal: ${quantity} (Notional: ~${notional.toFixed(2)} USDT)`);
+    } else if (signal.accountPercentage && effectivePrice) {
       const accountBalance = await this.getAccountBalance(strategy);
-      quantity = (accountBalance * signal.accountPercentage / 100) / signal.price;
-      this.logger.log(`Calculated quantity from ${signal.accountPercentage}% of balance: ${quantity}`);
+      this.logger.log(`[DEBUG] Fetched Account Balance: ${accountBalance} USDT`);
+      
+      const targetNotional = accountBalance * (signal.accountPercentage / 100);
+      quantity = targetNotional / effectivePrice;
+      notional = targetNotional;
+      
+      this.logger.log(`Calculated quantity from ${signal.accountPercentage}% of balance: ${quantity.toFixed(5)} (Target Notional: ${targetNotional.toFixed(2)} USDT)`);
+    } else if (strategy.useAccountPercentage && strategy.accountPercentage && effectivePrice) {
+      const accountBalance = await this.getAccountBalance(strategy);
+      this.logger.log(`[DEBUG] Fetched Account Balance: ${accountBalance} USDT`);
+      
+      const targetNotional = accountBalance * (strategy.accountPercentage / 100);
+      quantity = targetNotional / effectivePrice;
+      notional = targetNotional;
+      
+      this.logger.log(`Calculated quantity from strategy ${strategy.accountPercentage}% of balance: ${quantity.toFixed(5)} (Target Notional: ${targetNotional.toFixed(2)} USDT)`);
     } else {
       quantity = strategy.defaultQuantity || 0.002;
-      this.logger.log(`Using default quantity from strategy: ${quantity}`);
+      notional = quantity * (effectivePrice || 0); // fallback if effectivePrice undefined
+      this.logger.log(`Using default quantity from strategy: ${quantity} (Notional: ~${notional.toFixed(2)} USDT)`);
+    }
+
+    if (notional < 5) {
+       this.logger.warn(`[WARNING] Calculated notional (${notional}) is extremely low. Binance Minimum is usually 5-10 USDT (100 on some pairs/testnet).`);
+    }
+
+    if (notional < 10) { // Binance Min is typically 5-10, Testnet can be higher (100+)
+       const msg = `[WARNING] Calculated notional (${notional.toFixed(2)} USDT) is too low. Trade aborted to avoid rejection.`;
+       this.logger.warn(msg);
+       
+       const tradeData: Partial<Trade> = {
+          strategyId: strategy.id,
+          symbol: normalizedSymbol,
+          side,
+          type: isLimitOrder ? 'LIMIT' : 'MARKET',
+          entryPrice: effectivePrice,
+          quantity,
+          status: 'ERROR',
+          error: 'Notional too low (< 10 USDT)',
+       };
+       await this.tradesService.create(tradeData);
+       return { status: 'error', message: msg };
     }
 
     const tradeData: Partial<Trade> = {
@@ -325,7 +382,7 @@ export class WebhookService {
       symbol: normalizedSymbol,
       side,
       type: isLimitOrder ? 'LIMIT' : 'MARKET',
-      entryPrice: signal.price,
+      entryPrice: effectivePrice,
       quantity,
       status: 'OPEN',
     };
@@ -493,12 +550,19 @@ export class WebhookService {
       };
 
     } catch (error: any) {
-      this.logger.error('Error executing real trade', error);
+      // Clean error logging
+      const errorMsg = error.response?.data?.msg || error.response?.data?.retMsg || error.message;
+      const errorCode = error.response?.data?.code || error.response?.data?.retCode;
+      
+      this.logger.error(`Error executing real trade: [${errorCode}] ${errorMsg}`);
+      
+      // Do not log the full error object as it contains circular references and is huge
+      // this.logger.debug(error); 
 
       if (savedTrade && savedTrade.id) {
         await this.tradesService.updateTrade(savedTrade.id, {
           status: 'ERROR',
-          error: error.response?.data?.msg || error.response?.data?.retMsg || error.message,
+          error: `${errorCode ? `[${errorCode}] ` : ''}${errorMsg}`,
         });
       } else {
         tradeData.status = 'ERROR';

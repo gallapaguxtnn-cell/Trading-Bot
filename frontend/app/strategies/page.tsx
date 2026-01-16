@@ -20,6 +20,10 @@ const DEFAULT_FORM_DATA = {
   apiKey: '',
   apiSecret: '',
   defaultQuantity: 0.002,
+  nextCandleEntry: false,
+  nextCandlePercentage: 0.2,
+  useAccountPercentage: false,
+  accountPercentage: 10,
 };
 
 export default function StrategiesPage() {
@@ -63,6 +67,10 @@ export default function StrategiesPage() {
       apiKey: '',
       apiSecret: '',
       defaultQuantity: strategy.defaultQuantity || 0.002,
+      nextCandleEntry: strategy.nextCandleEntry || false,
+      nextCandlePercentage: strategy.nextCandlePercentage || 0.2,
+      useAccountPercentage: strategy.useAccountPercentage || false,
+      accountPercentage: strategy.accountPercentage || 10,
     });
     window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
   }
@@ -103,6 +111,10 @@ export default function StrategiesPage() {
       isTestnet: formData.isTestnet,
       isActive: true,
       defaultQuantity: Number(formData.defaultQuantity),
+      nextCandleEntry: formData.nextCandleEntry,
+      nextCandlePercentage: formData.nextCandleEntry ? Number(formData.nextCandlePercentage) : null,
+      useAccountPercentage: formData.useAccountPercentage,
+      accountPercentage: formData.useAccountPercentage ? Number(formData.accountPercentage) : null,
     };
 
     if (formData.apiKey) payload.apiKey = formData.apiKey;
@@ -385,16 +397,103 @@ export default function StrategiesPage() {
                 </select>
               </div>
 
-              <div className="space-y-1">
-                <label className="text-sm font-medium text-slate-300">Default Qty</label>
-                <input
-                  type="number"
-                  step="0.001"
-                  name="defaultQuantity"
-                  className="w-full bg-slate-900 border border-slate-700 rounded-lg p-3 text-white focus:border-blue-500 outline-none transition"
-                  value={formData.defaultQuantity}
-                  onChange={handleChange}
-                />
+            </div>
+
+            {/* Entry & Sizing Settings */}
+            <div className="bg-slate-900/50 p-4 rounded-lg border border-slate-700 space-y-4">
+              <h4 className="text-white font-medium">Entry & Sizing</h4>
+              
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                {/* Entry Setting */}
+                <div className="space-y-3">
+                   <label className="text-sm font-medium text-slate-300">Entry Mode</label>
+                   <div className="flex bg-slate-800 rounded-lg p-1 border border-slate-700">
+                      <button
+                        type="button"
+                        onClick={() => setFormData(prev => ({ ...prev, nextCandleEntry: false }))}
+                        className={`flex-1 py-1.5 text-xs font-medium rounded ${!formData.nextCandleEntry ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-400 hover:text-white'}`}
+                      >
+                        Market
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setFormData(prev => ({ ...prev, nextCandleEntry: true }))}
+                        className={`flex-1 py-1.5 text-xs font-medium rounded ${formData.nextCandleEntry ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-400 hover:text-white'}`}
+                      >
+                        Next Candle (Limit)
+                      </button>
+                   </div>
+                   
+                   {formData.nextCandleEntry && (
+                     <div className="space-y-1 animate-in fade-in slide-in-from-top-2 duration-200">
+                        <label className="text-xs text-blue-400">Entry Offset (%)</label>
+                        <input
+                          type="number"
+                          step="0.01"
+                          name="nextCandlePercentage"
+                          placeholder="0.2"
+                          className="w-full bg-slate-800 border border-blue-500/50 rounded p-2 text-white text-sm focus:border-blue-500 outline-none"
+                          value={formData.nextCandlePercentage}
+                          onChange={handleChange}
+                        />
+                        <p className="text-[10px] text-slate-500">
+                          Long: Price - Offset | Short: Price + Offset
+                        </p>
+                     </div>
+                   )}
+                </div>
+
+                {/* Sizing Setting */}
+                <div className="space-y-3">
+                   <label className="text-sm font-medium text-slate-300">Position Sizing</label>
+                   <div className="flex bg-slate-800 rounded-lg p-1 border border-slate-700">
+                      <button
+                        type="button"
+                        onClick={() => setFormData(prev => ({ ...prev, useAccountPercentage: false }))}
+                        className={`flex-1 py-1.5 text-xs font-medium rounded ${!formData.useAccountPercentage ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-400 hover:text-white'}`}
+                      >
+                        Fixed Qty
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setFormData(prev => ({ ...prev, useAccountPercentage: true }))}
+                        className={`flex-1 py-1.5 text-xs font-medium rounded ${formData.useAccountPercentage ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-400 hover:text-white'}`}
+                      >
+                        % of Balance
+                      </button>
+                   </div>
+                   
+                   {!formData.useAccountPercentage ? (
+                     <div className="space-y-1 animate-in fade-in slide-in-from-top-2 duration-200">
+                        <label className="text-xs text-slate-400">Fixed Quantity (Coins)</label>
+                        <input
+                          type="number"
+                          step="0.001"
+                          name="defaultQuantity"
+                          placeholder="0.002"
+                          className="w-full bg-slate-800 border border-slate-700 rounded p-2 text-white text-sm focus:border-slate-500 outline-none"
+                          value={formData.defaultQuantity}
+                          onChange={handleChange}
+                        />
+                     </div>
+                   ) : (
+                      <div className="space-y-1 animate-in fade-in slide-in-from-top-2 duration-200">
+                        <label className="text-xs text-blue-400">Percentage of Account (%)</label>
+                        <input
+                          type="number"
+                          step="1"
+                          name="accountPercentage"
+                          placeholder="10"
+                          className="w-full bg-slate-800 border border-blue-500/50 rounded p-2 text-white text-sm focus:border-blue-500 outline-none"
+                          value={formData.accountPercentage}
+                          onChange={handleChange}
+                        />
+                        <p className="text-[10px] text-slate-500">
+                          Calculated from Available Balance (USDT)
+                        </p>
+                     </div>
+                   )}
+                </div>
               </div>
             </div>
 

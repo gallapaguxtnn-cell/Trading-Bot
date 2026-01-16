@@ -72,6 +72,18 @@ export class Strategy {
   @Column({ default: false })
   moveSLToBreakeven: boolean;
 
+  @Column({ default: false })
+  nextCandleEntry: boolean;
+
+  @Column({ type: 'float', nullable: true })
+  nextCandlePercentage: number;
+
+  @Column({ default: false })
+  useAccountPercentage: boolean;
+
+  @Column({ type: 'float', nullable: true })
+  accountPercentage: number;
+
   @CreateDateColumn()
   createdAt: Date;
 
