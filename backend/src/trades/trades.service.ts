@@ -64,6 +64,28 @@ export class TradesService {
       .getOne();
   }
 
+  async findLastTradeWithInitialQuantity(strategyId: string): Promise<Trade | null> {
+    return this.tradesRepository
+      .createQueryBuilder('trade')
+      .where('trade.strategyId = :strategyId', { strategyId })
+      .andWhere('trade.initialQuantity IS NOT NULL')
+      .orderBy('trade.timestamp', 'DESC')
+      .getOne();
+  }
+
+  async findLastClosedTrade(strategyId: string): Promise<Trade | null> {
+    return this.tradesRepository.findOne({
+      where: { strategyId, status: 'CLOSED' },
+      order: { timestamp: 'DESC' }
+    });
+  }
+
+  async countClosedTrades(strategyId: string): Promise<number> {
+    return this.tradesRepository.count({
+      where: { strategyId, status: 'CLOSED' }
+    });
+  }
+
   async updateTrade(id: string, updates: Partial<Trade>): Promise<Trade | null> {
     await this.tradesRepository.update(id, updates);
     return this.tradesRepository.findOneBy({ id });

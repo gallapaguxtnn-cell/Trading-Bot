@@ -4,14 +4,65 @@ import { useEffect, useState } from 'react';
 import { useTradesSocket } from '@/hooks/useTradesSocket';
 import { StatsCard } from '@/components/dashboard/StatsCard';
 import { Table } from '@/components/ui/Table';
+import { closeAllPositions, pauseAllStrategies, resumeAllStrategies, closePosition } from '@/lib/api';
 
 export default function Home() {
   const { stats, isConnected, lastUpdate, forceSync, isSyncing } = useTradesSocket();
   const [filter, setFilter] = useState<'ALL' | 'OPEN' | 'CLOSED'>('ALL');
+  const [isClosingAll, setIsClosingAll] = useState(false);
+  const [isPausingAll, setIsPausingAll] = useState(false);
+  const [allPaused, setAllPaused] = useState(false);
 
   const totalPnl = stats?.totalPnL || 0;
   const realizedPnl = stats?.realizedPnL || 0;
   const unrealizedPnl = stats?.unrealizedPnL || 0;
+
+  const handleCloseAll = async () => {
+    if (!confirm('Are you sure you want to close ALL open positions? This action cannot be undone.')) return;
+    setIsClosingAll(true);
+    try {
+      const result = await closeAllPositions();
+      alert(`Closed ${result.closed} positions${result.errors?.length > 0 ? `. Errors: ${result.errors.join(', ')}` : ''}`);
+      forceSync();
+    } catch (error: any) {
+      alert(`Failed to close positions: ${error.message}`);
+    } finally {
+      setIsClosingAll(false);
+    }
+  };
+
+  const handlePauseAll = async () => {
+    setIsPausingAll(true);
+    try {
+      if (allPaused) {
+        await resumeAllStrategies();
+        setAllPaused(false);
+      } else {
+        await pauseAllStrategies();
+        setAllPaused(true);
+      }
+      forceSync();
+    } catch (error: any) {
+      alert(`Failed to ${allPaused ? 'resume' : 'pause'} strategies: ${error.message}`);
+    } finally {
+      setIsPausingAll(false);
+    }
+  };
+
+  const handleClosePosition = async (tradeId: string) => {
+    if (!confirm('Are you sure you want to close this position?')) return;
+    try {
+      const result = await closePosition(tradeId);
+      if (result.success) {
+        alert(`Position closed. P&L: ${result.pnl?.toFixed(2) || 'N/A'} USDT`);
+        forceSync();
+      } else {
+        alert(`Failed: ${result.message}`);
+      }
+    } catch (error: any) {
+      alert(`Error: ${error.message}`);
+    }
+  };
 
   const filteredTrades = stats?.recentSignals.filter(trade => {
     if (filter === 'ALL') return true;
@@ -46,6 +97,45 @@ export default function Home() {
           >
             {isSyncing ? 'Syncing...' : 'Sync with Binance'}
           </button>
+        </div>
+      </div>
+
+      {/* Emergency Controls */}
+      <div className="bg-slate-800/50 rounded-xl border border-rose-500/30 p-4">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="w-2 h-2 rounded-full bg-rose-500 animate-pulse" />
+            <h3 className="text-white font-semibold">Emergency Controls</h3>
+            <span className="text-xs text-slate-400">
+              {stats?.activePositions || 0} open positions | {allPaused ? 'All strategies paused' : 'Strategies active'}
+            </span>
+          </div>
+          <div className="flex gap-3">
+            <button
+              onClick={handlePauseAll}
+              disabled={isPausingAll}
+              className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+                isPausingAll
+                  ? 'bg-slate-700 text-slate-400 cursor-not-allowed'
+                  : allPaused
+                  ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
+                  : 'bg-amber-600 hover:bg-amber-700 text-white'
+              }`}
+            >
+              {isPausingAll ? 'Processing...' : allPaused ? 'Resume All Strategies' : 'Pause All Strategies'}
+            </button>
+            <button
+              onClick={handleCloseAll}
+              disabled={isClosingAll || !stats?.activePositions}
+              className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+                isClosingAll || !stats?.activePositions
+                  ? 'bg-slate-700 text-slate-400 cursor-not-allowed'
+                  : 'bg-rose-600 hover:bg-rose-700 text-white'
+              }`}
+            >
+              {isClosingAll ? 'Closing...' : 'Close All Positions'}
+            </button>
+          </div>
         </div>
       </div>
 
@@ -157,6 +247,17 @@ export default function Home() {
                       </div>
                     );
                   },
+                },
+                {
+                  header: 'Action',
+                  accessor: (item) => (
+                    <button
+                      onClick={() => handleClosePosition(item.id)}
+                      className="px-2 py-1 text-xs bg-rose-600/20 hover:bg-rose-600 text-rose-400 hover:text-white rounded transition-all"
+                    >
+                      Close
+                    </button>
+                  ),
                 },
               ]}
             />

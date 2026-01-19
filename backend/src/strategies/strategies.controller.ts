@@ -204,4 +204,48 @@ ${visualization}
   remove(@Param('id') id: string) {
     return this.strategiesService.remove(id);
   }
+
+  @Post(':id/pause')
+  async pauseTrading(@Param('id') id: string) {
+    const strategy = await this.strategiesService.update(id, { pauseNewOrders: true });
+    return { success: true, message: 'Trading paused', strategy };
+  }
+
+  @Post(':id/resume')
+  async resumeTrading(@Param('id') id: string) {
+    const strategy = await this.strategiesService.update(id, { pauseNewOrders: false });
+    return { success: true, message: 'Trading resumed', strategy };
+  }
+
+  @Post(':id/reset-single')
+  async resetSingleMode(@Param('id') id: string) {
+    const strategy = await this.strategiesService.update(id, { pauseNewOrders: false });
+    return { success: true, message: 'Single mode reset - ready for new trade cycle', strategy };
+  }
+
+  @Post('pause-all')
+  async pauseAllTrading() {
+    const strategies = await this.strategiesService.findAll();
+    let paused = 0;
+    for (const strategy of strategies) {
+      if (strategy.isActive && !strategy.pauseNewOrders) {
+        await this.strategiesService.update(strategy.id, { pauseNewOrders: true });
+        paused++;
+      }
+    }
+    return { success: true, message: `Paused ${paused} strategies` };
+  }
+
+  @Post('resume-all')
+  async resumeAllTrading() {
+    const strategies = await this.strategiesService.findAll();
+    let resumed = 0;
+    for (const strategy of strategies) {
+      if (strategy.isActive && strategy.pauseNewOrders) {
+        await this.strategiesService.update(strategy.id, { pauseNewOrders: false });
+        resumed++;
+      }
+    }
+    return { success: true, message: `Resumed ${resumed} strategies` };
+  }
 }

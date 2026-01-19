@@ -59,6 +59,12 @@ export class Trade {
   @Column("decimal", { precision: 18, scale: 8, nullable: true })
   currentStopLoss: number | null;
 
+  @Column({ default: false })
+  isFromAveraging: boolean;
+
+  @Column("decimal", { precision: 18, scale: 8, nullable: true })
+  initialQuantity: number | null;
+
   @CreateDateColumn()
   timestamp: Date;
 }

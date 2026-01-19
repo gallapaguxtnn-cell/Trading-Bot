@@ -145,7 +145,9 @@ export class PositionSyncService {
       this.logger.debug(`[SYNC DEBUG] ${position.symbol} (${position.side}) - strategyId: ${strategy.id} - Found ${existingTrades.length} existing trades`);
 
       if (existingTrades.length === 0) {
-        this.logger.debug(`[SYNC] No local trade for ${position.symbol} (${position.side}) - skipping (not auto-importing)`);
+        this.logger.warn(`[SYNC] Orphan position detected: ${position.symbol} (${position.side}) - importing...`);
+        await this.importOrphanPosition(strategy, position);
+        imported++;
       } else if (existingTrades.length === 1) {
         // Check Break-Again / Trailing Logic
         if (strategy.breakAgain || strategy.moveSLToBreakeven) {
@@ -489,6 +491,14 @@ export class PositionSyncService {
   }
 
   private async updateTradeFromPosition(trade: Trade, position: NormalizedPosition): Promise<void> {
+    if (trade.side !== position.side) {
+      this.logger.error(
+        `[SYNC INCONSISTENCY] Trade ${trade.id} is ${trade.side} but exchange position is ${position.side} for ${trade.symbol}. ` +
+        `This may indicate a sync issue. Correcting trade side to match exchange.`
+      );
+      trade.side = position.side;
+    }
+
     trade.pnl = position.unrealizedPnl as any;
     trade.binancePositionAmt = position.size as any;
     trade.quantity = position.size as any;
@@ -527,6 +537,24 @@ export class PositionSyncService {
       apiKey: apiKey.trim(),
       apiSecret: apiSecret.trim()
     };
+  }
+
+  private async importOrphanPosition(strategy: Strategy, position: NormalizedPosition): Promise<Trade> {
+    const trade = this.tradesRepository.create({
+      strategyId: strategy.id,
+      symbol: position.symbol,
+      side: position.side,
+      type: 'MARKET',
+      entryPrice: position.entryPrice as any,
+      quantity: position.size as any,
+      pnl: position.unrealizedPnl as any,
+      status: 'OPEN',
+      binancePositionAmt: position.size as any,
+    });
+
+    const savedTrade = await this.tradesRepository.save(trade);
+    this.logger.log(`[SYNC] Imported orphan position as trade ${savedTrade.id}: ${position.symbol} ${position.side} @ ${position.entryPrice}`);
+    return savedTrade;
   }
 
   private async checkBreakAgain(

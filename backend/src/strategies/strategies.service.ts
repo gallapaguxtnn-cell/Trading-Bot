@@ -43,6 +43,11 @@ export class StrategiesService {
         'nextCandlePercentage',
         'useAccountPercentage',
         'accountPercentage',
+        'enableCompound',
+        'tradingMode',
+        'allowAveraging',
+        'hedgeMode',
+        'pauseNewOrders',
         'apiKey',
         'apiSecret'
       ]
@@ -68,7 +73,6 @@ export class StrategiesService {
         'takeProfitPercentage1',
         'takeProfitPercentage2',
         'takeProfitPercentage3',
-        'takeProfitPercentage3',
         'takeProfitQuantity1',
         'takeProfitQuantity2',
         'takeProfitQuantity3',
@@ -77,7 +81,12 @@ export class StrategiesService {
         'nextCandleEntry',
         'nextCandlePercentage',
         'useAccountPercentage',
-        'accountPercentage'
+        'accountPercentage',
+        'enableCompound',
+        'tradingMode',
+        'allowAveraging',
+        'hedgeMode',
+        'pauseNewOrders'
       ]
     });
   }

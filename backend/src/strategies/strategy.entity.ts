@@ -6,6 +6,11 @@ export enum StrategyDirection {
   BOTH = 'BOTH',
 }
 
+export enum TradingMode {
+  CYCLE = 'CYCLE',
+  SINGLE = 'SINGLE',
+}
+
 export enum MarginMode {
   ISOLATED = 'ISOLATED',
   CROSS = 'CROSS',
@@ -95,6 +100,21 @@ export class Strategy {
 
   @Column({ type: 'float', nullable: true })
   accountPercentage: number;
+
+  @Column({ default: true })
+  enableCompound: boolean;
+
+  @Column({ type: 'enum', enum: TradingMode, default: TradingMode.CYCLE })
+  tradingMode: TradingMode;
+
+  @Column({ default: false })
+  allowAveraging: boolean;
+
+  @Column({ default: false })
+  hedgeMode: boolean;
+
+  @Column({ default: false })
+  pauseNewOrders: boolean;
 
   @CreateDateColumn()
   createdAt: Date;

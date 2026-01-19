@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { fetchStrategies, createStrategy, updateStrategy, deleteStrategy } from '@/lib/api';
+import { fetchStrategies, createStrategy, updateStrategy, deleteStrategy, pauseStrategy, resumeStrategy, resetSingleMode } from '@/lib/api';
 
 const DEFAULT_FORM_DATA = {
   name: 'New Strategy',
@@ -28,6 +28,10 @@ const DEFAULT_FORM_DATA = {
   takeProfitQuantity2: 33,
   takeProfitQuantity3: 34,
   breakAgain: false,
+  enableCompound: true,
+  tradingMode: 'CYCLE',
+  allowAveraging: false,
+  hedgeMode: false,
 };
 
 export default function StrategiesPage() {
@@ -79,6 +83,10 @@ export default function StrategiesPage() {
       takeProfitQuantity2: strategy.takeProfitQuantity2 || 33,
       takeProfitQuantity3: strategy.takeProfitQuantity3 || 34,
       breakAgain: strategy.breakAgain || false,
+      enableCompound: strategy.enableCompound ?? true,
+      tradingMode: strategy.tradingMode || 'CYCLE',
+      allowAveraging: strategy.allowAveraging || false,
+      hedgeMode: strategy.hedgeMode || false,
     });
     window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
   }
@@ -127,6 +135,10 @@ export default function StrategiesPage() {
       takeProfitQuantity2: Number(formData.takeProfitQuantity2),
       takeProfitQuantity3: Number(formData.takeProfitQuantity3),
       breakAgain: formData.breakAgain,
+      enableCompound: formData.enableCompound,
+      tradingMode: formData.tradingMode,
+      allowAveraging: formData.allowAveraging,
+      hedgeMode: formData.hedgeMode,
     };
 
     if (formData.apiKey) payload.apiKey = formData.apiKey;
@@ -277,6 +289,33 @@ export default function StrategiesPage() {
                     </div>
                   </div>
 
+                  {/* Trading Mode Badges */}
+                  <div className="flex flex-wrap gap-1.5 mb-3">
+                    <span className={`text-[10px] px-1.5 py-0.5 rounded ${s.tradingMode === 'SINGLE' ? 'bg-amber-500/20 text-amber-400' : 'bg-blue-500/20 text-blue-400'}`}>
+                      {s.tradingMode === 'SINGLE' ? 'Single' : 'Cycle'}
+                    </span>
+                    {s.enableCompound === false && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-500/20 text-slate-400">
+                        No Compound
+                      </span>
+                    )}
+                    {s.allowAveraging && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-400">
+                        Averaging
+                      </span>
+                    )}
+                    {s.hedgeMode && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-orange-500/20 text-orange-400">
+                        Hedge
+                      </span>
+                    )}
+                    {s.pauseNewOrders && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-rose-500/20 text-rose-400 animate-pulse">
+                        Paused
+                      </span>
+                    )}
+                  </div>
+
                   {/* Actions */}
                   <div className="flex flex-wrap gap-2">
                     <button
@@ -291,6 +330,38 @@ export default function StrategiesPage() {
                     >
                       Delete
                     </button>
+                    {s.pauseNewOrders ? (
+                      <button
+                        onClick={async () => {
+                          await resumeStrategy(s.id);
+                          loadStrategies();
+                        }}
+                        className="text-xs bg-emerald-700/50 hover:bg-emerald-600 px-3 py-1.5 rounded text-emerald-300 transition"
+                      >
+                        Resume
+                      </button>
+                    ) : (
+                      <button
+                        onClick={async () => {
+                          await pauseStrategy(s.id);
+                          loadStrategies();
+                        }}
+                        className="text-xs bg-amber-700/50 hover:bg-amber-600 px-3 py-1.5 rounded text-amber-300 transition"
+                      >
+                        Pause
+                      </button>
+                    )}
+                    {s.tradingMode === 'SINGLE' && (
+                      <button
+                        onClick={async () => {
+                          await resetSingleMode(s.id);
+                          loadStrategies();
+                        }}
+                        className="text-xs bg-purple-700/50 hover:bg-purple-600 px-3 py-1.5 rounded text-purple-300 transition"
+                      >
+                        Reset Single
+                      </button>
+                    )}
                     {s.direction === 'BOTH' ? (
                       <button
                         onClick={() => copyWebhookJson(s)}
@@ -506,6 +577,83 @@ export default function StrategiesPage() {
                      </div>
                    )}
                 </div>
+              </div>
+            </div>
+
+            <div className="bg-slate-900/50 p-4 rounded-lg border border-slate-700 space-y-4">
+              <h4 className="text-white font-medium">Trading Mode & Advanced</h4>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div className="space-y-3">
+                  <label className="text-sm font-medium text-slate-300">Trading Mode</label>
+                  <div className="flex bg-slate-800 rounded-lg p-1 border border-slate-700">
+                    <button
+                      type="button"
+                      onClick={() => setFormData(prev => ({ ...prev, tradingMode: 'CYCLE' }))}
+                      className={`flex-1 py-1.5 text-xs font-medium rounded ${formData.tradingMode === 'CYCLE' ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-400 hover:text-white'}`}
+                    >
+                      Cycle
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setFormData(prev => ({ ...prev, tradingMode: 'SINGLE' }))}
+                      className={`flex-1 py-1.5 text-xs font-medium rounded ${formData.tradingMode === 'SINGLE' ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-400 hover:text-white'}`}
+                    >
+                      Single
+                    </button>
+                  </div>
+                  <p className="text-[10px] text-slate-500">
+                    Cycle: Continues trading | Single: Stops after one completed trade
+                  </p>
+                </div>
+
+                <div className="space-y-3">
+                  <label className="text-sm font-medium text-slate-300">Compound</label>
+                  <div className="flex bg-slate-800 rounded-lg p-1 border border-slate-700">
+                    <button
+                      type="button"
+                      onClick={() => setFormData(prev => ({ ...prev, enableCompound: true }))}
+                      className={`flex-1 py-1.5 text-xs font-medium rounded ${formData.enableCompound ? 'bg-emerald-600 text-white shadow-sm' : 'text-slate-400 hover:text-white'}`}
+                    >
+                      On
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setFormData(prev => ({ ...prev, enableCompound: false }))}
+                      className={`flex-1 py-1.5 text-xs font-medium rounded ${!formData.enableCompound ? 'bg-slate-600 text-white shadow-sm' : 'text-slate-400 hover:text-white'}`}
+                    >
+                      Off
+                    </button>
+                  </div>
+                  <p className="text-[10px] text-slate-500">
+                    On: Recalculates qty based on current balance | Off: Uses fixed qty from first trade
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex flex-col gap-2 pt-2">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    name="allowAveraging"
+                    className="w-4 h-4 accent-purple-500"
+                    checked={formData.allowAveraging}
+                    onChange={handleChange}
+                  />
+                  <span className="text-sm text-slate-300">Allow Averaging (Preco Medio)</span>
+                  <span className="text-[10px] text-slate-500">- Multiple entries in same direction</span>
+                </label>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    name="hedgeMode"
+                    className="w-4 h-4 accent-orange-500"
+                    checked={formData.hedgeMode}
+                    onChange={handleChange}
+                  />
+                  <span className="text-sm text-slate-300">Hedge Mode</span>
+                  <span className="text-[10px] text-slate-500">- Allow LONG + SHORT simultaneously</span>
+                </label>
               </div>
             </div>
 
