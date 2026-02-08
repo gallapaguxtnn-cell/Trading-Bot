@@ -364,7 +364,7 @@ export class WebhookService {
 
     try {
       const dualTimestamp = Date.now();
-      const dualQueryString = `dualSidePositionMode=${hedgeMode}&timestamp=${dualTimestamp}`;
+      const dualQueryString = `dualSidePosition=${hedgeMode}&timestamp=${dualTimestamp}`;
       const dualSignature = crypto.createHmac('sha256', apiSecret).update(dualQueryString).digest('hex');
 
       this.logger.log(`[POSITION MODE] BEFORE API CALL - Setting hedge mode: ${hedgeMode}, URL: ${baseURL}/fapi/v1/positionSide/dual`);
@@ -545,25 +545,10 @@ export class WebhookService {
       const closeSide = side === 'BUY' ? 'SELL' : 'BUY';
       const rules = await this.getSymbolRules(symbol, isTestnet);
 
-      // Calculate limit price with small buffer for guaranteed execution
-      // For SL: price slightly worse than stopPrice to ensure it fills
-      const priceTick = parseFloat(rules.priceTick);
-      const buffer = priceTick * 5; // 5 ticks buffer
-      let limitPrice: number;
-
-      if (side === 'BUY') {
-        // LONG position closing on SL: sell slightly below stopPrice
-        limitPrice = stopPrice - buffer;
-      } else {
-        // SHORT position closing on SL: buy slightly above stopPrice
-        limitPrice = stopPrice + buffer;
-      }
-
       const params = new URLSearchParams();
       params.append('symbol', symbol);
       params.append('side', closeSide);
-      params.append('type', 'STOP'); // LIMIT order type (not STOP_MARKET)
-      params.append('timeInForce', 'GTC'); // Good Till Cancel
+      params.append('type', 'STOP_MARKET'); // MARKET order - executes immediately at market price when triggered
 
       if (hedgeMode) {
         const positionSide = side === 'BUY' ? 'LONG' : 'SHORT';
@@ -572,13 +557,12 @@ export class WebhookService {
         params.append('quantity', '0');
 
         this.logger.log(
-          `[SL CREATE] BEFORE API CALL - Hedge Mode LIMIT Order with Auto-Adjust\n` +
+          `[SL CREATE] BEFORE API CALL - Hedge Mode MARKET Order with Auto-Adjust\n` +
           `  Symbol: ${symbol}\n` +
           `  Entry Side: ${side} → Close Side: ${closeSide}\n` +
           `  Position Side: ${positionSide}\n` +
           `  Stop Price (trigger): ${this.roundTick(stopPrice, rules.priceTick)}\n` +
-          `  Limit Price (execution): ${this.roundTick(limitPrice, rules.priceTick)}\n` +
-          `  Type: STOP (LIMIT order)\n` +
+          `  Type: STOP_MARKET (executes at market price when triggered)\n` +
           `  Using closePosition=true (will auto-adjust after partial TPs)\n` +
           `  Rules: step=${rules.qtyStep}, min=${rules.minQty}, tick=${rules.priceTick}`
         );
@@ -587,17 +571,15 @@ export class WebhookService {
         params.append('closePosition', 'true');
 
         this.logger.log(
-          `[SL CREATE] BEFORE API CALL - One-Way Mode LIMIT Order\n` +
+          `[SL CREATE] BEFORE API CALL - One-Way Mode MARKET Order\n` +
           `  Symbol: ${symbol}\n` +
           `  Entry Side: ${side} → Close Side: ${closeSide}\n` +
           `  Stop Price (trigger): ${this.roundTick(stopPrice, rules.priceTick)}\n` +
-          `  Limit Price (execution): ${this.roundTick(limitPrice, rules.priceTick)}\n` +
-          `  Type: STOP (LIMIT order)\n` +
+          `  Type: STOP_MARKET (executes at market price when triggered)\n` +
           `  Using closePosition=true (auto-adjusts quantity)`
         );
       }
 
-      params.append('price', this.roundTick(limitPrice, rules.priceTick)); // Limit price for execution
       params.append('stopPrice', this.roundTick(stopPrice, rules.priceTick)); // Trigger price
       params.append('workingType', 'MARK_PRICE');
 
@@ -643,30 +625,12 @@ export class WebhookService {
       const normalizedQty = this.normalizeQuantity(tpQuantity, rules.qtyStep, rules.minQty);
       const normalizedStopPrice = this.roundTick(tpPrice, rules.priceTick);
 
-      // Calculate limit price with small buffer for better execution
-      // For TP: price slightly better than stopPrice to ensure it fills quickly
-      const priceTick = parseFloat(rules.priceTick);
-      const buffer = priceTick * 2; // 2 ticks buffer for better fill rate
-      let limitPrice: number;
-
-      if (side === 'BUY') {
-        // LONG position taking profit: sell slightly above stopPrice for better fill
-        limitPrice = tpPrice + buffer;
-      } else {
-        // SHORT position taking profit: buy slightly below stopPrice for better fill
-        limitPrice = tpPrice - buffer;
-      }
-
-      const normalizedLimitPrice = this.roundTick(limitPrice, rules.priceTick);
-
       const params = new URLSearchParams();
       params.append('symbol', symbol);
       params.append('side', closeSide);
-      params.append('type', 'TAKE_PROFIT'); // LIMIT order type (not TAKE_PROFIT_MARKET)
+      params.append('type', 'TAKE_PROFIT_MARKET'); // MARKET order - executes immediately at market price when triggered
       params.append('quantity', normalizedQty);
-      params.append('price', normalizedLimitPrice); // Limit price for execution
       params.append('stopPrice', normalizedStopPrice); // Trigger price
-      params.append('timeInForce', 'GTC'); // Good Till Cancel
       params.append('workingType', 'MARK_PRICE');
 
       if (hedgeMode) {
@@ -674,13 +638,12 @@ export class WebhookService {
         params.append('positionSide', positionSide);
 
         this.logger.log(
-          `[TP CREATE] BEFORE API CALL - Hedge Mode LIMIT Order\n` +
+          `[TP CREATE] BEFORE API CALL - Hedge Mode MARKET Order\n` +
           `  Symbol: ${symbol}\n` +
           `  Entry Side: ${side} → Close Side: ${closeSide}\n` +
           `  Position Side: ${positionSide}\n` +
           `  Stop Price (trigger): ${normalizedStopPrice}\n` +
-          `  Limit Price (execution): ${normalizedLimitPrice}\n` +
-          `  Type: TAKE_PROFIT (LIMIT order)\n` +
+          `  Type: TAKE_PROFIT_MARKET (executes at market price when triggered)\n` +
           `  Quantity: ${normalizedQty} (raw: ${tpQuantity})\n` +
           `  Rules: step=${rules.qtyStep}, min=${rules.minQty}, tick=${rules.priceTick}`
         );
@@ -688,12 +651,11 @@ export class WebhookService {
         params.append('reduceOnly', 'true');
 
         this.logger.log(
-          `[TP CREATE] BEFORE API CALL - One-Way Mode LIMIT Order\n` +
+          `[TP CREATE] BEFORE API CALL - One-Way Mode MARKET Order\n` +
           `  Symbol: ${symbol}\n` +
           `  Entry Side: ${side} → Close Side: ${closeSide}\n` +
           `  Stop Price (trigger): ${normalizedStopPrice}\n` +
-          `  Limit Price (execution): ${normalizedLimitPrice}\n` +
-          `  Type: TAKE_PROFIT (LIMIT order)\n` +
+          `  Type: TAKE_PROFIT_MARKET (executes at market price when triggered)\n` +
           `  Quantity: ${normalizedQty} (raw: ${tpQuantity})\n` +
           `  Using reduceOnly=true`
         );

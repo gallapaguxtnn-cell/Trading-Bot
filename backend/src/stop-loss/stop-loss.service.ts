@@ -295,6 +295,14 @@ export class StopLossService {
         params.append('side', closeSide);
         params.append('type', 'MARKET');
         params.append('quantity', quantity.toFixed(3));
+
+        // CRITICAL FIX: Add positionSide for Hedge Mode
+        if (strategy.hedgeMode) {
+          const positionSide = trade.side === 'BUY' ? 'LONG' : 'SHORT';
+          params.append('positionSide', positionSide);
+          this.logger.log(`[CLOSE POSITION] Hedge Mode - Position Side: ${positionSide}`);
+        }
+
         params.append('timestamp', Date.now().toString());
 
         const queryString = params.toString();
@@ -317,7 +325,15 @@ export class StopLossService {
           strategy.isTestnet
         );
 
-        await exchangeInstance.createMarketOrder(trade.symbol, closeSide.toLowerCase(), quantity);
+        // CRITICAL FIX: Add positionSide for Hedge Mode in CCXT
+        const ccxtParams: any = {};
+        if (strategy.hedgeMode) {
+          const positionSide = trade.side === 'BUY' ? 'LONG' : 'SHORT';
+          ccxtParams.positionSide = positionSide;
+          this.logger.log(`[CLOSE POSITION] Hedge Mode (CCXT) - Position Side: ${positionSide}`);
+        }
+
+        await exchangeInstance.createMarketOrder(trade.symbol, closeSide.toLowerCase(), quantity, ccxtParams);
         this.logger.warn(`[CLOSED] ${trade.symbol} via ${reason}`);
       }
 

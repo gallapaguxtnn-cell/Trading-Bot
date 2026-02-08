@@ -412,6 +412,14 @@ export class TakeProfitService {
         params.append('side', closeSide);
         params.append('type', 'MARKET');
         params.append('quantity', closeQuantity.toFixed(3));
+
+        // CRITICAL FIX: Add positionSide for Hedge Mode
+        if (strategy.hedgeMode) {
+          const positionSide = trade.side === 'BUY' ? 'LONG' : 'SHORT';
+          params.append('positionSide', positionSide);
+          this.logger.log(`[CLOSE PARTIAL TP] Hedge Mode - Position Side: ${positionSide}`);
+        }
+
         params.append('timestamp', Date.now().toString());
 
         const queryString = params.toString();
@@ -434,7 +442,15 @@ export class TakeProfitService {
           strategy.isTestnet
         );
 
-        await exchangeInstance.createMarketOrder(trade.symbol, closeSide.toLowerCase(), closeQuantity);
+        // CRITICAL FIX: Add positionSide for Hedge Mode in CCXT
+        const ccxtParams: any = {};
+        if (strategy.hedgeMode) {
+          const positionSide = trade.side === 'BUY' ? 'LONG' : 'SHORT';
+          ccxtParams.positionSide = positionSide;
+          this.logger.log(`[CLOSE PARTIAL TP] Hedge Mode (CCXT) - Position Side: ${positionSide}`);
+        }
+
+        await exchangeInstance.createMarketOrder(trade.symbol, closeSide.toLowerCase(), closeQuantity, ccxtParams);
         this.logger.log(`[CLOSED ${(closePercent * 100).toFixed(0)}%] ${trade.symbol} via ${reason}`);
       }
 
