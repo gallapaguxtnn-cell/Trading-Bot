@@ -1636,6 +1636,13 @@ export class WebhookService {
       params.append('symbol', symbol);
       params.append('side', side);
 
+      // CRITICAL FIX: Add positionSide for Hedge Mode
+      if (strategy.hedgeMode) {
+        const positionSide = side === 'BUY' ? 'LONG' : 'SHORT';
+        params.append('positionSide', positionSide);
+        this.logger.log(`[ENTRY ORDER] Hedge Mode - Position Side: ${positionSide}`);
+      }
+
       if (isLimitOrder) {
         params.append('type', 'LIMIT');
         const rules = await this.getSymbolRules(symbol, strategy.isTestnet);
@@ -1671,14 +1678,33 @@ export class WebhookService {
         strategy.isTestnet
       );
 
+      // CRITICAL FIX: Add positionSide for Hedge Mode in CCXT
+      const ccxtParams: any = {};
+      if (strategy.hedgeMode) {
+        const positionSide = side === 'BUY' ? 'LONG' : 'SHORT';
+        ccxtParams.positionSide = positionSide;
+        this.logger.log(`[ENTRY ORDER] Hedge Mode (CCXT) - Position Side: ${positionSide}`);
+      }
+
       if (isLimitOrder) {
         const rules = await this.getSymbolRules(symbol, strategy.isTestnet);
-        const order = await exchangeInstance.createLimitOrder(symbol, signal.action, this.normalizeQuantity(quantity, rules.qtyStep, rules.minQty), this.roundTick(signal.price || 0, rules.priceTick));
+        const order = await exchangeInstance.createLimitOrder(
+          symbol,
+          signal.action,
+          this.normalizeQuantity(quantity, rules.qtyStep, rules.minQty),
+          this.roundTick(signal.price || 0, rules.priceTick),
+          ccxtParams
+        );
         this.logger.log(`[BINANCE] Limit Order Placed via CCXT: ${order.id}`);
         return order;
       } else {
         const rules = await this.getSymbolRules(symbol, strategy.isTestnet);
-        const order = await exchangeInstance.createMarketOrder(symbol, signal.action, this.normalizeQuantity(quantity, rules.qtyStep, rules.minQty));
+        const order = await exchangeInstance.createMarketOrder(
+          symbol,
+          signal.action,
+          this.normalizeQuantity(quantity, rules.qtyStep, rules.minQty),
+          ccxtParams
+        );
         this.logger.log(`[BINANCE] Market Order Placed via CCXT: ${order.id}`);
         return order;
       }
