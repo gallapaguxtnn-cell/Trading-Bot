@@ -536,6 +536,49 @@ export class BybitClientService {
     }
   }
 
+  /**
+   * Get symbol trading rules (quantity step, price tick, min quantity)
+   */
+  async getSymbolRules(
+    isTestnet: boolean,
+    symbol: string
+  ): Promise<{ qtyStep: string; priceTick: string; minQty: string }> {
+    const baseUrl = this.getBaseUrl(isTestnet);
+    const endpoint = '/v5/market/instruments-info';
+
+    try {
+      const response = await axios.get(
+        `${baseUrl}${endpoint}?category=linear&symbol=${symbol}`
+      );
+
+      if (response.data.retCode !== 0) {
+        this.logger.warn(`[BYBIT] Failed to get symbol rules: ${response.data.retMsg}`);
+        return { qtyStep: '0.001', priceTick: '0.01', minQty: '0.001' };
+      }
+
+      const instruments = response.data.result.list || [];
+      if (instruments.length > 0) {
+        const info = instruments[0];
+        const lotSizeFilter = info.lotSizeFilter || {};
+        const priceFilter = info.priceFilter || {};
+
+        const rules = {
+          qtyStep: lotSizeFilter.qtyStep || '0.001',
+          minQty: lotSizeFilter.minOrderQty || '0.001',
+          priceTick: priceFilter.tickSize || '0.01',
+        };
+
+        this.logger.debug(`[BYBIT] Symbol rules for ${symbol}: Step=${rules.qtyStep}, Tick=${rules.priceTick}, MinQty=${rules.minQty}`);
+        return rules;
+      }
+
+      return { qtyStep: '0.001', priceTick: '0.01', minQty: '0.001' };
+    } catch (error: any) {
+      this.logger.error(`[BYBIT] Failed to get symbol rules: ${error.message}`);
+      return { qtyStep: '0.001', priceTick: '0.01', minQty: '0.001' };
+    }
+  }
+
   async cancelAllOrders(
     apiKey: string,
     apiSecret: string,

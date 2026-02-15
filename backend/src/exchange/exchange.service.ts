@@ -1,6 +1,7 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import * as ccxt from 'ccxt';
 import { ConfigService } from '@nestjs/config';
+import * as crypto from 'crypto';
 
 @Injectable()
 export class ExchangeService implements OnModuleInit {
@@ -9,6 +10,19 @@ export class ExchangeService implements OnModuleInit {
 
   constructor(private configService: ConfigService) {}
 
+  /**
+   * Generate a secure cache key using a hash of the full API key
+   * This prevents collisions when API keys share the same prefix
+   */
+  private getCacheKey(exchangeId: string, apiKey?: string): string {
+    if (!apiKey) {
+      return `${exchangeId}-public`;
+    }
+    // Use SHA256 hash of the full API key for uniqueness
+    const hash = crypto.createHash('sha256').update(apiKey).digest('hex').substring(0, 16);
+    return `${exchangeId}-${hash}`;
+  }
+
   async onModuleInit() {
     this.logger.log('Initializing Exchange Service...');
     // In the future, load keys from DB. For now, we init a public client or testnet.
@@ -16,8 +30,8 @@ export class ExchangeService implements OnModuleInit {
   }
 
   async getExchange(exchangeId: 'binance' | 'bybit', apiKey?: string, apiSecret?: string, isTestnet = true): Promise<ccxt.Exchange> {
-    const key = `${exchangeId}-${apiKey ? apiKey.substring(0, 5) : 'public'}`;
-    
+    const key = this.getCacheKey(exchangeId, apiKey);
+
     if (this.exchanges.has(key)) {
       return this.exchanges.get(key);
     }
@@ -29,11 +43,15 @@ export class ExchangeService implements OnModuleInit {
     else if (exchangeId === 'bybit') exchangeClass = ccxt.bybit;
     else throw new Error(`Unsupported exchange: ${exchangeId}`);
 
+    // Only enable verbose mode in development for debugging
+    const isDebugMode = this.configService.get<string>('NODE_ENV') === 'development' ||
+                        this.configService.get<boolean>('CCXT_VERBOSE') === true;
+
     const exchange = new exchangeClass({
       apiKey,
       secret: apiSecret,
       enableRateLimit: true,
-      verbose: true, // DEBUG: Print request/response details
+      verbose: isDebugMode,
       options: {
         defaultType: 'future', // Default to futures
       },

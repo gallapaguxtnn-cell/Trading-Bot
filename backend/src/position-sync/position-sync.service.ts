@@ -31,6 +31,7 @@ interface NormalizedPosition {
   unrealizedPnl: number;
   leverage: number;
   markPrice: number;
+  positionSide: 'LONG' | 'SHORT' | 'BOTH'; // Preserve hedge mode context
 }
 
 @Injectable()
@@ -40,6 +41,22 @@ export class PositionSyncService {
   private readonly BINANCE_MAINNET_URL = 'https://fapi.binance.com';
   private lastSyncTime: Date | null = null;
   private syncInProgress = false;
+
+  /**
+   * Format price with appropriate decimal places based on the price magnitude
+   * This is a fallback when symbol rules aren't available
+   */
+  private formatPrice(price: number): string {
+    if (price >= 1000) {
+      return price.toFixed(2);
+    } else if (price >= 1) {
+      return price.toFixed(4);
+    } else if (price >= 0.01) {
+      return price.toFixed(6);
+    } else {
+      return price.toFixed(8);
+    }
+  }
 
   constructor(
     @InjectRepository(Trade)
@@ -194,12 +211,29 @@ export class PositionSyncService {
 
     this.logger.debug(`[SYNC] Found ${allLocalOpenTrades.length} local open trades to check against ${openPositions.length} positions`);
 
+    // Minimum age (in seconds) for a trade before sync will close it
+    // This prevents race condition where sync closes a trade that was just created by webhook
+    const MIN_TRADE_AGE_SECONDS = 30;
+    const now = Date.now();
+
     for (const trade of allLocalOpenTrades) {
       const matchingPosition = openPositions.find(p =>
         p.symbol === trade.symbol && p.side === trade.side
       );
 
       if (!matchingPosition) {
+        // Race condition protection: Don't close trades that were created recently
+        const tradeAgeMs = now - new Date(trade.timestamp).getTime();
+        const tradeAgeSeconds = tradeAgeMs / 1000;
+
+        if (tradeAgeSeconds < MIN_TRADE_AGE_SECONDS) {
+          this.logger.debug(
+            `[SYNC] Trade ${trade.id} for ${trade.symbol} is only ${tradeAgeSeconds.toFixed(1)}s old. ` +
+            `Waiting at least ${MIN_TRADE_AGE_SECONDS}s before closing to avoid race condition.`
+          );
+          continue;
+        }
+
         if (trade.type === 'LIMIT' && trade.exchangeOrderId) {
           const orderStatus = await this.checkOrderStatus(
             trade.exchangeOrderId,
@@ -257,9 +291,24 @@ export class PositionSyncService {
           unrealizedPnl: parseFloat(pos.unRealizedProfit),
           leverage: parseFloat(pos.leverage),
           markPrice: parseFloat(pos.markPrice),
+          positionSide: pos.positionSide, // Preserve hedge mode context (LONG/SHORT/BOTH)
         };
       });
-    } catch (error) {
+    } catch (error: any) {
+      const statusCode = error.response?.status;
+      if (statusCode === 401) {
+        this.logger.error(
+          `[BINANCE AUTH ERROR] API Key is invalid or expired. ` +
+          `Please update your Binance API credentials. Status: 401 Unauthorized`
+        );
+        throw new Error('Binance API Key invalid or expired. Please update credentials.');
+      } else if (statusCode === 403) {
+        this.logger.error(
+          `[BINANCE AUTH ERROR] API Key lacks required permissions or IP is not whitelisted. ` +
+          `Please check your Binance API settings. Status: 403 Forbidden`
+        );
+        throw new Error('Binance API Key lacks permissions. Check API settings and IP whitelist.');
+      }
       this.logger.error(`Failed to fetch Binance positions: ${error.message}`);
       throw error;
     }
@@ -283,8 +332,23 @@ export class PositionSyncService {
           unrealizedPnl: parseFloat(pos.unrealisedPnl),
           leverage: parseFloat(pos.leverage),
           markPrice: parseFloat(pos.markPrice),
+          positionSide: 'BOTH' as const, // Bybit uses one-way mode (positionIdx: 0)
         }));
-    } catch (error) {
+    } catch (error: any) {
+      const statusCode = error.response?.status;
+      if (statusCode === 401) {
+        this.logger.error(
+          `[BYBIT AUTH ERROR] API Key is invalid or expired. ` +
+          `Please update your Bybit API credentials. Status: 401 Unauthorized`
+        );
+        throw new Error('Bybit API Key invalid or expired. Please update credentials.');
+      } else if (statusCode === 403) {
+        this.logger.error(
+          `[BYBIT AUTH ERROR] API Key lacks required permissions or IP is not whitelisted. ` +
+          `Please check your Bybit API settings (Contract Trading permission required). Status: 403 Forbidden`
+        );
+        throw new Error('Bybit API Key lacks permissions. Check API settings and IP whitelist.');
+      }
       this.logger.error(`Failed to fetch Bybit positions: ${error.message}`);
       throw error;
     }
@@ -351,17 +415,22 @@ export class PositionSyncService {
         await this.cancelOpenOrders(trade, exchange, apiKey, apiSecret, isTestnet);
       }
 
+      // Mark as closed - these weren't actually closed separately
+      // The P&L is tracked on the primary trade, not the duplicates
       trade.status = 'CLOSED';
-      trade.closeReason = 'MANUAL';
+      trade.closeReason = 'MANUAL'; // Use MANUAL as it's the closest available reason
       trade.closedAt = new Date();
-      trade.pnl = 0 as any;
       trade.binancePositionAmt = 0 as any;
-      trade.exitPrice = trade.entryPrice;
+      // Don't set fake exitPrice/pnl - leave them as-is or null to indicate consolidation
+      // This preserves data integrity and prevents misleading P&L calculations
+      trade.exitPrice = null as any;
+      trade.pnl = null as any;
       trade.stopLossOrderId = null;
       trade.takeProfitOrderId = null;
+      trade.error = 'Duplicate trade consolidated into primary trade';
       await this.tradesRepository.save(trade);
 
-      this.logger.debug(`[CONSOLIDATE] Closed duplicate trade ${trade.id} for ${trade.symbol}`);
+      this.logger.debug(`[CONSOLIDATE] Consolidated duplicate trade ${trade.id} into ${primaryTrade.id} for ${trade.symbol}`);
     }
 
     this.logger.log(
@@ -637,14 +706,17 @@ export class PositionSyncService {
         if (newStopLoss) {
             this.logger.log(`[BREAK AGAIN] ${triggeredLevel} for ${trade.symbol}. New SL: ${newStopLoss}`);
             
+            // Use dynamic price formatting based on price magnitude
+            const formattedStopLoss = this.formatPrice(newStopLoss);
+
             if (strategy.exchange === Exchange.BYBIT) {
                  await this.bybitClient.setTradingStop(
-                     apiKey, 
-                     apiSecret, 
-                     strategy.isTestnet, 
-                     trade.symbol, 
-                     side === 'BUY' ? 'Buy' : 'Sell', 
-                     newStopLoss.toFixed(2)
+                     apiKey,
+                     apiSecret,
+                     strategy.isTestnet,
+                     trade.symbol,
+                     side === 'BUY' ? 'Buy' : 'Sell',
+                     formattedStopLoss
                  );
             } else {
                      try {
@@ -661,7 +733,7 @@ export class PositionSyncService {
                         params.append('symbol', trade.symbol);
                         params.append('side', closeSide);
                         params.append('type', 'STOP_MARKET');
-                        params.append('stopPrice', newStopLoss.toFixed(2));
+                        params.append('stopPrice', formattedStopLoss);
                         params.append('closePosition', 'true');
                         params.append('workingType', 'MARK_PRICE');
                         params.append('timestamp', Date.now().toString());

@@ -90,15 +90,34 @@ export class WebhookService {
     return symbol;
   }
 
-  // Cache for symbol precision rules: symbol -> { qtyStep: number, priceTick: number, minQty: number }
+  // Cache for symbol precision rules: exchange:symbol -> { qtyStep: number, priceTick: number, minQty: number }
   private symbolRules: Map<string, { qtyStep: string; priceTick: string; minQty: string }> = new Map();
 
-  private async getSymbolRules(symbol: string, isTestnet: boolean): Promise<{ qtyStep: string; priceTick: string; minQty: string }> {
-    const cached = this.symbolRules.get(symbol);
+  private async getSymbolRules(
+    symbol: string,
+    isTestnet: boolean,
+    exchange: Exchange = Exchange.BINANCE
+  ): Promise<{ qtyStep: string; priceTick: string; minQty: string }> {
+    const cacheKey = `${exchange}:${symbol}`;
+    const cached = this.symbolRules.get(cacheKey);
     if (cached) {
         return cached;
     }
 
+    // Use Bybit API for Bybit symbols
+    if (exchange === Exchange.BYBIT) {
+        try {
+            const rules = await this.bybitClient.getSymbolRules(isTestnet, symbol);
+            this.symbolRules.set(cacheKey, rules);
+            this.logger.log(`[BYBIT] Fetched rules for ${symbol}: Step=${rules.qtyStep}, Tick=${rules.priceTick}`);
+            return rules;
+        } catch (error) {
+            this.logger.error(`[BYBIT] Failed to fetch symbol rules: ${error.message}`);
+            return { qtyStep: '0.001', priceTick: '0.01', minQty: '0.001' };
+        }
+    }
+
+    // Default: Binance
     try {
         const baseURL = isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
         const response = await axios.get(`${baseURL}/fapi/v1/exchangeInfo`);
@@ -106,7 +125,7 @@ export class WebhookService {
 
         if (!symbolInfo) {
             this.logger.warn(`[BINANCE] Symbol ${symbol} not found in exchangeInfo. Using defaults.`);
-            return { qtyStep: '0.001', priceTick: '0.01', minQty: '0.001' }; 
+            return { qtyStep: '0.001', priceTick: '0.01', minQty: '0.001' };
         }
 
         const lotSizeFilter = symbolInfo.filters.find((f: any) => f.filterType === 'LOT_SIZE');
@@ -118,7 +137,7 @@ export class WebhookService {
             priceTick: priceFilter ? priceFilter.tickSize : '0.01'
         };
 
-        this.symbolRules.set(symbol, rules);
+        this.symbolRules.set(cacheKey, rules);
         this.logger.log(`[BINANCE] Fetched rules for ${symbol}: Step=${rules.qtyStep}, Tick=${rules.priceTick}`);
         return rules;
     } catch (error) {
@@ -351,6 +370,31 @@ export class WebhookService {
     }
   }
 
+  /**
+   * Get current position mode from Binance account
+   */
+  private async getBinancePositionMode(
+    apiKey: string,
+    apiSecret: string,
+    isTestnet: boolean
+  ): Promise<boolean> {
+    const baseURL = isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
+    const timestamp = Date.now();
+    const queryString = `timestamp=${timestamp}`;
+    const signature = crypto.createHmac('sha256', apiSecret).update(queryString).digest('hex');
+
+    try {
+      const response = await axios.get(
+        `${baseURL}/fapi/v1/positionSide/dual?${queryString}&signature=${signature}`,
+        { headers: { 'X-MBX-APIKEY': apiKey } }
+      );
+      return response.data.dualSidePosition === true;
+    } catch (error: any) {
+      this.logger.warn(`[POSITION MODE] Failed to get current mode: ${error.message}`);
+      return false; // Assume one-way mode on error
+    }
+  }
+
   private async configureBinancePositionSettings(
     symbol: string,
     leverage: number,
@@ -362,13 +406,21 @@ export class WebhookService {
   ): Promise<void> {
     const baseURL = isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
 
-    try {
-      const dualTimestamp = Date.now();
-      const dualQueryString = `dualSidePosition=${hedgeMode}&timestamp=${dualTimestamp}`;
-      const dualSignature = crypto.createHmac('sha256', apiSecret).update(dualQueryString).digest('hex');
+    // First, check current position mode to avoid unnecessary API calls
+    const currentMode = await this.getBinancePositionMode(apiKey, apiSecret, isTestnet);
+    if (currentMode === hedgeMode) {
+      this.logger.debug(
+        `[POSITION MODE] Already in ${hedgeMode ? 'Hedge Mode' : 'One-Way Mode'} - no change needed`
+      );
+    } else {
+      // Only try to change if mode is different
+      try {
+        const dualTimestamp = Date.now();
+        const dualQueryString = `dualSidePosition=${hedgeMode}&timestamp=${dualTimestamp}`;
+        const dualSignature = crypto.createHmac('sha256', apiSecret).update(dualQueryString).digest('hex');
 
-      this.logger.log(`[POSITION MODE] BEFORE API CALL - Setting hedge mode: ${hedgeMode}, URL: ${baseURL}/fapi/v1/positionSide/dual`);
-      this.logger.debug(`[POSITION MODE] Request params: ${dualQueryString}`);
+        this.logger.log(`[POSITION MODE] Changing from ${currentMode ? 'Hedge' : 'One-Way'} to ${hedgeMode ? 'Hedge' : 'One-Way'}`);
+        this.logger.debug(`[POSITION MODE] Request params: ${dualQueryString}`);
 
       await axios.post(
         `${baseURL}/fapi/v1/positionSide/dual`,
@@ -381,16 +433,20 @@ export class WebhookService {
       const errorCode = error.response?.data?.code;
       const errorMsg = error.response?.data?.msg;
 
-      // Error -4300: "No need to change position side." - Position mode already matches the requested setting
-      if (errorCode === -4300) {
+      // Error -4300 or "No need to change position side" message: Position mode already matches the requested setting
+      // Note: Binance Testnet sometimes returns -4059 with "No need to change" message instead of -4300
+      const isAlreadyConfigured = errorCode === -4300 ||
+        (errorMsg && errorMsg.toLowerCase().includes('no need to change'));
+
+      if (isAlreadyConfigured) {
         this.logger.debug(
           `[POSITION MODE] Already configured correctly\n` +
           `  Requested Mode: ${hedgeMode ? 'Hedge Mode (Dual Position)' : 'One-Way Mode'}\n` +
-          `  Status: No change needed (error -4300 is normal)\n` +
+          `  Status: No change needed (code ${errorCode} is normal)\n` +
           `  This is not an error - the account is already in the correct position mode`
         );
       }
-      // Error -4059: Position mode cannot be changed if positions exist
+      // Error -4059: Position mode cannot be changed if positions exist (only if NOT "no need to change")
       else if (errorCode === -4059) {
         this.logger.error(
           `[POSITION MODE] CANNOT CHANGE - Open positions exist!\n` +
@@ -420,6 +476,7 @@ export class WebhookService {
         );
       }
     }
+    } // Close else block
 
     try {
       const marginTimestamp = Date.now();
@@ -1179,6 +1236,31 @@ export class WebhookService {
 
     this.logger.log(`[QUANTITY CALC] Starting calculation - signal.quantity: ${signal.quantity}, signal.accountPercentage: ${signal.accountPercentage}, strategy.useAccountPercentage: ${strategy.useAccountPercentage}, strategy.accountPercentage: ${strategy.accountPercentage}, effectivePrice: ${effectivePrice}`);
 
+    // Validate that price is provided when needed for percentage-based calculations
+    const needsPriceForCalculation = !signal.quantity && (signal.accountPercentage || (strategy.useAccountPercentage && strategy.accountPercentage));
+    if (needsPriceForCalculation && !effectivePrice) {
+      const errorMsg = `Price is required for percentage-based quantity calculation. ` +
+        `Please include "price" field in your webhook payload. ` +
+        `Strategy: ${strategy.name} | Symbol: ${normalizedSymbol} | Side: ${side}`;
+
+      this.logger.error(`[PRICE ERROR] ${errorMsg}`);
+
+      const tradeData: Partial<Trade> = {
+        strategyId: strategy.id,
+        symbol: normalizedSymbol,
+        side,
+        type: 'MARKET',
+        status: 'ERROR',
+        error: `Missing price in webhook. Add "price" field to your TradingView alert payload.`,
+      };
+      await this.tradesService.create(tradeData);
+
+      return {
+        status: 'error',
+        message: errorMsg
+      };
+    }
+
     if (signal.quantity) {
       quantity = signal.quantity;
       notional = quantity * effectivePrice!;
@@ -1373,11 +1455,22 @@ export class WebhookService {
           );
         } catch (error: any) {
           this.logger.error(
-            `[POSITION VERIFY] Failed - Position not found after entry order.\n` +
-            `  This may indicate the entry order was not filled or a system delay.\n` +
-            `  Proceeding with caution...`
+            `[POSITION VERIFY] CRITICAL - Position not found after entry order.\n` +
+            `  This may indicate the entry order was not filled.\n` +
+            `  Cannot create SL/TP without a confirmed position.`
           );
-          // Don't throw here - let SL/TP creation attempt and handle errors there
+
+          // Update trade status to reflect the issue
+          await this.tradesService.updateTrade(savedTrade.id, {
+            status: 'ERROR',
+            error: 'Position not confirmed on exchange after entry order. Order may not have filled.',
+          });
+
+          return {
+            status: 'error',
+            message: `Entry order sent but position not confirmed on Binance. The order may not have filled. Please check your Binance Futures account.`,
+            trade: savedTrade,
+          };
         }
       }
 
@@ -1395,7 +1488,7 @@ export class WebhookService {
         }
 
         if (stopLossPrice) {
-          const rules = await this.getSymbolRules(normalizedSymbol, strategy.isTestnet);
+          const rules = await this.getSymbolRules(normalizedSymbol, strategy.isTestnet, exchange);
 
           if (exchange === Exchange.BYBIT) {
             const bybitSide = side === 'BUY' ? 'Buy' : 'Sell';
@@ -1430,7 +1523,7 @@ export class WebhookService {
 
             this.logger.log(`[TP${tp.id}] Placing partial TP at ${tpPrice.toFixed(2)} for ${this.formatQuantityWithUsdt(tpQty, tpPrice)} (${tp.qtyPercent}%)`);
 
-            const rules = await this.getSymbolRules(normalizedSymbol, strategy.isTestnet);
+            const rules = await this.getSymbolRules(normalizedSymbol, strategy.isTestnet, exchange);
 
             if (exchange === Exchange.BYBIT) {
               await this.bybitClient.createOrder(
@@ -1591,11 +1684,10 @@ export class WebhookService {
 
     const bybitSide = side === 'BUY' ? 'Buy' : 'Sell';
     const orderType = isLimitOrder ? 'Limit' : 'Market';
-    // For Bybit, let's keep simple formatting or we need Bybit specific dynamic rules too. 
-    // Assuming 3 decimal is safe for Bybit generic or we should add Bybit Exchange Info fetch too.
-    // For now, let's use the same rounding if possible, or fallback.
-    const rules = await this.getSymbolRules(symbol, strategy.isTestnet); 
-    const formattedQty = this.normalizeQuantity(quantity, rules.qtyStep, rules.minQty); 
+
+    // Fetch Bybit-specific symbol rules
+    const rules = await this.getSymbolRules(symbol, strategy.isTestnet, Exchange.BYBIT);
+    const formattedQty = this.normalizeQuantity(quantity, rules.qtyStep, rules.minQty);
     const formattedPrice = signal.price ? this.roundTick(signal.price, rules.priceTick) : undefined;
 
     this.logger.log(`[BYBIT] Creating ${orderType} order: ${bybitSide} ${formattedQty} ${symbol}`);
@@ -1608,7 +1700,7 @@ export class WebhookService {
         symbol,
         side: bybitSide,
         orderType,
-        qty: this.normalizeQuantity(quantity, '0.001', '0.001'), // Should use Bybit rules separately, defaulting for safety or need Bybit specific fetch
+        qty: formattedQty, // Use properly formatted quantity from Bybit rules
         price: isLimitOrder ? formattedPrice : undefined,
       }
     );
