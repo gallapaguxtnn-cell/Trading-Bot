@@ -1352,6 +1352,23 @@ export class WebhookService {
     const shouldSaveInitialQuantity = !strategy.enableCompound && strategy.useAccountPercentage &&
       !(await this.tradesService.findLastTradeWithInitialQuantity(strategy.id));
 
+    // --- AVERAGING: Calculate total position quantity for SL/TP ---
+    // When averaging, we need to cancel old SL/TP orders and create new ones for the TOTAL position
+    let totalPositionQuantity = quantity; // Default: just the new entry
+    let existingTradeQuantity = 0;
+
+    if (isAveragingTrade && activeTrade) {
+      existingTradeQuantity = parseFloat(activeTrade.quantity as any) || 0;
+      totalPositionQuantity = existingTradeQuantity + quantity;
+
+      this.logger.log(
+        `[AVERAGING] Position calculation:\n` +
+        `  Existing position: ${existingTradeQuantity}\n` +
+        `  New entry: ${quantity}\n` +
+        `  Total position: ${totalPositionQuantity}`
+      );
+    }
+
     const tradeData: Partial<Trade> = {
       strategyId: strategy.id,
       symbol: normalizedSymbol,
@@ -1474,6 +1491,63 @@ export class WebhookService {
         }
       }
 
+      // --- AVERAGING: Cancel old SL/TP orders before creating new ones ---
+      // When averaging, the old SL/TP orders are for the old quantity only.
+      // We need to cancel them and create new ones for the TOTAL position.
+      if (isAveragingTrade && activeTrade && exchange === Exchange.BINANCE) {
+        this.logger.log(`[AVERAGING] Canceling old SL/TP orders from previous trade...`);
+
+        // Cancel old Stop Loss order
+        if (activeTrade.stopLossOrderId) {
+          try {
+            const slOrderIds = activeTrade.stopLossOrderId.split('|');
+            for (const slId of slOrderIds) {
+              const orderId = slId.includes(':') ? slId.split(':')[1] : slId;
+              if (orderId && orderId !== 'null' && orderId !== 'undefined') {
+                const timestamp = Date.now();
+                const queryString = `symbol=${normalizedSymbol}&orderId=${orderId}&timestamp=${timestamp}`;
+                const signature = crypto.createHmac('sha256', decryptedSecret).update(queryString).digest('hex');
+                const baseUrl = strategy.isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
+
+                await axios.delete(`${baseUrl}/fapi/v1/order?${queryString}&signature=${signature}`, {
+                  headers: { 'X-MBX-APIKEY': decryptedKey }
+                }).catch(() => {});
+
+                this.logger.log(`[AVERAGING] Cancelled old SL order: ${orderId}`);
+              }
+            }
+          } catch (e) {
+            this.logger.warn(`[AVERAGING] Failed to cancel old SL order: ${e.message}`);
+          }
+        }
+
+        // Cancel old Take Profit orders
+        if (activeTrade.takeProfitOrderId) {
+          try {
+            const tpOrderIds = activeTrade.takeProfitOrderId.split('|');
+            for (const tpEntry of tpOrderIds) {
+              const orderId = tpEntry.includes(':') ? tpEntry.split(':')[1] : tpEntry;
+              if (orderId && orderId !== 'null' && orderId !== 'undefined') {
+                const timestamp = Date.now();
+                const queryString = `symbol=${normalizedSymbol}&orderId=${orderId}&timestamp=${timestamp}`;
+                const signature = crypto.createHmac('sha256', decryptedSecret).update(queryString).digest('hex');
+                const baseUrl = strategy.isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
+
+                await axios.delete(`${baseUrl}/fapi/v1/order?${queryString}&signature=${signature}`, {
+                  headers: { 'X-MBX-APIKEY': decryptedKey }
+                }).catch(() => {});
+
+                this.logger.log(`[AVERAGING] Cancelled old TP order: ${orderId}`);
+              }
+            }
+          } catch (e) {
+            this.logger.warn(`[AVERAGING] Failed to cancel old TP orders: ${e.message}`);
+          }
+        }
+
+        this.logger.log(`[AVERAGING] Old orders cancelled. Creating new SL/TP for total position: ${totalPositionQuantity}`);
+      }
+
       // --- STOP LOSS & TAKE PROFIT CREATION WITH ROLLBACK ---
       // CRITICAL: If SL/TP creation fails, we MUST close the position to avoid unprotected trades
       try {
@@ -1506,6 +1580,9 @@ export class WebhookService {
         }
 
         // --- MULTI-PARTIAL TAKE PROFITS ---
+        // IMPORTANT: When averaging, use totalPositionQuantity to create TPs for the entire position
+        const quantityForTPs = isAveragingTrade ? totalPositionQuantity : quantity;
+
         const tpConfigs = [
           { percent: strategy.takeProfitPercentage1, qtyPercent: strategy.takeProfitQuantity1 || 33, id: 1 },
           { percent: strategy.takeProfitPercentage2, qtyPercent: strategy.takeProfitQuantity2 || 33, id: 2 },
@@ -1514,10 +1591,14 @@ export class WebhookService {
 
         const tpOrderIds: string[] = [];
 
+        if (isAveragingTrade) {
+          this.logger.log(`[TP] Creating TPs for TOTAL position: ${quantityForTPs} (averaging mode)`);
+        }
+
         for (const tp of tpConfigs) {
           if (tp.percent && tp.percent > 0) {
             const tpPrice = this.calculateTakeProfitPrice(side, entryPrice, tp.percent);
-            const tpQty = (quantity * tp.qtyPercent) / 100;
+            const tpQty = (quantityForTPs * tp.qtyPercent) / 100;
 
             if (tpQty <= 0) continue;
 
@@ -1632,6 +1713,27 @@ export class WebhookService {
       });
 
       this.logger.log(`[TRADE] Updated trade ${savedTrade.id} with order details`);
+
+      // Bug 5: Update original trade when averaging
+      // Clear the old SL/TP order IDs since they were cancelled and replaced with new ones
+      // The new trade now holds the SL/TP for the entire position
+      if (isAveragingTrade && activeTrade) {
+        this.logger.log(
+          `[AVERAGING] Updating original trade ${activeTrade.id} - clearing old SL/TP IDs\n` +
+          `  Original trade quantity: ${existingTradeQuantity}\n` +
+          `  New total quantity: ${totalPositionQuantity}\n` +
+          `  New SL/TP orders are on trade: ${savedTrade.id}`
+        );
+
+        await this.tradesService.updateTrade(activeTrade.id, {
+          stopLossOrderId: null,
+          takeProfitOrderId: null,
+          // Mark that this trade's protection was consolidated into another trade
+          error: `SL/TP consolidated into trade ${savedTrade.id} after averaging`,
+        });
+
+        this.logger.log(`[AVERAGING] Original trade ${activeTrade.id} updated - SL/TP IDs cleared`);
+      }
 
       return {
         status: 'success',

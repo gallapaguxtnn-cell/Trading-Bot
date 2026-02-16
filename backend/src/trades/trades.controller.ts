@@ -172,16 +172,18 @@ export class TradesController {
   ): Promise<{ success: boolean; alreadyClosed?: boolean; pnl?: number; error?: string }> {
 
     try {
-      this.logger.log(`[CLOSE] Starting to close trade ${trade.id} for ${trade.symbol}`);
+      this.logger.log(`[CLOSE] Starting to close trade ${trade.id} for ${trade.symbol} (hedgeMode: ${strategy.hedgeMode})`);
 
-      await this.cancelAllOrders(trade.symbol, exchange, apiKey, apiSecret, strategy.isTestnet);
+      await this.cancelAllOrders(trade.symbol, exchange, apiKey, apiSecret, strategy.isTestnet, strategy.hedgeMode, trade.side);
 
       const positionSize = await this.getPositionSize(
         trade.symbol,
         exchange,
         apiKey,
         apiSecret,
-        strategy.isTestnet
+        strategy.isTestnet,
+        strategy.hedgeMode,
+        trade.side
       );
 
       this.logger.log(`[CLOSE] Position size on exchange: ${positionSize}`);
@@ -227,7 +229,9 @@ export class TradesController {
           formattedQty,
           apiKey,
           apiSecret,
-          strategy.isTestnet
+          strategy.isTestnet,
+          strategy.hedgeMode,
+          trade.side
         );
       }
 
@@ -266,23 +270,69 @@ export class TradesController {
     exchange: Exchange,
     apiKey: string,
     apiSecret: string,
-    isTestnet: boolean
+    isTestnet: boolean,
+    hedgeMode: boolean = false,
+    tradeSide?: string
   ): Promise<void> {
     try {
       if (exchange === Exchange.BYBIT) {
         await this.bybitClient.cancelAllOrders(apiKey, apiSecret, isTestnet, symbol);
       } else {
         const baseURL = isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
-        const params = new URLSearchParams();
-        params.append('symbol', symbol);
-        params.append('timestamp', Date.now().toString());
 
-        const queryString = params.toString();
-        const signature = crypto.createHmac('sha256', apiSecret).update(queryString).digest('hex');
+        // First, get all open orders to filter by position side if in hedge mode
+        if (hedgeMode && tradeSide) {
+          const positionSide = tradeSide === 'BUY' ? 'LONG' : 'SHORT';
 
-        await axios.delete(`${baseURL}/fapi/v1/allOpenOrders?${queryString}&signature=${signature}`, {
-          headers: { 'X-MBX-APIKEY': apiKey }
-        });
+          // Get open orders first
+          const getParams = new URLSearchParams();
+          getParams.append('symbol', symbol);
+          getParams.append('timestamp', Date.now().toString());
+          const getQuery = getParams.toString();
+          const getSig = crypto.createHmac('sha256', apiSecret).update(getQuery).digest('hex');
+
+          const ordersResponse = await axios.get(
+            `${baseURL}/fapi/v1/openOrders?${getQuery}&signature=${getSig}`,
+            { headers: { 'X-MBX-APIKEY': apiKey } }
+          );
+
+          // Cancel only orders for this position side
+          const ordersToCancel = ordersResponse.data.filter(
+            (order: any) => order.positionSide === positionSide
+          );
+
+          this.logger.log(`[CLOSE] Hedge mode: Found ${ordersToCancel.length} orders to cancel for ${positionSide}`);
+
+          for (const order of ordersToCancel) {
+            try {
+              const cancelParams = new URLSearchParams();
+              cancelParams.append('symbol', symbol);
+              cancelParams.append('orderId', order.orderId.toString());
+              cancelParams.append('timestamp', Date.now().toString());
+              const cancelQuery = cancelParams.toString();
+              const cancelSig = crypto.createHmac('sha256', apiSecret).update(cancelQuery).digest('hex');
+
+              await axios.delete(`${baseURL}/fapi/v1/order?${cancelQuery}&signature=${cancelSig}`, {
+                headers: { 'X-MBX-APIKEY': apiKey }
+              });
+              this.logger.log(`[CLOSE] Cancelled order ${order.orderId}`);
+            } catch (e: any) {
+              this.logger.warn(`[CLOSE] Failed to cancel order ${order.orderId}: ${e.message}`);
+            }
+          }
+        } else {
+          // One-way mode: cancel all orders for symbol
+          const params = new URLSearchParams();
+          params.append('symbol', symbol);
+          params.append('timestamp', Date.now().toString());
+
+          const queryString = params.toString();
+          const signature = crypto.createHmac('sha256', apiSecret).update(queryString).digest('hex');
+
+          await axios.delete(`${baseURL}/fapi/v1/allOpenOrders?${queryString}&signature=${signature}`, {
+            headers: { 'X-MBX-APIKEY': apiKey }
+          });
+        }
       }
       this.logger.log(`[CLOSE] Cancelled all orders for ${symbol}`);
     } catch (error: any) {
@@ -295,7 +345,9 @@ export class TradesController {
     exchange: Exchange,
     apiKey: string,
     apiSecret: string,
-    isTestnet: boolean
+    isTestnet: boolean,
+    hedgeMode: boolean = false,
+    tradeSide?: string
   ): Promise<number> {
     try {
       if (exchange === Exchange.BYBIT) {
@@ -316,8 +368,19 @@ export class TradesController {
           { headers: { 'X-MBX-APIKEY': apiKey } }
         );
 
-        const position = response.data.find((p: any) => p.symbol === symbol);
-        return position ? Math.abs(parseFloat(position.positionAmt)) : 0;
+        // In hedge mode, filter by positionSide to get the correct position
+        if (hedgeMode && tradeSide) {
+          const positionSide = tradeSide === 'BUY' ? 'LONG' : 'SHORT';
+          const position = response.data.find(
+            (p: any) => p.symbol === symbol && p.positionSide === positionSide
+          );
+          this.logger.log(`[CLOSE] Hedge mode: Looking for ${positionSide} position, found: ${position ? Math.abs(parseFloat(position.positionAmt)) : 0}`);
+          return position ? Math.abs(parseFloat(position.positionAmt)) : 0;
+        } else {
+          // One-way mode: just find any position for the symbol
+          const position = response.data.find((p: any) => p.symbol === symbol && parseFloat(p.positionAmt) !== 0);
+          return position ? Math.abs(parseFloat(position.positionAmt)) : 0;
+        }
       }
     } catch (error: any) {
       this.logger.error(`[CLOSE] Failed to get position size: ${error.message}`);
@@ -374,7 +437,9 @@ export class TradesController {
     quantity: string,
     apiKey: string,
     apiSecret: string,
-    isTestnet: boolean
+    isTestnet: boolean,
+    hedgeMode: boolean = false,
+    tradeSide?: string
   ): Promise<void> {
     const baseURL = isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
     const params = new URLSearchParams();
@@ -382,13 +447,23 @@ export class TradesController {
     params.append('side', side);
     params.append('type', 'MARKET');
     params.append('quantity', quantity);
-    params.append('reduceOnly', 'true');
+
+    // CRITICAL: In hedge mode, we need positionSide instead of reduceOnly
+    // The positionSide should match the position we're closing (LONG for BUY trades, SHORT for SELL trades)
+    if (hedgeMode && tradeSide) {
+      const positionSide = tradeSide === 'BUY' ? 'LONG' : 'SHORT';
+      params.append('positionSide', positionSide);
+      this.logger.log(`[BINANCE] Hedge mode close: positionSide=${positionSide}`);
+    } else {
+      params.append('reduceOnly', 'true');
+    }
+
     params.append('timestamp', Date.now().toString());
 
     const queryString = params.toString();
     const signature = crypto.createHmac('sha256', apiSecret).update(queryString).digest('hex');
 
-    this.logger.log(`[BINANCE] Closing position: ${symbol} ${side} ${quantity}`);
+    this.logger.log(`[BINANCE] Closing position: ${symbol} ${side} ${quantity} (hedgeMode: ${hedgeMode})`);
 
     const response = await axios.post(
       `${baseURL}/fapi/v1/order`,
