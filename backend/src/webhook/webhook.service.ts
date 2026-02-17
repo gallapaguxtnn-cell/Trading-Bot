@@ -601,43 +601,41 @@ export class WebhookService {
     try {
       const closeSide = side === 'BUY' ? 'SELL' : 'BUY';
       const rules = await this.getSymbolRules(symbol, isTestnet);
+      const normalizedQty = this.normalizeQuantity(quantity, rules.qtyStep, rules.minQty);
 
       const params = new URLSearchParams();
       params.append('symbol', symbol);
       params.append('side', closeSide);
-      params.append('type', 'STOP_MARKET'); // MARKET order - executes immediately at market price when triggered
+      params.append('type', 'STOP_MARKET');
+      params.append('quantity', normalizedQty);
 
       if (hedgeMode) {
         const positionSide = side === 'BUY' ? 'LONG' : 'SHORT';
         params.append('positionSide', positionSide);
-        params.append('closePosition', 'true');
-        params.append('quantity', '0');
 
         this.logger.log(
-          `[SL CREATE] BEFORE API CALL - Hedge Mode MARKET Order with Auto-Adjust\n` +
+          `[SL CREATE] Hedge Mode STOP_MARKET - Specific Quantity\n` +
           `  Symbol: ${symbol}\n` +
           `  Entry Side: ${side} → Close Side: ${closeSide}\n` +
           `  Position Side: ${positionSide}\n` +
           `  Stop Price (trigger): ${this.roundTick(stopPrice, rules.priceTick)}\n` +
-          `  Type: STOP_MARKET (executes at market price when triggered)\n` +
-          `  Using closePosition=true (will auto-adjust after partial TPs)\n` +
+          `  Quantity: ${normalizedQty} (raw: ${quantity})\n` +
           `  Rules: step=${rules.qtyStep}, min=${rules.minQty}, tick=${rules.priceTick}`
         );
       } else {
-        params.append('quantity', '0');
-        params.append('closePosition', 'true');
+        params.append('reduceOnly', 'true');
 
         this.logger.log(
-          `[SL CREATE] BEFORE API CALL - One-Way Mode MARKET Order\n` +
+          `[SL CREATE] One-Way Mode STOP_MARKET - Specific Quantity\n` +
           `  Symbol: ${symbol}\n` +
           `  Entry Side: ${side} → Close Side: ${closeSide}\n` +
           `  Stop Price (trigger): ${this.roundTick(stopPrice, rules.priceTick)}\n` +
-          `  Type: STOP_MARKET (executes at market price when triggered)\n` +
-          `  Using closePosition=true (auto-adjusts quantity)`
+          `  Quantity: ${normalizedQty} (raw: ${quantity})\n` +
+          `  Using reduceOnly=true`
         );
       }
 
-      params.append('stopPrice', this.roundTick(stopPrice, rules.priceTick)); // Trigger price
+      params.append('stopPrice', this.roundTick(stopPrice, rules.priceTick));
       params.append('workingType', 'MARK_PRICE');
 
       this.logger.debug(`[SL CREATE] Full request params: ${params.toString()}`);
@@ -685,22 +683,21 @@ export class WebhookService {
       const params = new URLSearchParams();
       params.append('symbol', symbol);
       params.append('side', closeSide);
-      params.append('type', 'TAKE_PROFIT_MARKET'); // MARKET order - executes immediately at market price when triggered
+      params.append('type', 'LIMIT');
       params.append('quantity', normalizedQty);
-      params.append('stopPrice', normalizedStopPrice); // Trigger price
-      params.append('workingType', 'MARK_PRICE');
+      params.append('price', normalizedStopPrice);
+      params.append('timeInForce', 'GTC');
 
       if (hedgeMode) {
         const positionSide = side === 'BUY' ? 'LONG' : 'SHORT';
         params.append('positionSide', positionSide);
 
         this.logger.log(
-          `[TP CREATE] BEFORE API CALL - Hedge Mode MARKET Order\n` +
+          `[TP CREATE] Hedge Mode LIMIT Order\n` +
           `  Symbol: ${symbol}\n` +
           `  Entry Side: ${side} → Close Side: ${closeSide}\n` +
           `  Position Side: ${positionSide}\n` +
-          `  Stop Price (trigger): ${normalizedStopPrice}\n` +
-          `  Type: TAKE_PROFIT_MARKET (executes at market price when triggered)\n` +
+          `  Price: ${normalizedStopPrice}\n` +
           `  Quantity: ${normalizedQty} (raw: ${tpQuantity})\n` +
           `  Rules: step=${rules.qtyStep}, min=${rules.minQty}, tick=${rules.priceTick}`
         );
@@ -708,11 +705,10 @@ export class WebhookService {
         params.append('reduceOnly', 'true');
 
         this.logger.log(
-          `[TP CREATE] BEFORE API CALL - One-Way Mode MARKET Order\n` +
+          `[TP CREATE] One-Way Mode LIMIT Order\n` +
           `  Symbol: ${symbol}\n` +
           `  Entry Side: ${side} → Close Side: ${closeSide}\n` +
-          `  Stop Price (trigger): ${normalizedStopPrice}\n` +
-          `  Type: TAKE_PROFIT_MARKET (executes at market price when triggered)\n` +
+          `  Price: ${normalizedStopPrice}\n` +
           `  Quantity: ${normalizedQty} (raw: ${tpQuantity})\n` +
           `  Using reduceOnly=true`
         );
@@ -1352,20 +1348,11 @@ export class WebhookService {
     const shouldSaveInitialQuantity = !strategy.enableCompound && strategy.useAccountPercentage &&
       !(await this.tradesService.findLastTradeWithInitialQuantity(strategy.id));
 
-    // --- AVERAGING: Calculate total position quantity for SL/TP ---
-    // When averaging, we need to cancel old SL/TP orders and create new ones for the TOTAL position
-    let totalPositionQuantity = quantity; // Default: just the new entry
-    let existingTradeQuantity = 0;
-
     if (isAveragingTrade && activeTrade) {
-      existingTradeQuantity = parseFloat(activeTrade.quantity as any) || 0;
-      totalPositionQuantity = existingTradeQuantity + quantity;
-
       this.logger.log(
-        `[AVERAGING] Position calculation:\n` +
-        `  Existing position: ${existingTradeQuantity}\n` +
-        `  New entry: ${quantity}\n` +
-        `  Total position: ${totalPositionQuantity}`
+        `[AVERAGING] Adding new independent entry for ${normalizedSymbol} ${side}\n` +
+        `  New entry quantity: ${quantity}\n` +
+        `  Original trade ${activeTrade.id} keeps its own SL/TP orders`
       );
     }
 
@@ -1491,63 +1478,6 @@ export class WebhookService {
         }
       }
 
-      // --- AVERAGING: Cancel old SL/TP orders before creating new ones ---
-      // When averaging, the old SL/TP orders are for the old quantity only.
-      // We need to cancel them and create new ones for the TOTAL position.
-      if (isAveragingTrade && activeTrade && exchange === Exchange.BINANCE) {
-        this.logger.log(`[AVERAGING] Canceling old SL/TP orders from previous trade...`);
-
-        // Cancel old Stop Loss order
-        if (activeTrade.stopLossOrderId) {
-          try {
-            const slOrderIds = activeTrade.stopLossOrderId.split('|');
-            for (const slId of slOrderIds) {
-              const orderId = slId.includes(':') ? slId.split(':')[1] : slId;
-              if (orderId && orderId !== 'null' && orderId !== 'undefined') {
-                const timestamp = Date.now();
-                const queryString = `symbol=${normalizedSymbol}&orderId=${orderId}&timestamp=${timestamp}`;
-                const signature = crypto.createHmac('sha256', decryptedSecret).update(queryString).digest('hex');
-                const baseUrl = strategy.isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
-
-                await axios.delete(`${baseUrl}/fapi/v1/order?${queryString}&signature=${signature}`, {
-                  headers: { 'X-MBX-APIKEY': decryptedKey }
-                }).catch(() => {});
-
-                this.logger.log(`[AVERAGING] Cancelled old SL order: ${orderId}`);
-              }
-            }
-          } catch (e) {
-            this.logger.warn(`[AVERAGING] Failed to cancel old SL order: ${e.message}`);
-          }
-        }
-
-        // Cancel old Take Profit orders
-        if (activeTrade.takeProfitOrderId) {
-          try {
-            const tpOrderIds = activeTrade.takeProfitOrderId.split('|');
-            for (const tpEntry of tpOrderIds) {
-              const orderId = tpEntry.includes(':') ? tpEntry.split(':')[1] : tpEntry;
-              if (orderId && orderId !== 'null' && orderId !== 'undefined') {
-                const timestamp = Date.now();
-                const queryString = `symbol=${normalizedSymbol}&orderId=${orderId}&timestamp=${timestamp}`;
-                const signature = crypto.createHmac('sha256', decryptedSecret).update(queryString).digest('hex');
-                const baseUrl = strategy.isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
-
-                await axios.delete(`${baseUrl}/fapi/v1/order?${queryString}&signature=${signature}`, {
-                  headers: { 'X-MBX-APIKEY': decryptedKey }
-                }).catch(() => {});
-
-                this.logger.log(`[AVERAGING] Cancelled old TP order: ${orderId}`);
-              }
-            }
-          } catch (e) {
-            this.logger.warn(`[AVERAGING] Failed to cancel old TP orders: ${e.message}`);
-          }
-        }
-
-        this.logger.log(`[AVERAGING] Old orders cancelled. Creating new SL/TP for total position: ${totalPositionQuantity}`);
-      }
-
       // --- STOP LOSS & TAKE PROFIT CREATION WITH ROLLBACK ---
       // CRITICAL: If SL/TP creation fails, we MUST close the position to avoid unprotected trades
       try {
@@ -1580,8 +1510,8 @@ export class WebhookService {
         }
 
         // --- MULTI-PARTIAL TAKE PROFITS ---
-        // IMPORTANT: When averaging, use totalPositionQuantity to create TPs for the entire position
-        const quantityForTPs = isAveragingTrade ? totalPositionQuantity : quantity;
+        // Each entry (including averaging) creates its own independent TPs for its own quantity
+        const quantityForTPs = quantity;
 
         const tpConfigs = [
           { percent: strategy.takeProfitPercentage1, qtyPercent: strategy.takeProfitQuantity1 || 33, id: 1 },
@@ -1592,7 +1522,7 @@ export class WebhookService {
         const tpOrderIds: string[] = [];
 
         if (isAveragingTrade) {
-          this.logger.log(`[TP] Creating TPs for TOTAL position: ${quantityForTPs} (averaging mode)`);
+          this.logger.log(`[TP] Creating independent TPs for new entry: ${quantityForTPs} (existing entry keeps its own TPs)`);
         }
 
         for (const tp of tpConfigs) {
@@ -1714,25 +1644,12 @@ export class WebhookService {
 
       this.logger.log(`[TRADE] Updated trade ${savedTrade.id} with order details`);
 
-      // Bug 5: Update original trade when averaging
-      // Clear the old SL/TP order IDs since they were cancelled and replaced with new ones
-      // The new trade now holds the SL/TP for the entire position
-      if (isAveragingTrade && activeTrade) {
+      if (isAveragingTrade) {
         this.logger.log(
-          `[AVERAGING] Updating original trade ${activeTrade.id} - clearing old SL/TP IDs\n` +
-          `  Original trade quantity: ${existingTradeQuantity}\n` +
-          `  New total quantity: ${totalPositionQuantity}\n` +
-          `  New SL/TP orders are on trade: ${savedTrade.id}`
+          `[AVERAGING] New independent SL/TP created for new entry on trade ${savedTrade.id}\n` +
+          `  New entry quantity: ${quantity}\n` +
+          `  Original trade ${activeTrade?.id} retains its own SL/TP orders`
         );
-
-        await this.tradesService.updateTrade(activeTrade.id, {
-          stopLossOrderId: null,
-          takeProfitOrderId: null,
-          // Mark that this trade's protection was consolidated into another trade
-          error: `SL/TP consolidated into trade ${savedTrade.id} after averaging`,
-        });
-
-        this.logger.log(`[AVERAGING] Original trade ${activeTrade.id} updated - SL/TP IDs cleared`);
       }
 
       return {
@@ -1841,19 +1758,19 @@ export class WebhookService {
         this.logger.log(`[ENTRY ORDER] Hedge Mode - Position Side: ${positionSide}`);
       }
 
+      const rules = await this.getSymbolRules(symbol, strategy.isTestnet);
+
       if (isLimitOrder) {
         params.append('type', 'LIMIT');
-        const rules = await this.getSymbolRules(symbol, strategy.isTestnet);
         params.append('price', this.roundTick(signal.price!, rules.priceTick));
         params.append('timeInForce', 'GTC');
         this.logger.log(`[BINANCE] Creating LIMIT order at price ${signal.price}`);
       } else {
-        const rules = await this.getSymbolRules(symbol, strategy.isTestnet); // Need rules for quantity anyway
         params.append('type', 'MARKET');
         this.logger.log(`[BINANCE] Creating MARKET order`);
       }
 
-      params.append('quantity', this.normalizeQuantity(quantity, (await this.getSymbolRules(symbol, strategy.isTestnet)).qtyStep, (await this.getSymbolRules(symbol, strategy.isTestnet)).minQty));
+      params.append('quantity', this.normalizeQuantity(quantity, rules.qtyStep, rules.minQty));
 
       const response = await this.createBinanceOrder(params, apiKey, apiSecret, strategy.isTestnet);
 

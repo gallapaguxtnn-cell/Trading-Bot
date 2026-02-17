@@ -111,7 +111,7 @@ export class StopLossService {
       this.logger.warn(`[STOP-LOSS TRIGGERED] ${trade.symbol}`);
       this.logger.warn(`├─ Entry: ${entryPrice.toFixed(2)} → Exit: ${currentPrice.toFixed(2)} (${lossPercent.toFixed(2)}%)`);
       this.logger.warn(`└─ SL Price: ${stopLossPrice.toFixed(2)}`);
-      await this.closePosition(trade, strategy, currentPrice, 'STOP_LOSS');
+      await this.closePosition(trade, strategy, currentPrice, 'STOP_LOSS', apiKey, apiSecret);
     }
   }
 
@@ -151,6 +151,40 @@ export class StopLossService {
     }
   }
 
+  private async cancelTradeSpecificTpOrders(
+    trade: Trade,
+    exchange: Exchange,
+    apiKey: string,
+    apiSecret: string,
+    isTestnet: boolean
+  ): Promise<void> {
+    if (!trade.takeProfitOrderId) return;
+
+    const entries = trade.takeProfitOrderId.split('|');
+    for (const entry of entries) {
+      const orderId = entry.includes(':') ? entry.split(':')[1] : entry;
+      if (!orderId || orderId === 'null' || orderId === 'undefined') continue;
+
+      try {
+        if (exchange === Exchange.BINANCE) {
+          const baseUrl = isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
+          const timestamp = Date.now();
+          const queryString = `symbol=${trade.symbol}&orderId=${orderId}&timestamp=${timestamp}`;
+          const signature = crypto.createHmac('sha256', apiSecret).update(queryString).digest('hex');
+
+          await axios.delete(`${baseUrl}/fapi/v1/order?${queryString}&signature=${signature}`, {
+            headers: { 'X-MBX-APIKEY': apiKey }
+          });
+        } else if (exchange === Exchange.BYBIT) {
+          await this.bybitClient.cancelOrder(apiKey, apiSecret, isTestnet, trade.symbol, orderId);
+        }
+        this.logger.log(`[SL] Cancelled TP order ${orderId} after SL execution`);
+      } catch (e: any) {
+        this.logger.warn(`[SL] Failed to cancel TP order ${orderId}: ${e.message}`);
+      }
+    }
+  }
+
   private async markTradeAsClosed(
     trade: Trade,
     reason: CloseReason,
@@ -162,16 +196,7 @@ export class StopLossService {
     const exitPrice = await this.getLastTradePrice(trade.symbol, exchange, apiKey, apiSecret, isTestnet);
     const currentPrice = exitPrice || await this.getCurrentPrice(trade, { exchange, isTestnet } as any);
 
-    // Cancel any remaining exchange orders
-    try {
-      if (exchange === Exchange.BYBIT) {
-        await this.bybitClient.cancelAllOrders(apiKey, apiSecret, isTestnet, trade.symbol);
-      } else {
-        await this.cancelAllBinanceOrders(apiKey, apiSecret, isTestnet, trade.symbol);
-      }
-    } catch (e) {
-      this.logger.warn(`[SL] Failed to cancel open orders on ${trade.symbol}: ${e.message}`);
-    }
+    await this.cancelTradeSpecificTpOrders(trade, exchange, apiKey, apiSecret, isTestnet);
 
     const pnl = this.calculatePnL(trade, currentPrice);
     const totalPnl = (parseFloat(trade.pnl as any) || 0) + pnl;
@@ -263,11 +288,15 @@ export class StopLossService {
     }
   }
 
-  private async closePosition(trade: Trade, strategy: any, exitPrice: number, reason: CloseReason) {
+  private async closePosition(
+    trade: Trade,
+    strategy: any,
+    exitPrice: number,
+    reason: CloseReason,
+    apiKey: string,
+    apiSecret: string
+  ) {
     try {
-      const apiKey = (await EncryptionUtil.decrypt(strategy.apiKey)).trim();
-      const apiSecret = (await EncryptionUtil.decrypt(strategy.apiSecret)).trim();
-
       const exchange = strategy.exchange || Exchange.BINANCE;
       const closeSide = trade.side === 'BUY' ? 'SELL' : 'BUY';
       const quantity = parseFloat(trade.quantity as any);
@@ -288,19 +317,15 @@ export class StopLossService {
         this.logger.warn(`[BYBIT] Closed ${trade.symbol} via ${reason}`);
       } else if (strategy.isTestnet && exchange === Exchange.BINANCE) {
         const baseURL = this.BINANCE_TESTNET_URL;
-        const endpoint = '/fapi/v1/order';
-
         const params = new URLSearchParams();
         params.append('symbol', trade.symbol);
         params.append('side', closeSide);
         params.append('type', 'MARKET');
         params.append('quantity', quantity.toFixed(3));
 
-        // CRITICAL FIX: Add positionSide for Hedge Mode
         if (strategy.hedgeMode) {
           const positionSide = trade.side === 'BUY' ? 'LONG' : 'SHORT';
           params.append('positionSide', positionSide);
-          this.logger.log(`[CLOSE POSITION] Hedge Mode - Position Side: ${positionSide}`);
         }
 
         params.append('timestamp', Date.now().toString());
@@ -309,7 +334,7 @@ export class StopLossService {
         const signature = crypto.createHmac('sha256', apiSecret).update(queryString).digest('hex');
         const body = `${queryString}&signature=${signature}`;
 
-        await axios.post(`${baseURL}${endpoint}`, body, {
+        await axios.post(`${baseURL}/fapi/v1/order`, body, {
           headers: {
             'X-MBX-APIKEY': apiKey,
             'Content-Type': 'application/x-www-form-urlencoded'
@@ -325,28 +350,17 @@ export class StopLossService {
           strategy.isTestnet
         );
 
-        // CRITICAL FIX: Add positionSide for Hedge Mode in CCXT
         const ccxtParams: any = {};
         if (strategy.hedgeMode) {
           const positionSide = trade.side === 'BUY' ? 'LONG' : 'SHORT';
           ccxtParams.positionSide = positionSide;
-          this.logger.log(`[CLOSE POSITION] Hedge Mode (CCXT) - Position Side: ${positionSide}`);
         }
 
         await exchangeInstance.createMarketOrder(trade.symbol, closeSide.toLowerCase(), quantity, ccxtParams);
         this.logger.warn(`[CLOSED] ${trade.symbol} via ${reason}`);
       }
 
-      // Cancel any remaining exchange TP orders
-      try {
-        if (exchange === Exchange.BYBIT) {
-          await this.bybitClient.cancelAllOrders(apiKey, apiSecret, strategy.isTestnet, trade.symbol);
-        } else {
-          await this.cancelAllBinanceOrders(apiKey, apiSecret, strategy.isTestnet, trade.symbol);
-        }
-      } catch (e) {
-        this.logger.warn(`[SL] Failed to cancel open orders on ${trade.symbol}: ${e.message}`);
-      }
+      await this.cancelTradeSpecificTpOrders(trade, exchange, apiKey, apiSecret, strategy.isTestnet);
 
       const pnl = this.calculatePnL(trade, exitPrice);
       const totalPnl = (parseFloat(trade.pnl as any) || 0) + pnl;
@@ -365,18 +379,6 @@ export class StopLossService {
     } catch (error) {
       this.logger.error(`Failed to close position: ${error.message}`);
     }
-  }
-
-  private async cancelAllBinanceOrders(apiKey: string, apiSecret: string, isTestnet: boolean, symbol: string): Promise<void> {
-    const baseURL = isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
-    const params = new URLSearchParams();
-    params.append('symbol', symbol);
-    params.append('timestamp', Date.now().toString());
-    const queryString = params.toString();
-    const signature = crypto.createHmac('sha256', apiSecret).update(queryString).digest('hex');
-    await axios.delete(`${baseURL}/fapi/v1/allOpenOrders?${queryString}&signature=${signature}`, {
-      headers: { 'X-MBX-APIKEY': apiKey }
-    });
   }
 
   private calculatePnL(trade: Trade, exitPrice: number): number {

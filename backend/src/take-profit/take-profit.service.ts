@@ -53,7 +53,6 @@ export class TakeProfitService {
     const apiKey = (await EncryptionUtil.decrypt(strategy.apiKey)).trim();
     const apiSecret = (await EncryptionUtil.decrypt(strategy.apiSecret)).trim();
 
-    // --- Bybit trading stop (position-level, no manual monitoring needed) ---
     if (trade.takeProfitOrderId && trade.takeProfitOrderId.startsWith('BYBIT_TRADING_STOP')) {
       const positions = await this.bybitClient.getPositions(apiKey, apiSecret, strategy.isTestnet, trade.symbol);
       const position = positions.find(p =>
@@ -67,13 +66,11 @@ export class TakeProfitService {
       return;
     }
 
-    // --- Exchange TP orders tracking (pipe-delimited: "1:orderId|2:orderId|3:orderId") ---
     if (trade.takeProfitOrderId && trade.takeProfitOrderId.includes(':')) {
       await this.checkExchangeTakeProfit(trade, strategy, exchange, apiKey, apiSecret);
       return;
     }
 
-    // --- Manual price-based TP monitoring (fallback when exchange orders not placed) ---
     const currentPrice = await this.getCurrentPrice(trade, strategy);
     if (!currentPrice) return;
 
@@ -94,18 +91,18 @@ export class TakeProfitService {
       this.logger.log(`[TAKE-PROFIT 1 HIT] ${trade.symbol}`);
       this.logger.log(`├─ Entry: ${entryPrice.toFixed(2)} → Exit: ${currentPrice.toFixed(2)} (${profitPercent > 0 ? '+' : ''}${profitPercent.toFixed(2)}%)`);
       trade.lastTpLevel = 1;
-      await this.closePosition(trade, strategy, currentPrice, 'TAKE_PROFIT_1', tp1Qty / 100);
+      await this.closePosition(trade, strategy, currentPrice, 'TAKE_PROFIT_1', tp1Qty / 100, apiKey, apiSecret);
     } else if (lastTpLevel < 2 && tp2 && this.shouldTrigger(trade, currentPrice, tp2)) {
       const closePercent = tp2Qty / (100 - tp1Qty);
       this.logger.log(`[TAKE-PROFIT 2 HIT] ${trade.symbol}`);
       this.logger.log(`├─ Entry: ${entryPrice.toFixed(2)} → Exit: ${currentPrice.toFixed(2)} (${profitPercent > 0 ? '+' : ''}${profitPercent.toFixed(2)}%)`);
       trade.lastTpLevel = 2;
-      await this.closePosition(trade, strategy, currentPrice, 'TAKE_PROFIT_2', closePercent);
+      await this.closePosition(trade, strategy, currentPrice, 'TAKE_PROFIT_2', closePercent, apiKey, apiSecret);
     } else if (lastTpLevel < 3 && tp3 && this.shouldTrigger(trade, currentPrice, tp3)) {
       this.logger.log(`[TAKE-PROFIT 3 HIT] ${trade.symbol}`);
       this.logger.log(`├─ Entry: ${entryPrice.toFixed(2)} → Exit: ${currentPrice.toFixed(2)} (${profitPercent > 0 ? '+' : ''}${profitPercent.toFixed(2)}%)`);
       trade.lastTpLevel = 3;
-      await this.closePosition(trade, strategy, currentPrice, 'TAKE_PROFIT_3', 1.0);
+      await this.closePosition(trade, strategy, currentPrice, 'TAKE_PROFIT_3', 1.0, apiKey, apiSecret);
     }
   }
 
@@ -132,7 +129,7 @@ export class TakeProfitService {
       if (status === 'FILLED' || status === 'Filled') {
         filledLevels.add(level);
         this.logger.log(`[TP${level}] Exchange order filled for ${trade.symbol} (orderId: ${orderId})`);
-      } else if (status === 'NEW' || status === 'New') {
+      } else if (status === 'NEW' || status === 'New' || status === 'PartiallyFilled') {
         anyActive = true;
         allDone = false;
       } else if (status === 'CANCELED' || status === 'EXPIRED' || status === 'Cancelled' || status === 'Deactivated') {
@@ -142,7 +139,6 @@ export class TakeProfitService {
       }
     }
 
-    // Determine newly filled levels (not yet processed)
     const newlyFilled: number[] = [];
     for (const level of [1, 2, 3]) {
       if (filledLevels.has(level) && (trade.lastTpLevel || 0) < level) {
@@ -161,9 +157,6 @@ export class TakeProfitService {
         const pct = l === 1 ? tp1Qty : l === 2 ? tp2Qty : (strategy.takeProfitQuantity3 || 34);
         const tpPrice = this.calculateTakeProfit(trade, strategy, l);
 
-        // closePercent is relative to current remaining quantity
-        // Each TP was placed with a fixed quantity = initial * pct / 100
-        // But since we track via remaining qty, use: closedQty = newQty * (pct / sumOfUnprocessedPcts)
         const sumRemaining = [1, 2, 3]
           .filter(lvl => !filledLevels.has(lvl) || lvl > highestProcessed)
           .filter(lvl => lvl >= l)
@@ -191,6 +184,8 @@ export class TakeProfitService {
         trade.lastTpLevel = highestProcessed;
         await this.tradesRepository.save(trade);
         this.logger.log(`└─ Trade fully closed via TP${highestProcessed} | Total P&L: ${accumulatedPnl > 0 ? '+' : ''}${accumulatedPnl.toFixed(2)} USDT`);
+
+        await this.cancelTradeStopLoss(trade, exchange, apiKey, apiSecret, strategy.isTestnet);
       } else {
         trade.quantity = newQty as any;
         trade.lastTpLevel = highestProcessed;
@@ -198,15 +193,189 @@ export class TakeProfitService {
         trade.binancePositionAmt = newQty as any;
         await this.tradesRepository.save(trade);
         this.logger.log(`├─ Remaining: ${this.formatQuantityWithUsdt(newQty, currentPrice)}`);
+
+        if (exchange === Exchange.BINANCE && trade.stopLossOrderId) {
+          await this.adjustStopLossForRemainingQty(trade, strategy, exchange, apiKey, apiSecret, newQty);
+        }
       }
       return;
     }
 
-    // All remaining orders cancelled/expired and no new fills — fall back to manual monitoring
     if (allDone && !anyActive) {
       this.logger.warn(`[TP] All exchange TP orders inactive for ${trade.symbol}, switching to manual monitoring`);
       trade.takeProfitOrderId = null;
       await this.tradesRepository.save(trade);
+    }
+  }
+
+  private async cancelTradeStopLoss(
+    trade: Trade,
+    exchange: Exchange,
+    apiKey: string,
+    apiSecret: string,
+    isTestnet: boolean
+  ): Promise<void> {
+    if (!trade.stopLossOrderId || trade.stopLossOrderId.startsWith('BYBIT_TRADING_STOP')) return;
+
+    try {
+      if (exchange === Exchange.BINANCE) {
+        await this.cancelBinanceOrder(trade.stopLossOrderId, trade.symbol, apiKey, apiSecret, isTestnet);
+        this.logger.log(`[SL] Cancelled SL order ${trade.stopLossOrderId} after all TPs filled`);
+      }
+    } catch (e: any) {
+      this.logger.warn(`[SL] Failed to cancel SL order ${trade.stopLossOrderId}: ${e.message}`);
+    }
+  }
+
+  private async adjustStopLossForRemainingQty(
+    trade: Trade,
+    strategy: any,
+    exchange: Exchange,
+    apiKey: string,
+    apiSecret: string,
+    remainingQty: number
+  ): Promise<void> {
+    if (!trade.stopLossOrderId) return;
+
+    try {
+      const stopPrice = await this.getBinanceOrderStopPrice(
+        trade.stopLossOrderId, trade.symbol, apiKey, apiSecret, strategy.isTestnet
+      );
+
+      if (!stopPrice) {
+        this.logger.warn(`[SL ADJUST] Could not get stopPrice for SL ${trade.stopLossOrderId}, skipping adjustment`);
+        return;
+      }
+
+      await this.cancelBinanceOrder(trade.stopLossOrderId, trade.symbol, apiKey, apiSecret, strategy.isTestnet);
+
+      const newSlId = await this.createBinanceStopLossOrder(
+        trade.symbol,
+        trade.side as 'BUY' | 'SELL',
+        remainingQty,
+        stopPrice,
+        apiKey,
+        apiSecret,
+        strategy.isTestnet,
+        strategy.hedgeMode
+      );
+
+      trade.stopLossOrderId = newSlId;
+      await this.tradesRepository.save(trade);
+
+      this.logger.log(`[SL ADJUST] Adjusted SL for trade ${trade.id}: new qty=${remainingQty}, orderId=${newSlId}`);
+    } catch (e: any) {
+      this.logger.warn(`[SL ADJUST] Failed to adjust SL for trade ${trade.id}: ${e.message}`);
+    }
+  }
+
+  private async cancelBinanceOrder(
+    orderId: string,
+    symbol: string,
+    apiKey: string,
+    apiSecret: string,
+    isTestnet: boolean
+  ): Promise<void> {
+    const baseUrl = isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
+    const timestamp = Date.now();
+    const queryString = `symbol=${symbol}&orderId=${orderId}&timestamp=${timestamp}`;
+    const signature = crypto.createHmac('sha256', apiSecret).update(queryString).digest('hex');
+
+    await axios.delete(`${baseUrl}/fapi/v1/order?${queryString}&signature=${signature}`, {
+      headers: { 'X-MBX-APIKEY': apiKey }
+    });
+  }
+
+  private async getBinanceOrderStopPrice(
+    orderId: string,
+    symbol: string,
+    apiKey: string,
+    apiSecret: string,
+    isTestnet: boolean
+  ): Promise<number | null> {
+    try {
+      const baseUrl = isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
+      const timestamp = Date.now();
+      const queryString = `symbol=${symbol}&orderId=${orderId}&timestamp=${timestamp}`;
+      const signature = crypto.createHmac('sha256', apiSecret).update(queryString).digest('hex');
+
+      const response = await axios.get(`${baseUrl}/fapi/v1/order?${queryString}&signature=${signature}`, {
+        headers: { 'X-MBX-APIKEY': apiKey }
+      });
+
+      return parseFloat(response.data.stopPrice) || null;
+    } catch {
+      return null;
+    }
+  }
+
+  private async createBinanceStopLossOrder(
+    symbol: string,
+    side: 'BUY' | 'SELL',
+    quantity: number,
+    stopPrice: number,
+    apiKey: string,
+    apiSecret: string,
+    isTestnet: boolean,
+    hedgeMode: boolean = false
+  ): Promise<string> {
+    const baseUrl = isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
+    const closeSide = side === 'BUY' ? 'SELL' : 'BUY';
+    const qty = quantity.toFixed(3);
+
+    const params = new URLSearchParams();
+    params.append('symbol', symbol);
+    params.append('side', closeSide);
+    params.append('type', 'STOP_MARKET');
+    params.append('quantity', qty);
+    params.append('stopPrice', stopPrice.toFixed(2));
+    params.append('workingType', 'MARK_PRICE');
+
+    if (hedgeMode) {
+      const positionSide = side === 'BUY' ? 'LONG' : 'SHORT';
+      params.append('positionSide', positionSide);
+    } else {
+      params.append('reduceOnly', 'true');
+    }
+
+    params.append('timestamp', Date.now().toString());
+
+    const queryString = params.toString();
+    const signature = crypto.createHmac('sha256', apiSecret).update(queryString).digest('hex');
+
+    const response = await axios.post(
+      `${baseUrl}/fapi/v1/order`,
+      `${queryString}&signature=${signature}`,
+      { headers: { 'X-MBX-APIKEY': apiKey, 'Content-Type': 'application/x-www-form-urlencoded' } }
+    );
+
+    return response.data.orderId.toString();
+  }
+
+  private async cancelTradeSpecificTpOrders(
+    trade: Trade,
+    exchange: Exchange,
+    apiKey: string,
+    apiSecret: string,
+    isTestnet: boolean
+  ): Promise<void> {
+    if (!trade.takeProfitOrderId) return;
+
+    const entries = trade.takeProfitOrderId.split('|');
+    for (const entry of entries) {
+      const orderId = entry.includes(':') ? entry.split(':')[1] : entry;
+      if (!orderId || orderId === 'null' || orderId === 'undefined') continue;
+
+      try {
+        if (exchange === Exchange.BINANCE) {
+          await this.cancelBinanceOrder(orderId, trade.symbol, apiKey, apiSecret, isTestnet);
+        } else if (exchange === Exchange.BYBIT) {
+          await this.bybitClient.cancelOrder(apiKey, apiSecret, isTestnet, trade.symbol, orderId);
+        }
+        this.logger.log(`[TP] Cancelled TP order ${orderId}`);
+      } catch (e: any) {
+        this.logger.warn(`[TP] Failed to cancel TP order ${orderId}: ${e.message}`);
+      }
     }
   }
 
@@ -378,12 +547,11 @@ export class TakeProfitService {
     strategy: any,
     exitPrice: number,
     reason: CloseReason,
-    closePercent: number
+    closePercent: number,
+    apiKey: string,
+    apiSecret: string
   ) {
     try {
-      const apiKey = (await EncryptionUtil.decrypt(strategy.apiKey)).trim();
-      const apiSecret = (await EncryptionUtil.decrypt(strategy.apiSecret)).trim();
-
       const exchange = strategy.exchange || Exchange.BINANCE;
       const closeSide = trade.side === 'BUY' ? 'SELL' : 'BUY';
       const quantity = parseFloat(trade.quantity as any);
@@ -405,19 +573,15 @@ export class TakeProfitService {
         this.logger.log(`[BYBIT] Closed ${(closePercent * 100).toFixed(0)}% of ${trade.symbol} via ${reason}`);
       } else if (strategy.isTestnet && exchange === Exchange.BINANCE) {
         const baseURL = this.BINANCE_TESTNET_URL;
-        const endpoint = '/fapi/v1/order';
-
         const params = new URLSearchParams();
         params.append('symbol', trade.symbol);
         params.append('side', closeSide);
         params.append('type', 'MARKET');
         params.append('quantity', closeQuantity.toFixed(3));
 
-        // CRITICAL FIX: Add positionSide for Hedge Mode
         if (strategy.hedgeMode) {
           const positionSide = trade.side === 'BUY' ? 'LONG' : 'SHORT';
           params.append('positionSide', positionSide);
-          this.logger.log(`[CLOSE PARTIAL TP] Hedge Mode - Position Side: ${positionSide}`);
         }
 
         params.append('timestamp', Date.now().toString());
@@ -426,7 +590,7 @@ export class TakeProfitService {
         const signature = crypto.createHmac('sha256', apiSecret).update(queryString).digest('hex');
         const body = `${queryString}&signature=${signature}`;
 
-        await axios.post(`${baseURL}${endpoint}`, body, {
+        await axios.post(`${baseURL}/fapi/v1/order`, body, {
           headers: {
             'X-MBX-APIKEY': apiKey,
             'Content-Type': 'application/x-www-form-urlencoded'
@@ -442,12 +606,10 @@ export class TakeProfitService {
           strategy.isTestnet
         );
 
-        // CRITICAL FIX: Add positionSide for Hedge Mode in CCXT
         const ccxtParams: any = {};
         if (strategy.hedgeMode) {
           const positionSide = trade.side === 'BUY' ? 'LONG' : 'SHORT';
           ccxtParams.positionSide = positionSide;
-          this.logger.log(`[CLOSE PARTIAL TP] Hedge Mode (CCXT) - Position Side: ${positionSide}`);
         }
 
         await exchangeInstance.createMarketOrder(trade.symbol, closeSide.toLowerCase(), closeQuantity, ccxtParams);
@@ -466,6 +628,8 @@ export class TakeProfitService {
 
         await this.tradesRepository.save(trade);
 
+        await this.cancelTradeStopLoss(trade, exchange, apiKey, apiSecret, strategy.isTestnet);
+
         this.logger.log(`├─ Closed: ${this.formatQuantityWithUsdt(closeQuantity, exitPrice)} (100%)`);
         this.logger.log(`└─ P&L: ${pnl > 0 ? '+' : ''}${pnl.toFixed(2)} USDT`);
       } else {
@@ -476,6 +640,10 @@ export class TakeProfitService {
         trade.binancePositionAmt = remainingQuantity as any;
 
         await this.tradesRepository.save(trade);
+
+        if (exchange === Exchange.BINANCE && trade.stopLossOrderId) {
+          await this.adjustStopLossForRemainingQty(trade, strategy, exchange, apiKey, apiSecret, remainingQuantity);
+        }
 
         this.logger.log(`├─ Closed: ${this.formatQuantityWithUsdt(closeQuantity, exitPrice)} (${(closePercent * 100).toFixed(0)}%)`);
         this.logger.log(`├─ Remaining: ${this.formatQuantityWithUsdt(remainingQuantity, exitPrice)}`);
