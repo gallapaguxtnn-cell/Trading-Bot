@@ -323,12 +323,19 @@ export class TakeProfitService {
     const closeSide = side === 'BUY' ? 'SELL' : 'BUY';
     const qty = quantity.toFixed(3);
 
+    const limitSlippage = 0.003;
+    const rawLimitPrice = side === 'BUY'
+      ? stopPrice * (1 - limitSlippage)
+      : stopPrice * (1 + limitSlippage);
+
     const params = new URLSearchParams();
     params.append('symbol', symbol);
     params.append('side', closeSide);
-    params.append('type', 'STOP_MARKET');
+    params.append('type', 'STOP');
     params.append('quantity', qty);
     params.append('stopPrice', stopPrice.toFixed(2));
+    params.append('price', rawLimitPrice.toFixed(2));
+    params.append('timeInForce', 'GTC');
     params.append('workingType', 'MARK_PRICE');
 
     if (hedgeMode) {

@@ -626,22 +626,34 @@ export class WebhookService {
       const rules = await this.getSymbolRules(symbol, isTestnet);
       const normalizedQty = this.normalizeQuantity(quantity, rules.qtyStep, rules.minQty);
 
+      const limitSlippage = 0.003;
+      const rawLimitPrice = side === 'BUY'
+        ? stopPrice * (1 - limitSlippage)
+        : stopPrice * (1 + limitSlippage);
+      const normalizedStopPrice = this.roundTick(stopPrice, rules.priceTick);
+      const normalizedLimitPrice = this.roundTick(rawLimitPrice, rules.priceTick);
+
       const params = new URLSearchParams();
       params.append('symbol', symbol);
       params.append('side', closeSide);
-      params.append('type', 'STOP_MARKET');
+      params.append('type', 'STOP');
       params.append('quantity', normalizedQty);
+      params.append('stopPrice', normalizedStopPrice);
+      params.append('price', normalizedLimitPrice);
+      params.append('timeInForce', 'GTC');
+      params.append('workingType', 'MARK_PRICE');
 
       if (hedgeMode) {
         const positionSide = side === 'BUY' ? 'LONG' : 'SHORT';
         params.append('positionSide', positionSide);
 
         this.logger.log(
-          `[SL CREATE] Hedge Mode STOP_MARKET - Specific Quantity\n` +
+          `[SL CREATE] Hedge Mode STOP_LIMIT\n` +
           `  Symbol: ${symbol}\n` +
           `  Entry Side: ${side} → Close Side: ${closeSide}\n` +
           `  Position Side: ${positionSide}\n` +
-          `  Stop Price (trigger): ${this.roundTick(stopPrice, rules.priceTick)}\n` +
+          `  Stop Price (trigger): ${normalizedStopPrice}\n` +
+          `  Limit Price (exec): ${normalizedLimitPrice}\n` +
           `  Quantity: ${normalizedQty} (raw: ${quantity})\n` +
           `  Rules: step=${rules.qtyStep}, min=${rules.minQty}, tick=${rules.priceTick}`
         );
@@ -649,17 +661,15 @@ export class WebhookService {
         params.append('reduceOnly', 'true');
 
         this.logger.log(
-          `[SL CREATE] One-Way Mode STOP_MARKET - Specific Quantity\n` +
+          `[SL CREATE] One-Way Mode STOP_LIMIT\n` +
           `  Symbol: ${symbol}\n` +
           `  Entry Side: ${side} → Close Side: ${closeSide}\n` +
-          `  Stop Price (trigger): ${this.roundTick(stopPrice, rules.priceTick)}\n` +
+          `  Stop Price (trigger): ${normalizedStopPrice}\n` +
+          `  Limit Price (exec): ${normalizedLimitPrice}\n` +
           `  Quantity: ${normalizedQty} (raw: ${quantity})\n` +
           `  Using reduceOnly=true`
         );
       }
-
-      params.append('stopPrice', this.roundTick(stopPrice, rules.priceTick));
-      params.append('workingType', 'MARK_PRICE');
 
       this.logger.debug(`[SL CREATE] Full request params: ${params.toString()}`);
 
