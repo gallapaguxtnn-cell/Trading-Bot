@@ -1207,7 +1207,7 @@ export class WebhookService {
     let effectivePrice = signal.price;
 
     // Next Candle / Percent Offset Logic
-    if (strategy.nextCandleEntry && strategy.nextCandlePercentage && signal.price) {
+    if (strategy.nextCandleEntry && strategy.nextCandlePercentage && signal.price && signal.orderType !== OrderType.MARKET) {
       const offset = signal.price * (strategy.nextCandlePercentage / 100);
       if (side === 'BUY') {
         effectivePrice = signal.price - offset;
@@ -1536,25 +1536,31 @@ export class WebhookService {
 
             const rules = await this.getSymbolRules(normalizedSymbol, strategy.isTestnet, exchange);
 
-            if (exchange === Exchange.BYBIT) {
-              await this.bybitClient.createOrder(
-                decryptedKey, decryptedSecret, strategy.isTestnet,
-                {
-                  symbol: normalizedSymbol,
-                  side: side === 'BUY' ? 'Sell' : 'Buy',
-                  orderType: 'Limit',
-                  qty: this.normalizeQuantity(tpQty, rules.qtyStep, rules.minQty),
-                  price: this.roundTick(tpPrice, rules.priceTick),
-                  reduceOnly: true
+            try {
+              if (exchange === Exchange.BYBIT) {
+                const bybitOrder = await this.bybitClient.createOrder(
+                  decryptedKey, decryptedSecret, strategy.isTestnet,
+                  {
+                    symbol: normalizedSymbol,
+                    side: side === 'BUY' ? 'Sell' : 'Buy',
+                    orderType: 'Limit',
+                    qty: this.normalizeQuantity(tpQty, rules.qtyStep, rules.minQty),
+                    price: this.roundTick(tpPrice, rules.priceTick),
+                    reduceOnly: true
+                  }
+                );
+                if (bybitOrder?.orderId) {
+                  tpOrderIds.push(`${tp.id}:${bybitOrder.orderId}`);
                 }
-              );
-            } else {
-              // This now throws on error instead of returning null
-              const tpOrderId = await this.createBinanceTakeProfitOrder(
-                normalizedSymbol, side, tpQty, tpPrice, decryptedKey, decryptedSecret, strategy.isTestnet, strategy.hedgeMode
-              );
-              tpOrderIds.push(`${tp.id}:${tpOrderId}`);
-              this.logger.log(`[TP${tp.id}] Successfully created Take Profit order: ${tpOrderId}`);
+              } else {
+                const tpOrderId = await this.createBinanceTakeProfitOrder(
+                  normalizedSymbol, side, tpQty, tpPrice, decryptedKey, decryptedSecret, strategy.isTestnet, strategy.hedgeMode
+                );
+                tpOrderIds.push(`${tp.id}:${tpOrderId}`);
+                this.logger.log(`[TP${tp.id}] Successfully created Take Profit order: ${tpOrderId}`);
+              }
+            } catch (tpError: any) {
+              this.logger.warn(`[TP${tp.id}] Failed to create, skipping: ${tpError.message}`);
             }
           }
         }
