@@ -526,6 +526,27 @@ export class WebhookService {
     await this.verifyHedgeModeSet(apiKey, apiSecret, isTestnet, hedgeMode);
   }
 
+  private async cancelBinanceSingleOrder(
+    symbol: string,
+    orderId: string,
+    apiKey: string,
+    apiSecret: string,
+    isTestnet: boolean
+  ): Promise<void> {
+    const baseURL = isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
+    const params = new URLSearchParams();
+    params.append('symbol', symbol);
+    params.append('orderId', orderId);
+    params.append('timestamp', Date.now().toString());
+
+    const queryString = params.toString();
+    const signature = crypto.createHmac('sha256', apiSecret).update(queryString).digest('hex');
+
+    await axios.delete(`${baseURL}/fapi/v1/order?${queryString}&signature=${signature}`, {
+      headers: { 'X-MBX-APIKEY': apiKey }
+    });
+  }
+
   private async cancelAllBinanceOrders(
     apiKey: string,
     apiSecret: string,
@@ -750,14 +771,15 @@ export class WebhookService {
     apiKey: string,
     apiSecret: string,
     isTestnet: boolean,
-    hedgeMode: boolean = false
+    hedgeMode: boolean = false,
+    expectedMinQty?: number
   ): Promise<void> {
     const baseURL = isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
     const endpoint = '/fapi/v2/positionRisk';
     const positionSide = hedgeMode ? (side === 'BUY' ? 'LONG' : 'SHORT') : 'BOTH';
 
     const maxRetries = 5;
-    const initialDelay = 500; // ms
+    const initialDelay = 500;
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
@@ -769,7 +791,8 @@ export class WebhookService {
         const signature = crypto.createHmac('sha256', apiSecret).update(queryString).digest('hex');
 
         this.logger.debug(
-          `[POSITION VERIFY] Attempt ${attempt}/${maxRetries} - Checking ${symbol} ${positionSide}`
+          `[POSITION VERIFY] Attempt ${attempt}/${maxRetries} - Checking ${symbol} ${positionSide}` +
+          (expectedMinQty ? ` (expecting >= ${expectedMinQty})` : '')
         );
 
         const response = await axios.get(
@@ -799,9 +822,12 @@ export class WebhookService {
 
         const positionAmt = Math.abs(parseFloat(targetPosition.positionAmt));
 
-        if (positionAmt === 0) {
+        const isInsufficient = positionAmt === 0 || (expectedMinQty !== undefined && positionAmt < expectedMinQty * 0.9);
+
+        if (isInsufficient) {
           this.logger.warn(
-            `[POSITION VERIFY] Position exists but quantity is 0 - Symbol: ${symbol}, Side: ${positionSide}`
+            `[POSITION VERIFY] Position quantity insufficient - Symbol: ${symbol}, ` +
+            `Current: ${positionAmt}` + (expectedMinQty ? `, Expected: >= ${expectedMinQty}` : '')
           );
 
           if (attempt < maxRetries) {
@@ -1592,6 +1618,14 @@ export class WebhookService {
       // For Binance MARKET: Verify position exists before creating SL/TP (prevents race condition)
       if (exchange === Exchange.BINANCE) {
         this.logger.log(`[POSITION VERIFY] Waiting for position to appear in system...`);
+
+        const existingQtyForVerify = isAveragingTrade
+          ? openTrades
+              .filter(t => t.symbol === normalizedSymbol && t.strategyId === strategy.id && t.side === side)
+              .reduce((sum, t) => sum + parseFloat(t.quantity as any), 0)
+          : 0;
+        const expectedCombinedQty = existingQtyForVerify > 0 ? existingQtyForVerify + quantity : undefined;
+
         try {
           await this.verifyPositionExists(
             normalizedSymbol,
@@ -1599,7 +1633,8 @@ export class WebhookService {
             decryptedKey,
             decryptedSecret,
             strategy.isTestnet,
-            strategy.hedgeMode
+            strategy.hedgeMode,
+            expectedCombinedQty
           );
         } catch (error: any) {
           this.logger.error(
@@ -1644,8 +1679,40 @@ export class WebhookService {
               decryptedKey, decryptedSecret, strategy.isTestnet,
               normalizedSymbol, bybitSide, this.roundTick(stopLossPrice, rules.priceTick), undefined
             );
+          } else if (isAveragingTrade && activeTrade && !strategy.hedgeMode) {
+            const existingTradesForSide = openTrades.filter(
+              t => t.symbol === normalizedSymbol && t.strategyId === strategy.id && t.side === side
+            );
+
+            for (const existingTrade of existingTradesForSide) {
+              if (
+                existingTrade.stopLossOrderId &&
+                !existingTrade.stopLossOrderId.startsWith('ROLLBACK')
+              ) {
+                try {
+                  await this.cancelBinanceSingleOrder(normalizedSymbol, existingTrade.stopLossOrderId, decryptedKey, decryptedSecret, strategy.isTestnet);
+                  this.logger.log(`[SL UNIFY] Cancelled SL ${existingTrade.stopLossOrderId} for trade ${existingTrade.id}`);
+                } catch (e: any) {
+                  this.logger.warn(`[SL UNIFY] Could not cancel SL ${existingTrade.stopLossOrderId}: ${e.message}`);
+                }
+              }
+            }
+
+            const existingTotalQty = existingTradesForSide.reduce(
+              (sum, t) => sum + parseFloat(t.quantity as any), 0
+            );
+            const unifiedQty = existingTotalQty + quantity;
+
+            stopLossOrderId = await this.createBinanceStopLossOrder(
+              normalizedSymbol, side, unifiedQty, stopLossPrice, decryptedKey, decryptedSecret, strategy.isTestnet, false
+            );
+
+            for (const existingTrade of existingTradesForSide) {
+              await this.tradesService.updateTrade(existingTrade.id, { stopLossOrderId });
+            }
+
+            this.logger.log(`[SL UNIFY] One-way mode: unified SL ${stopLossOrderId} for ${unifiedQty} (${existingTradesForSide.length + 1} entries)`);
           } else {
-            // This now throws on error instead of returning null
             stopLossOrderId = await this.createBinanceStopLossOrder(
               normalizedSymbol, side, quantity, stopLossPrice, decryptedKey, decryptedSecret, strategy.isTestnet, strategy.hedgeMode
             );

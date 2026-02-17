@@ -171,8 +171,9 @@ export default function StrategiesPage() {
   };
 
   const copyWebhookJson = async (strategy: any, action?: 'buy' | 'sell') => {
+    const orderType = strategy.nextCandleEntry ? 'limit' : 'market';
     try {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000/api'}/strategies/${strategy.id}/webhook-json?orderType=limit`);
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000/api'}/strategies/${strategy.id}/webhook-json?orderType=${orderType}`);
       const data = await response.json();
 
       let jsonToCopy: any;
@@ -201,14 +202,16 @@ export default function StrategiesPage() {
       navigator.clipboard.writeText(formattedJson);
       alert(message);
     } catch (error) {
-      const fallbackPayload = {
+      const fallbackPayload: any = {
         secret: 'default_secret_123',
         strategyId: strategy.id,
         symbol: strategy.asset,
         action: action || '{{strategy.order.action}}',
-        orderType: 'limit',
         price: '{{close}}',
       };
+      if (orderType === 'limit') {
+        fallbackPayload.orderType = 'limit';
+      }
       navigator.clipboard.writeText(JSON.stringify(fallbackPayload, null, 2));
       alert('Webhook JSON copied (using fallback)!');
     }
