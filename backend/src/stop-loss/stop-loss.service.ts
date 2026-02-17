@@ -30,7 +30,7 @@ export class StopLossService {
     return `${quantity.toFixed(4)} (~${usdt.toFixed(2)} USDT)`;
   }
 
-  @Cron(CronExpression.EVERY_5_SECONDS)
+  @Cron('*/1 * * * * *')
   async monitorStopLoss() {
     const openTrades = await this.tradesRepository.find({ where: { status: 'OPEN' } });
 

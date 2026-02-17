@@ -1739,6 +1739,11 @@ export class WebhookService {
             }
 
             this.logger.log(`[SL UNIFY] One-way mode: unified SL ${stopLossOrderId} for ${unifiedQty} (${existingTradesForSide.length + 1} entries)`);
+          } else if (isAveragingTrade && strategy.hedgeMode) {
+            this.logger.log(
+              `[SL] Hedge mode averaging: Binance allows only 1 STOP per positionSide. ` +
+              `Stop for this entry (price=${stopLossPrice}) will be monitored by software (stop-loss service).`
+            );
           } else {
             stopLossOrderId = await this.createBinanceStopLossOrder(
               normalizedSymbol, side, quantity, stopLossPrice, decryptedKey, decryptedSecret, strategy.isTestnet, strategy.hedgeMode
