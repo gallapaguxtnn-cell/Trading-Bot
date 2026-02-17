@@ -74,6 +74,8 @@ export class WebhookService {
   private readonly BINANCE_TESTNET_URL = 'https://testnet.binancefuture.com';
   private readonly BINANCE_MAINNET_URL = 'https://fapi.binance.com';
 
+  private readonly activeSignals = new Set<string>();
+
   constructor(
     private readonly exchangeService: ExchangeService,
     private readonly bybitClient: BybitClientService,
@@ -1223,7 +1225,22 @@ export class WebhookService {
       throw new Error('Strategy ID is missing in signal');
     }
 
-    const strategy = await this.strategiesService.findOne(signal.strategyId);
+    const signalKey = `${signal.strategyId}:${signal.symbol}:${signal.action}`;
+    if (this.activeSignals.has(signalKey)) {
+      this.logger.warn(`[MUTEX] Signal ${signalKey} already in progress, ignoring duplicate (TradingView retry or concurrent request)`);
+      return { status: 'skipped', message: 'Signal already being processed' };
+    }
+    this.activeSignals.add(signalKey);
+
+    try {
+      return await this._processSignalInternal(signal);
+    } finally {
+      this.activeSignals.delete(signalKey);
+    }
+  }
+
+  private async _processSignalInternal(signal: TradingviewSignalDto) {
+    const strategy = await this.strategiesService.findOne(signal.strategyId!);
     if (!strategy) {
       throw new Error(`Strategy not found: ${signal.strategyId}`);
     }
