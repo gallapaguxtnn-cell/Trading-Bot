@@ -845,6 +845,107 @@ export class WebhookService {
     }
   }
 
+  private scheduleProtectionOrders(
+    tradeId: string,
+    symbol: string,
+    side: 'BUY' | 'SELL',
+    strategy: any,
+    decryptedKey: string,
+    decryptedSecret: string,
+  ): void {
+    const run = async () => {
+      const maxAttempts = 30;
+      const delayMs = 10000;
+      const baseURL = strategy.isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
+      const positionSide = strategy.hedgeMode ? (side === 'BUY' ? 'LONG' : 'SHORT') : 'BOTH';
+
+      for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        await new Promise(r => setTimeout(r, delayMs));
+
+        try {
+          const trade = await this.tradesService.findById(tradeId);
+          if (!trade || trade.status !== 'OPEN' || trade.stopLossOrderId) return;
+
+          const params = new URLSearchParams();
+          params.append('symbol', symbol);
+          params.append('timestamp', Date.now().toString());
+          const sig = crypto.createHmac('sha256', decryptedSecret).update(params.toString()).digest('hex');
+
+          const resp = await axios.get(
+            `${baseURL}/fapi/v2/positionRisk?${params.toString()}&signature=${sig}`,
+            { headers: { 'X-MBX-APIKEY': decryptedKey } }
+          );
+
+          const position = resp.data.find((p: any) =>
+            p.symbol === symbol && p.positionSide === positionSide && Math.abs(parseFloat(p.positionAmt)) > 0
+          );
+
+          if (!position) {
+            this.logger.debug(`[LIMIT SL/TP] Attempt ${attempt + 1}/${maxAttempts}: waiting for ${symbol} ${positionSide}`);
+            continue;
+          }
+
+          const actualEntryPrice = parseFloat(position.entryPrice);
+          const actualQty = Math.abs(parseFloat(position.positionAmt));
+          this.logger.log(`[LIMIT SL/TP] Position confirmed: ${symbol} qty=${actualQty} entry=${actualEntryPrice}`);
+
+          let slOrderId: string | null = null;
+          if (strategy.stopLossPercentage && strategy.stopLossPercentage > 0) {
+            const slPrice = this.calculateStopLossPrice(side, actualEntryPrice, strategy.stopLossPercentage);
+            try {
+              slOrderId = await this.createBinanceStopLossOrder(
+                symbol, side, actualQty, slPrice, decryptedKey, decryptedSecret, strategy.isTestnet, strategy.hedgeMode
+              );
+              this.logger.log(`[LIMIT SL/TP] SL created: ${slOrderId}`);
+            } catch (e: any) {
+              this.logger.warn(`[LIMIT SL/TP] SL creation failed: ${e.message}`);
+            }
+          }
+
+          const tpConfigs = [
+            { percent: strategy.takeProfitPercentage1, qtyPercent: strategy.takeProfitQuantity1 || 33, id: 1 },
+            { percent: strategy.takeProfitPercentage2, qtyPercent: strategy.takeProfitQuantity2 || 33, id: 2 },
+            { percent: strategy.takeProfitPercentage3, qtyPercent: strategy.takeProfitQuantity3 || 34, id: 3 },
+          ];
+          const tpOrderIds: string[] = [];
+
+          for (const tp of tpConfigs) {
+            if (tp.percent && tp.percent > 0) {
+              const tpPrice = this.calculateTakeProfitPrice(side, actualEntryPrice, tp.percent);
+              const tpQty = (actualQty * tp.qtyPercent) / 100;
+              if (tpQty <= 0) continue;
+              try {
+                const tpId = await this.createBinanceTakeProfitOrder(
+                  symbol, side, tpQty, tpPrice, decryptedKey, decryptedSecret, strategy.isTestnet, strategy.hedgeMode
+                );
+                tpOrderIds.push(`${tp.id}:${tpId}`);
+                this.logger.log(`[LIMIT TP${tp.id}] Created: ${tpId}`);
+              } catch (e: any) {
+                this.logger.warn(`[LIMIT TP${tp.id}] Failed: ${e.message}`);
+              }
+            }
+          }
+
+          await this.tradesService.updateTrade(tradeId, {
+            entryPrice: actualEntryPrice as any,
+            quantity: actualQty as any,
+            stopLossOrderId: slOrderId || undefined,
+            takeProfitOrderId: tpOrderIds.length > 0 ? tpOrderIds.join('|') : undefined,
+          });
+
+          this.logger.log(`[LIMIT SL/TP] All protection orders created for trade ${tradeId}`);
+          return;
+        } catch (err: any) {
+          this.logger.warn(`[LIMIT SL/TP] Attempt ${attempt + 1} error: ${err.message}`);
+        }
+      }
+
+      this.logger.warn(`[LIMIT SL/TP] Could not create protection for trade ${tradeId} after ${maxAttempts * delayMs / 1000}s`);
+    };
+
+    run().catch(err => this.logger.error(`[LIMIT SL/TP] Critical background error: ${err.message}`));
+  }
+
   /**
    * Verifies that hedge mode was successfully set on Binance.
    * Checks the account position mode setting to confirm dual position mode.
@@ -1445,7 +1546,23 @@ export class WebhookService {
       tradeData.entryPrice = entryPrice;
       tradeData.exchangeOrderId = tradeDetails.id;
 
-      // For Binance: Verify position exists before creating SL/TP (prevents race condition)
+      // For LIMIT orders on Binance: position won't exist until the order fills.
+      // Schedule SL/TP creation in background and return immediately.
+      if (isLimitOrder && exchange === Exchange.BINANCE) {
+        await this.tradesService.updateTrade(savedTrade.id, {
+          entryPrice: tradeData.entryPrice,
+          exchangeOrderId: tradeData.exchangeOrderId,
+        });
+        this.scheduleProtectionOrders(savedTrade.id, normalizedSymbol, side, strategy, decryptedKey, decryptedSecret);
+        this.logger.log(`[LIMIT] Entry order placed (${tradeData.exchangeOrderId}). SL/TP will be created when position is confirmed.`);
+        return {
+          status: 'success',
+          message: 'LIMIT order placed. SL/TP will be created automatically when the order fills.',
+          trade: { ...tradeData, id: savedTrade.id },
+        };
+      }
+
+      // For Binance MARKET: Verify position exists before creating SL/TP (prevents race condition)
       if (exchange === Exchange.BINANCE) {
         this.logger.log(`[POSITION VERIFY] Waiting for position to appear in system...`);
         try {

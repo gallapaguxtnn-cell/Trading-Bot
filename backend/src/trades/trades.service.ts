@@ -86,6 +86,10 @@ export class TradesService {
     });
   }
 
+  async findById(id: string): Promise<Trade | null> {
+    return this.tradesRepository.findOneBy({ id });
+  }
+
   async updateTrade(id: string, updates: Partial<Trade>): Promise<Trade | null> {
     await this.tradesRepository.update(id, updates);
     return this.tradesRepository.findOneBy({ id });
