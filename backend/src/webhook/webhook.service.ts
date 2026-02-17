@@ -857,7 +857,6 @@ export class WebhookService {
       const maxAttempts = 30;
       const delayMs = 10000;
       const baseURL = strategy.isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
-      const positionSide = strategy.hedgeMode ? (side === 'BUY' ? 'LONG' : 'SHORT') : 'BOTH';
 
       for (let attempt = 0; attempt < maxAttempts; attempt++) {
         await new Promise(r => setTimeout(r, delayMs));
@@ -866,28 +865,44 @@ export class WebhookService {
           const trade = await this.tradesService.findById(tradeId);
           if (!trade || trade.status !== 'OPEN' || trade.stopLossOrderId) return;
 
-          const params = new URLSearchParams();
-          params.append('symbol', symbol);
-          params.append('timestamp', Date.now().toString());
-          const sig = crypto.createHmac('sha256', decryptedSecret).update(params.toString()).digest('hex');
-
-          const resp = await axios.get(
-            `${baseURL}/fapi/v2/positionRisk?${params.toString()}&signature=${sig}`,
-            { headers: { 'X-MBX-APIKEY': decryptedKey } }
-          );
-
-          const position = resp.data.find((p: any) =>
-            p.symbol === symbol && p.positionSide === positionSide && Math.abs(parseFloat(p.positionAmt)) > 0
-          );
-
-          if (!position) {
-            this.logger.debug(`[LIMIT SL/TP] Attempt ${attempt + 1}/${maxAttempts}: waiting for ${symbol} ${positionSide}`);
+          if (!trade.exchangeOrderId) {
+            this.logger.debug(`[LIMIT SL/TP] Attempt ${attempt + 1}/${maxAttempts}: no entry order ID yet`);
             continue;
           }
 
-          const actualEntryPrice = parseFloat(position.entryPrice);
-          const actualQty = Math.abs(parseFloat(position.positionAmt));
-          this.logger.log(`[LIMIT SL/TP] Position confirmed: ${symbol} qty=${actualQty} entry=${actualEntryPrice}`);
+          const orderParams = new URLSearchParams();
+          orderParams.append('symbol', symbol);
+          orderParams.append('orderId', trade.exchangeOrderId);
+          orderParams.append('timestamp', Date.now().toString());
+          const orderSig = crypto.createHmac('sha256', decryptedSecret).update(orderParams.toString()).digest('hex');
+
+          const orderResp = await axios.get(
+            `${baseURL}/fapi/v1/order?${orderParams.toString()}&signature=${orderSig}`,
+            { headers: { 'X-MBX-APIKEY': decryptedKey } }
+          );
+
+          const orderData = orderResp.data;
+
+          if (orderData.status !== 'FILLED') {
+            this.logger.debug(`[LIMIT SL/TP] Attempt ${attempt + 1}/${maxAttempts}: order ${trade.exchangeOrderId} status=${orderData.status}`);
+
+            if (orderData.status === 'CANCELED' || orderData.status === 'EXPIRED') {
+              this.logger.warn(`[LIMIT SL/TP] Entry order ${trade.exchangeOrderId} was ${orderData.status}. Stopping protection scheduling.`);
+              await this.tradesService.updateTrade(tradeId, { status: 'ERROR', error: `Entry order was ${orderData.status} before filling.` });
+              return;
+            }
+            continue;
+          }
+
+          const actualEntryPrice = parseFloat(orderData.avgPrice);
+          const actualQty = parseFloat(orderData.executedQty);
+
+          if (!actualEntryPrice || !actualQty || actualQty <= 0) {
+            this.logger.warn(`[LIMIT SL/TP] Invalid fill data: avgPrice=${actualEntryPrice}, executedQty=${actualQty}`);
+            continue;
+          }
+
+          this.logger.log(`[LIMIT SL/TP] Order filled: ${symbol} qty=${actualQty} avgPrice=${actualEntryPrice}`);
 
           let slOrderId: string | null = null;
           if (strategy.stopLossPercentage && strategy.stopLossPercentage > 0) {
@@ -1025,7 +1040,8 @@ export class WebhookService {
     apiKey: string,
     apiSecret: string,
     isTestnet: boolean,
-    hedgeMode: boolean = false
+    hedgeMode: boolean = false,
+    entryQuantity?: number
   ): Promise<void> {
     try {
       const closeSide = side === 'BUY' ? 'SELL' : 'BUY';
@@ -1037,6 +1053,7 @@ export class WebhookService {
         `  Entry Order ID: ${entryOrderId}\n` +
         `  Entry Side: ${side} → Close Side: ${closeSide}\n` +
         `  Position Side: ${positionSide}\n` +
+        `  Entry Quantity: ${entryQuantity ?? 'entire position'}\n` +
         `  Reason: Failed to create SL/TP protection orders\n` +
         `  Action: Closing position with MARKET order`
       );
@@ -1045,11 +1062,21 @@ export class WebhookService {
       params.append('symbol', symbol);
       params.append('side', closeSide);
       params.append('type', 'MARKET');
-      params.append('quantity', '0');
-      params.append('closePosition', 'true');
 
-      if (hedgeMode) {
-        params.append('positionSide', positionSide);
+      if (entryQuantity && entryQuantity > 0) {
+        const rules = await this.getSymbolRules(symbol, isTestnet);
+        params.append('quantity', this.normalizeQuantity(entryQuantity, rules.qtyStep, rules.minQty));
+        if (hedgeMode) {
+          params.append('positionSide', positionSide);
+        } else {
+          params.append('reduceOnly', 'true');
+        }
+      } else {
+        params.append('quantity', '0');
+        params.append('closePosition', 'true');
+        if (hedgeMode) {
+          params.append('positionSide', positionSide);
+        }
       }
 
       const response = await this.createBinanceOrder(params, apiKey, apiSecret, isTestnet);
@@ -1712,7 +1739,8 @@ export class WebhookService {
               decryptedKey,
               decryptedSecret,
               strategy.isTestnet,
-              strategy.hedgeMode
+              strategy.hedgeMode,
+              isAveragingTrade ? quantity : undefined
             );
 
             // Update trade record to show it was rolled back

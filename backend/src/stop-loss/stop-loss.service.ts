@@ -83,9 +83,15 @@ export class StopLossService {
         await this.markTradeAsClosed(trade, 'STOP_LOSS', exchange, apiKey, apiSecret, strategy.isTestnet);
         return;
       } else if (orderStatus === 'CANCELED' || orderStatus === 'EXPIRED' || orderStatus === 'Cancelled' || orderStatus === 'Deactivated') {
-        this.logger.warn(`[STOP LOSS] Order ${trade.stopLossOrderId} was ${orderStatus}, falling back to manual monitoring`);
-        trade.stopLossOrderId = null;
-        await this.tradesRepository.save(trade);
+        this.logger.warn(`[STOP LOSS] Order ${trade.stopLossOrderId} was ${orderStatus}, attempting to recreate SL`);
+
+        const recreated = await this.recreateStopLoss(trade, strategy, exchange, apiKey, apiSecret);
+        if (!recreated) {
+          this.logger.warn(`[STOP LOSS] Could not recreate SL for ${trade.symbol}, falling back to manual monitoring`);
+          trade.stopLossOrderId = null;
+          await this.tradesRepository.save(trade);
+        }
+        return;
       } else if (orderStatus === 'NEW' || orderStatus === 'New') {
         return;
       }
@@ -112,6 +118,89 @@ export class StopLossService {
       this.logger.warn(`├─ Entry: ${entryPrice.toFixed(2)} → Exit: ${currentPrice.toFixed(2)} (${lossPercent.toFixed(2)}%)`);
       this.logger.warn(`└─ SL Price: ${stopLossPrice.toFixed(2)}`);
       await this.closePosition(trade, strategy, currentPrice, 'STOP_LOSS', apiKey, apiSecret);
+    }
+  }
+
+  private async recreateStopLoss(
+    trade: Trade,
+    strategy: any,
+    exchange: Exchange,
+    apiKey: string,
+    apiSecret: string
+  ): Promise<boolean> {
+    try {
+      if (exchange !== Exchange.BINANCE) return false;
+      if (!strategy.stopLossPercentage || strategy.stopLossPercentage <= 0) return false;
+
+      const baseUrl = strategy.isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
+      const timestamp = Date.now();
+      const positionSide = strategy.hedgeMode
+        ? (trade.side === 'BUY' ? 'LONG' : 'SHORT')
+        : 'BOTH';
+
+      const params = new URLSearchParams();
+      params.append('symbol', trade.symbol);
+      params.append('timestamp', timestamp.toString());
+      const sig = crypto.createHmac('sha256', apiSecret).update(params.toString()).digest('hex');
+
+      const resp = await axios.get(
+        `${baseUrl}/fapi/v2/positionRisk?${params.toString()}&signature=${sig}`,
+        { headers: { 'X-MBX-APIKEY': apiKey } }
+      );
+
+      const position = (resp.data as any[]).find(p =>
+        p.symbol === trade.symbol && p.positionSide === positionSide && Math.abs(parseFloat(p.positionAmt)) > 0
+      );
+
+      if (!position) {
+        this.logger.warn(`[SL RECREATE] No open position found for ${trade.symbol}, skipping`);
+        return false;
+      }
+
+      const remainingQty = parseFloat(trade.quantity as any);
+      if (!remainingQty || remainingQty <= 0) return false;
+
+      const entryPrice = parseFloat(trade.entryPrice as any);
+      const slPercent = strategy.stopLossPercentage / 100;
+      const stopPrice = trade.side === 'BUY'
+        ? entryPrice * (1 - slPercent)
+        : entryPrice * (1 + slPercent);
+
+      const closeSide = trade.side === 'BUY' ? 'SELL' : 'BUY';
+      const qty = remainingQty.toFixed(3);
+
+      const orderParams = new URLSearchParams();
+      orderParams.append('symbol', trade.symbol);
+      orderParams.append('side', closeSide);
+      orderParams.append('type', 'STOP_MARKET');
+      orderParams.append('quantity', qty);
+      orderParams.append('stopPrice', stopPrice.toFixed(2));
+      orderParams.append('workingType', 'MARK_PRICE');
+
+      if (strategy.hedgeMode) {
+        orderParams.append('positionSide', positionSide);
+      } else {
+        orderParams.append('reduceOnly', 'true');
+      }
+
+      orderParams.append('timestamp', Date.now().toString());
+      const orderSig = crypto.createHmac('sha256', apiSecret).update(orderParams.toString()).digest('hex');
+
+      const orderResp = await axios.post(
+        `${baseUrl}/fapi/v1/order`,
+        `${orderParams.toString()}&signature=${orderSig}`,
+        { headers: { 'X-MBX-APIKEY': apiKey, 'Content-Type': 'application/x-www-form-urlencoded' } }
+      );
+
+      const newSlId = orderResp.data.orderId.toString();
+      trade.stopLossOrderId = newSlId;
+      await this.tradesRepository.save(trade);
+
+      this.logger.log(`[SL RECREATE] Successfully recreated SL for ${trade.symbol}: orderId=${newSlId}, stopPrice=${stopPrice.toFixed(2)}`);
+      return true;
+    } catch (error: any) {
+      this.logger.error(`[SL RECREATE] Failed to recreate SL: ${error.message}`);
+      return false;
     }
   }
 
