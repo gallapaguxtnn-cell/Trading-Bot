@@ -1688,17 +1688,37 @@ export class WebhookService {
       // CRITICAL: If SL/TP creation fails, we MUST close the position to avoid unprotected trades
       try {
         // --- STOP LOSS ---
+        this.logger.log(
+          `[PROTECTION ORDERS] Strategy values from DB:\n` +
+          `  SL%: ${strategy.stopLossPercentage} (type: ${typeof strategy.stopLossPercentage})\n` +
+          `  TP1%: ${strategy.takeProfitPercentage1} (type: ${typeof strategy.takeProfitPercentage1})\n` +
+          `  TP2%: ${strategy.takeProfitPercentage2} (type: ${typeof strategy.takeProfitPercentage2})\n` +
+          `  TP3%: ${strategy.takeProfitPercentage3} (type: ${typeof strategy.takeProfitPercentage3})`
+        );
         let stopLossPrice: number | null = null;
         if (signal.stopLoss) {
           stopLossPrice = signal.stopLoss;
           this.logger.log(`[SL] Using absolute stop loss from signal: ${stopLossPrice}`);
         } else if (strategy.stopLossPercentage && strategy.stopLossPercentage > 0) {
           stopLossPrice = this.calculateStopLossPrice(side, entryPrice, strategy.stopLossPercentage);
-          this.logger.log(`[SL] Calculated stop loss from strategy (${strategy.stopLossPercentage}%): ${stopLossPrice}`);
         }
 
         if (stopLossPrice) {
           const rules = await this.getSymbolRules(normalizedSymbol, strategy.isTestnet, exchange);
+          const slPriceRounded = parseFloat(this.roundTick(stopLossPrice, rules.priceTick));
+          const effectiveSlPercent = side === 'BUY'
+            ? ((entryPrice - slPriceRounded) / entryPrice) * 100
+            : ((slPriceRounded - entryPrice) / entryPrice) * 100;
+
+          this.logger.log(
+            `[SL] Precision analysis:\n` +
+            `  Entry Price: ${entryPrice}\n` +
+            `  Target %: ${strategy.stopLossPercentage || 'N/A'}%\n` +
+            `  Calculated Price: ${stopLossPrice.toFixed(8)}\n` +
+            `  Exchange Tick: ${rules.priceTick}\n` +
+            `  Rounded Price: ${slPriceRounded.toFixed(8)}\n` +
+            `  Effective %: ${effectiveSlPercent.toFixed(4)}%`
+          );
 
           if (exchange === Exchange.BYBIT) {
             const bybitSide = side === 'BUY' ? 'Buy' : 'Sell';
@@ -1770,14 +1790,27 @@ export class WebhookService {
 
         for (const tp of tpConfigs) {
           if (tp.percent && tp.percent > 0) {
-            const tpPrice = this.calculateTakeProfitPrice(side, entryPrice, tp.percent);
+            const tpPriceRaw = this.calculateTakeProfitPrice(side, entryPrice, tp.percent);
             const tpQty = (quantityForTPs * tp.qtyPercent) / 100;
 
             if (tpQty <= 0) continue;
 
-            this.logger.log(`[TP${tp.id}] Placing partial TP at ${tpPrice.toFixed(2)} for ${this.formatQuantityWithUsdt(tpQty, tpPrice)} (${tp.qtyPercent}%)`);
-
             const rules = await this.getSymbolRules(normalizedSymbol, strategy.isTestnet, exchange);
+            const tpPriceRounded = parseFloat(this.roundTick(tpPriceRaw, rules.priceTick));
+            const effectivePercent = side === 'BUY'
+              ? ((tpPriceRounded - entryPrice) / entryPrice) * 100
+              : ((entryPrice - tpPriceRounded) / entryPrice) * 100;
+
+            this.logger.log(
+              `[TP${tp.id}] Precision analysis:\n` +
+              `  Entry Price: ${entryPrice}\n` +
+              `  Target %: ${tp.percent}%\n` +
+              `  Calculated Price: ${tpPriceRaw.toFixed(8)}\n` +
+              `  Exchange Tick: ${rules.priceTick}\n` +
+              `  Rounded Price: ${tpPriceRounded.toFixed(8)}\n` +
+              `  Effective %: ${effectivePercent.toFixed(4)}%\n` +
+              `  Quantity: ${this.formatQuantityWithUsdt(tpQty, tpPriceRounded)}`
+            );
 
             try {
               if (exchange === Exchange.BYBIT) {
@@ -1788,7 +1821,7 @@ export class WebhookService {
                     side: side === 'BUY' ? 'Sell' : 'Buy',
                     orderType: 'Limit',
                     qty: this.normalizeQuantity(tpQty, rules.qtyStep, rules.minQty),
-                    price: this.roundTick(tpPrice, rules.priceTick),
+                    price: this.roundTick(tpPriceRaw, rules.priceTick),
                     reduceOnly: true
                   }
                 );
@@ -1797,7 +1830,7 @@ export class WebhookService {
                 }
               } else {
                 const tpOrderId = await this.createBinanceTakeProfitOrder(
-                  normalizedSymbol, side, tpQty, tpPrice, decryptedKey, decryptedSecret, strategy.isTestnet, strategy.hedgeMode
+                  normalizedSymbol, side, tpQty, tpPriceRaw, decryptedKey, decryptedSecret, strategy.isTestnet, strategy.hedgeMode
                 );
                 tpOrderIds.push(`${tp.id}:${tpOrderId}`);
                 this.logger.log(`[TP${tp.id}] Successfully created Take Profit order: ${tpOrderId}`);

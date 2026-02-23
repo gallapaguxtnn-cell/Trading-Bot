@@ -100,6 +100,13 @@ export class StrategiesService {
   }
 
   async create(strategy: Partial<Strategy>): Promise<Strategy> {
+    this.logger.log(
+      `[STRATEGY CREATE] Risk values received:\n` +
+      `  SL%: ${strategy.stopLossPercentage} (type: ${typeof strategy.stopLossPercentage})\n` +
+      `  TP1%: ${strategy.takeProfitPercentage1} (type: ${typeof strategy.takeProfitPercentage1})\n` +
+      `  TP2%: ${strategy.takeProfitPercentage2} (type: ${typeof strategy.takeProfitPercentage2})\n` +
+      `  TP3%: ${strategy.takeProfitPercentage3} (type: ${typeof strategy.takeProfitPercentage3})`
+    );
     if (strategy.apiKey) {
         strategy.apiKey = await EncryptionUtil.encrypt(strategy.apiKey);
     }
@@ -111,6 +118,13 @@ export class StrategiesService {
   }
 
   async update(id: string, strategy: Partial<Strategy>): Promise<Strategy | null> {
+    this.logger.log(
+      `[STRATEGY UPDATE] Risk values received:\n` +
+      `  SL%: ${strategy.stopLossPercentage} (type: ${typeof strategy.stopLossPercentage})\n` +
+      `  TP1%: ${strategy.takeProfitPercentage1} (type: ${typeof strategy.takeProfitPercentage1})\n` +
+      `  TP2%: ${strategy.takeProfitPercentage2} (type: ${typeof strategy.takeProfitPercentage2})\n` +
+      `  TP3%: ${strategy.takeProfitPercentage3} (type: ${typeof strategy.takeProfitPercentage3})`
+    );
     if (strategy.apiKey) {
         strategy.apiKey = await EncryptionUtil.encrypt(strategy.apiKey);
     }
