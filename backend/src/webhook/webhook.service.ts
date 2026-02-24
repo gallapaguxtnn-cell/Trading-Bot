@@ -626,21 +626,14 @@ export class WebhookService {
       const rules = await this.getSymbolRules(symbol, isTestnet);
       const normalizedQty = this.normalizeQuantity(quantity, rules.qtyStep, rules.minQty);
 
-      const limitSlippage = 0.003;
-      const rawLimitPrice = side === 'BUY'
-        ? stopPrice * (1 - limitSlippage)
-        : stopPrice * (1 + limitSlippage);
       const normalizedStopPrice = this.roundTick(stopPrice, rules.priceTick);
-      const normalizedLimitPrice = this.roundTick(rawLimitPrice, rules.priceTick);
 
       const params = new URLSearchParams();
       params.append('symbol', symbol);
       params.append('side', closeSide);
-      params.append('type', 'STOP');
+      params.append('type', 'STOP_MARKET');
       params.append('quantity', normalizedQty);
       params.append('stopPrice', normalizedStopPrice);
-      params.append('price', normalizedLimitPrice);
-      params.append('timeInForce', 'GTC');
       params.append('workingType', 'MARK_PRICE');
 
       if (hedgeMode) {
@@ -648,12 +641,11 @@ export class WebhookService {
         params.append('positionSide', positionSide);
 
         this.logger.log(
-          `[SL CREATE] Hedge Mode STOP_LIMIT\n` +
+          `[SL CREATE] Hedge Mode STOP_MARKET\n` +
           `  Symbol: ${symbol}\n` +
           `  Entry Side: ${side} → Close Side: ${closeSide}\n` +
           `  Position Side: ${positionSide}\n` +
           `  Stop Price (trigger): ${normalizedStopPrice}\n` +
-          `  Limit Price (exec): ${normalizedLimitPrice}\n` +
           `  Quantity: ${normalizedQty} (raw: ${quantity})\n` +
           `  Rules: step=${rules.qtyStep}, min=${rules.minQty}, tick=${rules.priceTick}`
         );
@@ -661,11 +653,10 @@ export class WebhookService {
         params.append('reduceOnly', 'true');
 
         this.logger.log(
-          `[SL CREATE] One-Way Mode STOP_LIMIT\n` +
+          `[SL CREATE] One-Way Mode STOP_MARKET\n` +
           `  Symbol: ${symbol}\n` +
           `  Entry Side: ${side} → Close Side: ${closeSide}\n` +
           `  Stop Price (trigger): ${normalizedStopPrice}\n` +
-          `  Limit Price (exec): ${normalizedLimitPrice}\n` +
           `  Quantity: ${normalizedQty} (raw: ${quantity})\n` +
           `  Using reduceOnly=true`
         );
@@ -1693,16 +1684,23 @@ export class WebhookService {
       // --- STOP LOSS & TAKE PROFIT CREATION WITH ROLLBACK ---
       // CRITICAL: If SL/TP creation fails, we MUST close the position to avoid unprotected trades
       try {
-        // For MARKET orders on Binance, use the actual filled price from the position
-        // For LIMIT orders or other exchanges, use the order price
-        const priceForProtectionOrders = (exchange === Exchange.BINANCE && !isLimitOrder && actualEntryPrice)
-          ? actualEntryPrice
-          : entryPrice;
+        // IMPORTANT LOGIC:
+        // - First entry (not averaging): Use actual filled price from position (accounts for slippage)
+        // - Averaging entry: ALWAYS use signal price (NOT the average position price)
+        //   Example: First entry $100, second entry $110 → position avg is $105
+        //   But we want TPs for second entry based on $110, not $105!
+        const priceForProtectionOrders = (exchange === Exchange.BINANCE && !isLimitOrder && actualEntryPrice && !isAveragingTrade)
+          ? actualEntryPrice  // First entry MARKET: use real execution price
+          : entryPrice;       // Averaging or LIMIT: use signal price
 
         if (priceForProtectionOrders !== entryPrice) {
           this.logger.log(
             `[PROTECTION ORDERS] Using actual filled price: ${priceForProtectionOrders} instead of signal price: ${entryPrice}\n` +
             `  Slippage: ${((priceForProtectionOrders - entryPrice) / entryPrice * 100).toFixed(4)}%`
+          );
+        } else if (isAveragingTrade && actualEntryPrice) {
+          this.logger.log(
+            `[PROTECTION ORDERS] Averaging mode: Using signal price ${entryPrice} (NOT position average ${actualEntryPrice})`
           );
         }
 

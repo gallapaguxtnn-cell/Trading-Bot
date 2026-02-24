@@ -170,18 +170,11 @@ export class StopLossService {
       const qty = remainingQty.toFixed(3);
 
       const orderParams = new URLSearchParams();
-      const limitSlippage = 0.003;
-      const rawLimitPrice = trade.side === 'BUY'
-        ? stopPrice * (1 - limitSlippage)
-        : stopPrice * (1 + limitSlippage);
-
       orderParams.append('symbol', trade.symbol);
       orderParams.append('side', closeSide);
-      orderParams.append('type', 'STOP');
+      orderParams.append('type', 'STOP_MARKET');
       orderParams.append('quantity', qty);
       orderParams.append('stopPrice', stopPrice.toFixed(2));
-      orderParams.append('price', rawLimitPrice.toFixed(2));
-      orderParams.append('timeInForce', 'GTC');
       orderParams.append('workingType', 'MARK_PRICE');
 
       if (strategy.hedgeMode) {
