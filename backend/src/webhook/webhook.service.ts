@@ -662,7 +662,7 @@ export class WebhookService {
       params.append('algoType', 'CONDITIONAL');
       params.append('type', 'STOP_MARKET');
       params.append('quantity', normalizedQty);
-      params.append('stopPrice', normalizedStopPrice);
+      params.append('triggerPrice', normalizedStopPrice);  // ALGO API uses triggerPrice, not stopPrice
       params.append('workingType', 'MARK_PRICE');
 
       if (hedgeMode) {

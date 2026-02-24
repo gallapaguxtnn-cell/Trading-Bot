@@ -329,7 +329,7 @@ export class TakeProfitService {
     params.append('algoType', 'CONDITIONAL');
     params.append('type', 'STOP_MARKET');
     params.append('quantity', qty);
-    params.append('stopPrice', stopPrice.toFixed(2));
+    params.append('triggerPrice', stopPrice.toFixed(2));  // ALGO API uses triggerPrice, not stopPrice
     params.append('workingType', 'MARK_PRICE');
 
     if (hedgeMode) {

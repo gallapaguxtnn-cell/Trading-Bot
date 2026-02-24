@@ -175,7 +175,7 @@ export class StopLossService {
       orderParams.append('algoType', 'CONDITIONAL');
       orderParams.append('type', 'STOP_MARKET');
       orderParams.append('quantity', qty);
-      orderParams.append('stopPrice', stopPrice.toFixed(2));
+      orderParams.append('triggerPrice', stopPrice.toFixed(2));  // ALGO API uses triggerPrice, not stopPrice
       orderParams.append('workingType', 'MARK_PRICE');
 
       if (strategy.hedgeMode) {
