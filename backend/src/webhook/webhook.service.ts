@@ -659,6 +659,7 @@ export class WebhookService {
       const params = new URLSearchParams();
       params.append('symbol', symbol);
       params.append('side', closeSide);
+      params.append('algoType', 'CONDITIONAL');
       params.append('type', 'STOP_MARKET');
       params.append('quantity', normalizedQty);
       params.append('stopPrice', normalizedStopPrice);

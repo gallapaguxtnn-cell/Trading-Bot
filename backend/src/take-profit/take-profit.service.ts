@@ -326,6 +326,7 @@ export class TakeProfitService {
     const params = new URLSearchParams();
     params.append('symbol', symbol);
     params.append('side', closeSide);
+    params.append('algoType', 'CONDITIONAL');
     params.append('type', 'STOP_MARKET');
     params.append('quantity', qty);
     params.append('stopPrice', stopPrice.toFixed(2));

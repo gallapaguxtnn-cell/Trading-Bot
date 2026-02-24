@@ -172,6 +172,7 @@ export class StopLossService {
       const orderParams = new URLSearchParams();
       orderParams.append('symbol', trade.symbol);
       orderParams.append('side', closeSide);
+      orderParams.append('algoType', 'CONDITIONAL');
       orderParams.append('type', 'STOP_MARKET');
       orderParams.append('quantity', qty);
       orderParams.append('stopPrice', stopPrice.toFixed(2));
