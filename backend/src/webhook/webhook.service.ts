@@ -785,7 +785,7 @@ export class WebhookService {
     isTestnet: boolean,
     hedgeMode: boolean = false,
     expectedMinQty?: number
-  ): Promise<void> {
+  ): Promise<{ entryPrice: number }> {
     const baseURL = isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
     const endpoint = '/fapi/v2/positionRisk';
     const positionSide = hedgeMode ? (side === 'BUY' ? 'LONG' : 'SHORT') : 'BOTH';
@@ -861,7 +861,7 @@ export class WebhookService {
           `  Attempt: ${attempt}/${maxRetries}`
         );
 
-        return;
+        return { entryPrice: parseFloat(targetPosition.entryPrice) };
       } catch (error: any) {
         if (error instanceof PositionNotFoundError) {
           throw error;
@@ -881,6 +881,8 @@ export class WebhookService {
         await new Promise(resolve => setTimeout(resolve, delay));
       }
     }
+
+    throw new PositionNotFoundError(symbol, positionSide);
   }
 
   private scheduleProtectionOrders(
@@ -1643,6 +1645,8 @@ export class WebhookService {
       }
 
       // For Binance MARKET: Verify position exists before creating SL/TP (prevents race condition)
+      let actualEntryPrice: number | undefined;
+
       if (exchange === Exchange.BINANCE) {
         this.logger.log(`[POSITION VERIFY] Waiting for position to appear in system...`);
 
@@ -1654,7 +1658,7 @@ export class WebhookService {
         const expectedCombinedQty = existingQtyForVerify > 0 ? existingQtyForVerify + quantity : undefined;
 
         try {
-          await this.verifyPositionExists(
+          const positionInfo = await this.verifyPositionExists(
             normalizedSymbol,
             side,
             decryptedKey,
@@ -1663,6 +1667,8 @@ export class WebhookService {
             strategy.hedgeMode,
             expectedCombinedQty
           );
+          actualEntryPrice = positionInfo.entryPrice;
+          this.logger.log(`[ENTRY PRICE] Using actual entry price from position: ${actualEntryPrice} (signal was ${signal.price})`);
         } catch (error: any) {
           this.logger.error(
             `[POSITION VERIFY] CRITICAL - Position not found after entry order.\n` +
@@ -1687,6 +1693,19 @@ export class WebhookService {
       // --- STOP LOSS & TAKE PROFIT CREATION WITH ROLLBACK ---
       // CRITICAL: If SL/TP creation fails, we MUST close the position to avoid unprotected trades
       try {
+        // For MARKET orders on Binance, use the actual filled price from the position
+        // For LIMIT orders or other exchanges, use the order price
+        const priceForProtectionOrders = (exchange === Exchange.BINANCE && !isLimitOrder && actualEntryPrice)
+          ? actualEntryPrice
+          : entryPrice;
+
+        if (priceForProtectionOrders !== entryPrice) {
+          this.logger.log(
+            `[PROTECTION ORDERS] Using actual filled price: ${priceForProtectionOrders} instead of signal price: ${entryPrice}\n` +
+            `  Slippage: ${((priceForProtectionOrders - entryPrice) / entryPrice * 100).toFixed(4)}%`
+          );
+        }
+
         // --- STOP LOSS ---
         this.logger.log(
           `[PROTECTION ORDERS] Strategy values from DB:\n` +
@@ -1700,19 +1719,19 @@ export class WebhookService {
           stopLossPrice = signal.stopLoss;
           this.logger.log(`[SL] Using absolute stop loss from signal: ${stopLossPrice}`);
         } else if (strategy.stopLossPercentage && strategy.stopLossPercentage > 0) {
-          stopLossPrice = this.calculateStopLossPrice(side, entryPrice, strategy.stopLossPercentage);
+          stopLossPrice = this.calculateStopLossPrice(side, priceForProtectionOrders, strategy.stopLossPercentage);
         }
 
         if (stopLossPrice) {
           const rules = await this.getSymbolRules(normalizedSymbol, strategy.isTestnet, exchange);
           const slPriceRounded = parseFloat(this.roundTick(stopLossPrice, rules.priceTick));
           const effectiveSlPercent = side === 'BUY'
-            ? ((entryPrice - slPriceRounded) / entryPrice) * 100
-            : ((slPriceRounded - entryPrice) / entryPrice) * 100;
+            ? ((priceForProtectionOrders - slPriceRounded) / priceForProtectionOrders) * 100
+            : ((slPriceRounded - priceForProtectionOrders) / priceForProtectionOrders) * 100;
 
           this.logger.log(
             `[SL] Precision analysis:\n` +
-            `  Entry Price: ${entryPrice}\n` +
+            `  Entry Price: ${priceForProtectionOrders}\n` +
             `  Target %: ${strategy.stopLossPercentage || 'N/A'}%\n` +
             `  Calculated Price: ${stopLossPrice.toFixed(8)}\n` +
             `  Exchange Tick: ${rules.priceTick}\n` +
@@ -1790,7 +1809,7 @@ export class WebhookService {
 
         for (const tp of tpConfigs) {
           if (tp.percent && tp.percent > 0) {
-            const tpPriceRaw = this.calculateTakeProfitPrice(side, entryPrice, tp.percent);
+            const tpPriceRaw = this.calculateTakeProfitPrice(side, priceForProtectionOrders, tp.percent);
             const tpQty = (quantityForTPs * tp.qtyPercent) / 100;
 
             if (tpQty <= 0) continue;
@@ -1798,12 +1817,12 @@ export class WebhookService {
             const rules = await this.getSymbolRules(normalizedSymbol, strategy.isTestnet, exchange);
             const tpPriceRounded = parseFloat(this.roundTick(tpPriceRaw, rules.priceTick));
             const effectivePercent = side === 'BUY'
-              ? ((tpPriceRounded - entryPrice) / entryPrice) * 100
-              : ((entryPrice - tpPriceRounded) / entryPrice) * 100;
+              ? ((tpPriceRounded - priceForProtectionOrders) / priceForProtectionOrders) * 100
+              : ((priceForProtectionOrders - tpPriceRounded) / priceForProtectionOrders) * 100;
 
             this.logger.log(
               `[TP${tp.id}] Precision analysis:\n` +
-              `  Entry Price: ${entryPrice}\n` +
+              `  Entry Price: ${priceForProtectionOrders}\n` +
               `  Target %: ${tp.percent}%\n` +
               `  Calculated Price: ${tpPriceRaw.toFixed(8)}\n` +
               `  Exchange Tick: ${rules.priceTick}\n` +
@@ -1918,8 +1937,13 @@ export class WebhookService {
         }
       }
 
+      // Update trade with actual entry price (not signal price) for MARKET orders
+      const finalEntryPrice = (exchange === Exchange.BINANCE && !isLimitOrder && actualEntryPrice)
+        ? actualEntryPrice
+        : tradeData.entryPrice;
+
       await this.tradesService.updateTrade(savedTrade.id, {
-        entryPrice: tradeData.entryPrice,
+        entryPrice: finalEntryPrice,
         exchangeOrderId: tradeData.exchangeOrderId,
         stopLossOrderId: stopLossOrderId || undefined,
         takeProfitOrderId: takeProfitOrderId || undefined,
