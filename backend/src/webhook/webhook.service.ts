@@ -611,6 +611,32 @@ export class WebhookService {
     return response.data;
   }
 
+  private async createBinanceAlgoOrder(
+    params: URLSearchParams,
+    apiKey: string,
+    apiSecret: string,
+    isTestnet: boolean
+  ): Promise<{ algoId: number }> {
+    // NEW ALGO ORDER API (mandatory since 2025-12-09)
+    // For conditional orders: STOP_MARKET, TAKE_PROFIT_MARKET, STOP, TAKE_PROFIT, TRAILING_STOP_MARKET
+    const baseURL = isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
+    const endpoint = '/fapi/v1/algoOrder';
+
+    params.append('timestamp', Date.now().toString());
+    const queryString = params.toString();
+    const signature = crypto.createHmac('sha256', apiSecret).update(queryString).digest('hex');
+    const body = `${queryString}&signature=${signature}`;
+
+    const response = await axios.post(`${baseURL}${endpoint}`, body, {
+      headers: {
+        'X-MBX-APIKEY': apiKey,
+        'Content-Type': 'application/x-www-form-urlencoded'
+      }
+    });
+
+    return response.data;
+  }
+
   private async createBinanceStopLossOrder(
     symbol: string,
     side: 'BUY' | 'SELL',
@@ -628,6 +654,8 @@ export class WebhookService {
 
       const normalizedStopPrice = this.roundTick(stopPrice, rules.priceTick);
 
+      // NEW ALGO ORDER API (since 2025-12-09)
+      // Conditional orders must use /fapi/v1/algoOrder endpoint
       const params = new URLSearchParams();
       params.append('symbol', symbol);
       params.append('side', closeSide);
@@ -641,7 +669,7 @@ export class WebhookService {
         params.append('positionSide', positionSide);
 
         this.logger.log(
-          `[SL CREATE] Hedge Mode STOP_MARKET\n` +
+          `[SL CREATE] Hedge Mode STOP_MARKET (Algo API)\n` +
           `  Symbol: ${symbol}\n` +
           `  Entry Side: ${side} → Close Side: ${closeSide}\n` +
           `  Position Side: ${positionSide}\n` +
@@ -653,7 +681,7 @@ export class WebhookService {
         params.append('reduceOnly', 'true');
 
         this.logger.log(
-          `[SL CREATE] One-Way Mode STOP_MARKET\n` +
+          `[SL CREATE] One-Way Mode STOP_MARKET (Algo API)\n` +
           `  Symbol: ${symbol}\n` +
           `  Entry Side: ${side} → Close Side: ${closeSide}\n` +
           `  Stop Price (trigger): ${normalizedStopPrice}\n` +
@@ -664,10 +692,10 @@ export class WebhookService {
 
       this.logger.debug(`[SL CREATE] Full request params: ${params.toString()}`);
 
-      const response = await this.createBinanceOrder(params, apiKey, apiSecret, isTestnet);
+      const response = await this.createBinanceAlgoOrder(params, apiKey, apiSecret, isTestnet);
 
-      this.logger.log(`[SL CREATE] SUCCESS - Order ID: ${response.orderId}, Status: ${response.status}`);
-      return response.orderId.toString();
+      this.logger.log(`[SL CREATE] SUCCESS - Algo Order ID: ${response.algoId}`);
+      return response.algoId.toString();
     } catch (error: any) {
       const errorCode = error.response?.data?.code;
       const errorMsg = error.response?.data?.msg;

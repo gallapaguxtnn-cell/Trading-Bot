@@ -343,13 +343,14 @@ export class TakeProfitService {
     const queryString = params.toString();
     const signature = crypto.createHmac('sha256', apiSecret).update(queryString).digest('hex');
 
+    // NEW ALGO ORDER API (mandatory since 2025-12-09)
     const response = await axios.post(
-      `${baseUrl}/fapi/v1/order`,
+      `${baseUrl}/fapi/v1/algoOrder`,
       `${queryString}&signature=${signature}`,
       { headers: { 'X-MBX-APIKEY': apiKey, 'Content-Type': 'application/x-www-form-urlencoded' } }
     );
 
-    return response.data.orderId.toString();
+    return response.data.algoId.toString();
   }
 
   private async cancelTradeSpecificTpOrders(

@@ -186,13 +186,14 @@ export class StopLossService {
       orderParams.append('timestamp', Date.now().toString());
       const orderSig = crypto.createHmac('sha256', apiSecret).update(orderParams.toString()).digest('hex');
 
+      // NEW ALGO ORDER API (mandatory since 2025-12-09)
       const orderResp = await axios.post(
-        `${baseUrl}/fapi/v1/order`,
+        `${baseUrl}/fapi/v1/algoOrder`,
         `${orderParams.toString()}&signature=${orderSig}`,
         { headers: { 'X-MBX-APIKEY': apiKey, 'Content-Type': 'application/x-www-form-urlencoded' } }
       );
 
-      const newSlId = orderResp.data.orderId.toString();
+      const newSlId = orderResp.data.algoId.toString();
       trade.stopLossOrderId = newSlId;
       await this.tradesRepository.save(trade);
 
