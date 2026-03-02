@@ -219,7 +219,7 @@ export class TakeProfitService {
 
     try {
       if (exchange === Exchange.BINANCE) {
-        await this.cancelBinanceOrder(trade.stopLossOrderId, trade.symbol, apiKey, apiSecret, isTestnet);
+        await this.cancelBinanceOrderOrAlgo(trade.stopLossOrderId, trade.symbol, apiKey, apiSecret, isTestnet);
         this.logger.log(`[SL] Cancelled SL order ${trade.stopLossOrderId} after all TPs filled`);
       }
     } catch (e: any) {
@@ -284,6 +284,57 @@ export class TakeProfitService {
     await axios.delete(`${baseUrl}/fapi/v1/order?${queryString}&signature=${signature}`, {
       headers: { 'X-MBX-APIKEY': apiKey }
     });
+  }
+
+  private async cancelBinanceAlgoOrder(
+    algoId: string,
+    apiKey: string,
+    apiSecret: string,
+    isTestnet: boolean
+  ): Promise<void> {
+    // NEW ALGO ORDER API - Cancel conditional orders (STOP_MARKET, etc)
+    const baseUrl = isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
+    const params = new URLSearchParams();
+    params.append('algoId', algoId);
+    params.append('timestamp', Date.now().toString());
+
+    const queryString = params.toString();
+    const signature = crypto.createHmac('sha256', apiSecret).update(queryString).digest('hex');
+
+    await axios.delete(`${baseUrl}/fapi/v1/algoOrder?${queryString}&signature=${signature}`, {
+      headers: { 'X-MBX-APIKEY': apiKey }
+    });
+  }
+
+  private async cancelBinanceOrderOrAlgo(
+    orderId: string,
+    symbol: string,
+    apiKey: string,
+    apiSecret: string,
+    isTestnet: boolean
+  ): Promise<void> {
+    // Smart cancellation: Try Algo Order first (new orders), fallback to regular order (old orders)
+    try {
+      // Try as Algo Order first (STOP_MARKET conditional orders created after Dec 2025)
+      await this.cancelBinanceAlgoOrder(orderId, apiKey, apiSecret, isTestnet);
+      this.logger.debug(`[CANCEL] Successfully cancelled Algo Order ${orderId}`);
+    } catch (algoError: any) {
+      const algoErrorCode = algoError.response?.data?.code;
+
+      // If not found as Algo Order, try as regular order (backwards compatibility)
+      if (algoErrorCode === -4143 || algoErrorCode === -1102) {
+        try {
+          await this.cancelBinanceOrder(orderId, symbol, apiKey, apiSecret, isTestnet);
+          this.logger.debug(`[CANCEL] Successfully cancelled regular order ${orderId}`);
+        } catch (regularError: any) {
+          // If both fail, throw the original error
+          throw regularError;
+        }
+      } else {
+        // Other algo order errors, rethrow
+        throw algoError;
+      }
+    }
   }
 
   private async getBinanceOrderStopPrice(

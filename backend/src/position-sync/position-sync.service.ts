@@ -529,14 +529,7 @@ export class PositionSyncService {
 
     if (trade.stopLossOrderId) {
       try {
-        const timestamp = Date.now();
-        const queryString = `symbol=${trade.symbol}&orderId=${trade.stopLossOrderId}&timestamp=${timestamp}`;
-        const signature = crypto.createHmac('sha256', apiSecret).update(queryString).digest('hex');
-
-        await axios.delete(
-          `${baseUrl}/fapi/v1/order?${queryString}&signature=${signature}`,
-          { headers: { 'X-MBX-APIKEY': apiKey } }
-        );
+        await this.cancelBinanceOrderOrAlgo(trade.stopLossOrderId, trade.symbol, apiKey, apiSecret, isTestnet);
         this.logger.log(`[CANCEL] Cancelled SL order ${trade.stopLossOrderId} for ${trade.symbol}`);
       } catch (error: any) {
         if (error.response?.data?.code !== -2011) {
@@ -560,6 +553,66 @@ export class PositionSyncService {
         if (error.response?.data?.code !== -2011) {
           this.logger.debug(`[CANCEL] Could not cancel TP order: ${error.response?.data?.msg || error.message}`);
         }
+      }
+    }
+  }
+
+  private async cancelBinanceAlgoOrder(
+    algoId: string,
+    apiKey: string,
+    apiSecret: string,
+    isTestnet: boolean
+  ): Promise<void> {
+    // NEW ALGO ORDER API - Cancel conditional orders (STOP_MARKET, etc)
+    const baseUrl = isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
+    const params = new URLSearchParams();
+    params.append('algoId', algoId);
+    params.append('timestamp', Date.now().toString());
+
+    const queryString = params.toString();
+    const signature = crypto.createHmac('sha256', apiSecret).update(queryString).digest('hex');
+
+    await axios.delete(`${baseUrl}/fapi/v1/algoOrder?${queryString}&signature=${signature}`, {
+      headers: { 'X-MBX-APIKEY': apiKey }
+    });
+  }
+
+  private async cancelBinanceOrderOrAlgo(
+    orderId: string,
+    symbol: string,
+    apiKey: string,
+    apiSecret: string,
+    isTestnet: boolean
+  ): Promise<void> {
+    // Smart cancellation: Try Algo Order first (new orders), fallback to regular order (old orders)
+    const baseUrl = isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
+
+    try {
+      // Try as Algo Order first (STOP_MARKET conditional orders created after Dec 2025)
+      await this.cancelBinanceAlgoOrder(orderId, apiKey, apiSecret, isTestnet);
+      this.logger.debug(`[CANCEL] Successfully cancelled Algo Order ${orderId}`);
+    } catch (algoError: any) {
+      const algoErrorCode = algoError.response?.data?.code;
+
+      // If not found as Algo Order, try as regular order (backwards compatibility)
+      if (algoErrorCode === -4143 || algoErrorCode === -1102) {
+        try {
+          const timestamp = Date.now();
+          const queryString = `symbol=${symbol}&orderId=${orderId}&timestamp=${timestamp}`;
+          const signature = crypto.createHmac('sha256', apiSecret).update(queryString).digest('hex');
+
+          await axios.delete(
+            `${baseUrl}/fapi/v1/order?${queryString}&signature=${signature}`,
+            { headers: { 'X-MBX-APIKEY': apiKey } }
+          );
+          this.logger.debug(`[CANCEL] Successfully cancelled regular order ${orderId}`);
+        } catch (regularError: any) {
+          // If both fail, throw the original error
+          throw regularError;
+        }
+      } else {
+        // Other algo order errors, rethrow
+        throw algoError;
       }
     }
   }

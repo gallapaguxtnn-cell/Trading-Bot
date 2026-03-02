@@ -549,6 +549,57 @@ export class WebhookService {
     });
   }
 
+  private async cancelBinanceAlgoOrder(
+    algoId: string,
+    apiKey: string,
+    apiSecret: string,
+    isTestnet: boolean
+  ): Promise<void> {
+    // NEW ALGO ORDER API - Cancel conditional orders (STOP_MARKET, etc)
+    const baseURL = isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
+    const params = new URLSearchParams();
+    params.append('algoId', algoId);
+    params.append('timestamp', Date.now().toString());
+
+    const queryString = params.toString();
+    const signature = crypto.createHmac('sha256', apiSecret).update(queryString).digest('hex');
+
+    await axios.delete(`${baseURL}/fapi/v1/algoOrder?${queryString}&signature=${signature}`, {
+      headers: { 'X-MBX-APIKEY': apiKey }
+    });
+  }
+
+  private async cancelBinanceOrderOrAlgo(
+    symbol: string,
+    orderId: string,
+    apiKey: string,
+    apiSecret: string,
+    isTestnet: boolean
+  ): Promise<void> {
+    // Smart cancellation: Try Algo Order first (new orders), fallback to regular order (old orders)
+    try {
+      // Try as Algo Order first (STOP_MARKET conditional orders created after Dec 2025)
+      await this.cancelBinanceAlgoOrder(orderId, apiKey, apiSecret, isTestnet);
+      this.logger.debug(`[CANCEL] Successfully cancelled Algo Order ${orderId}`);
+    } catch (algoError: any) {
+      const algoErrorCode = algoError.response?.data?.code;
+
+      // If not found as Algo Order, try as regular order (backwards compatibility)
+      if (algoErrorCode === -4143 || algoErrorCode === -1102) {
+        try {
+          await this.cancelBinanceSingleOrder(symbol, orderId, apiKey, apiSecret, isTestnet);
+          this.logger.debug(`[CANCEL] Successfully cancelled regular order ${orderId}`);
+        } catch (regularError: any) {
+          // If both fail, throw the original error
+          throw regularError;
+        }
+      } else {
+        // Other algo order errors, rethrow
+        throw algoError;
+      }
+    }
+  }
+
   private async cancelAllBinanceOrders(
     apiKey: string,
     apiSecret: string,
@@ -1783,7 +1834,7 @@ export class WebhookService {
                 !existingTrade.stopLossOrderId.startsWith('ROLLBACK')
               ) {
                 try {
-                  await this.cancelBinanceSingleOrder(normalizedSymbol, existingTrade.stopLossOrderId, decryptedKey, decryptedSecret, strategy.isTestnet);
+                  await this.cancelBinanceOrderOrAlgo(normalizedSymbol, existingTrade.stopLossOrderId, decryptedKey, decryptedSecret, strategy.isTestnet);
                   this.logger.log(`[SL UNIFY] Cancelled SL ${existingTrade.stopLossOrderId} for trade ${existingTrade.id}`);
                 } catch (e: any) {
                   this.logger.warn(`[SL UNIFY] Could not cancel SL ${existingTrade.stopLossOrderId}: ${e.message}`);
