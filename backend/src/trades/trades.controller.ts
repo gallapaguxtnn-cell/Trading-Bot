@@ -303,6 +303,7 @@ export class TradesController {
 
           this.logger.log(`[CLOSE] Hedge mode: Found ${ordersToCancel.length} orders to cancel for ${positionSide}`);
 
+          // Cancel regular orders (LIMIT, etc)
           for (const order of ordersToCancel) {
             try {
               const cancelParams = new URLSearchParams();
@@ -320,6 +321,45 @@ export class TradesController {
               this.logger.warn(`[CLOSE] Failed to cancel order ${order.orderId}: ${e.message}`);
             }
           }
+
+          // Also cancel Algo Orders (CONDITIONAL - STOP_MARKET, etc)
+          try {
+            const algoParams = new URLSearchParams();
+            algoParams.append('symbol', symbol);
+            algoParams.append('timestamp', Date.now().toString());
+            const algoQuery = algoParams.toString();
+            const algoSig = crypto.createHmac('sha256', apiSecret).update(algoQuery).digest('hex');
+
+            const algoOrdersResponse = await axios.get(
+              `${baseURL}/fapi/v1/openAlgoOrders?${algoQuery}&signature=${algoSig}`,
+              { headers: { 'X-MBX-APIKEY': apiKey } }
+            );
+
+            const algoOrdersToCancel = algoOrdersResponse.data.filter(
+              (order: any) => order.positionSide === positionSide
+            );
+
+            this.logger.log(`[CLOSE] Hedge mode: Found ${algoOrdersToCancel.length} algo orders to cancel for ${positionSide}`);
+
+            for (const algoOrder of algoOrdersToCancel) {
+              try {
+                const cancelAlgoParams = new URLSearchParams();
+                cancelAlgoParams.append('algoId', algoOrder.algoId.toString());
+                cancelAlgoParams.append('timestamp', Date.now().toString());
+                const cancelAlgoQuery = cancelAlgoParams.toString();
+                const cancelAlgoSig = crypto.createHmac('sha256', apiSecret).update(cancelAlgoQuery).digest('hex');
+
+                await axios.delete(`${baseURL}/fapi/v1/algoOrder?${cancelAlgoQuery}&signature=${cancelAlgoSig}`, {
+                  headers: { 'X-MBX-APIKEY': apiKey }
+                });
+                this.logger.log(`[CLOSE] Cancelled algo order ${algoOrder.algoId}`);
+              } catch (e: any) {
+                this.logger.warn(`[CLOSE] Failed to cancel algo order ${algoOrder.algoId}: ${e.message}`);
+              }
+            }
+          } catch (e: any) {
+            this.logger.warn(`[CLOSE] Failed to fetch/cancel algo orders: ${e.message}`);
+          }
         } else {
           // One-way mode: cancel all orders for symbol
           const params = new URLSearchParams();
@@ -329,9 +369,43 @@ export class TradesController {
           const queryString = params.toString();
           const signature = crypto.createHmac('sha256', apiSecret).update(queryString).digest('hex');
 
+          // Cancel all regular orders
           await axios.delete(`${baseURL}/fapi/v1/allOpenOrders?${queryString}&signature=${signature}`, {
             headers: { 'X-MBX-APIKEY': apiKey }
           });
+
+          // Also cancel all Algo Orders (CONDITIONAL)
+          try {
+            const algoParams = new URLSearchParams();
+            algoParams.append('symbol', symbol);
+            algoParams.append('timestamp', Date.now().toString());
+            const algoQuery = algoParams.toString();
+            const algoSig = crypto.createHmac('sha256', apiSecret).update(algoQuery).digest('hex');
+
+            const algoOrdersResponse = await axios.get(
+              `${baseURL}/fapi/v1/openAlgoOrders?${algoQuery}&signature=${algoSig}`,
+              { headers: { 'X-MBX-APIKEY': apiKey } }
+            );
+
+            for (const algoOrder of algoOrdersResponse.data) {
+              try {
+                const cancelAlgoParams = new URLSearchParams();
+                cancelAlgoParams.append('algoId', algoOrder.algoId.toString());
+                cancelAlgoParams.append('timestamp', Date.now().toString());
+                const cancelAlgoQuery = cancelAlgoParams.toString();
+                const cancelAlgoSig = crypto.createHmac('sha256', apiSecret).update(cancelAlgoQuery).digest('hex');
+
+                await axios.delete(`${baseURL}/fapi/v1/algoOrder?${cancelAlgoQuery}&signature=${cancelAlgoSig}`, {
+                  headers: { 'X-MBX-APIKEY': apiKey }
+                });
+                this.logger.log(`[CLOSE] Cancelled algo order ${algoOrder.algoId}`);
+              } catch (e: any) {
+                this.logger.warn(`[CLOSE] Failed to cancel algo order ${algoOrder.algoId}: ${e.message}`);
+              }
+            }
+          } catch (e: any) {
+            this.logger.warn(`[CLOSE] Failed to fetch/cancel algo orders: ${e.message}`);
+          }
         }
       }
       this.logger.log(`[CLOSE] Cancelled all orders for ${symbol}`);

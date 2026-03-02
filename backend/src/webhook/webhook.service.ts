@@ -607,8 +607,8 @@ export class WebhookService {
     symbol: string
   ): Promise<void> {
     const baseURL = isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
-    const endpoint = '/fapi/v1/allOpenOrders';
 
+    // Cancel regular orders (LIMIT, etc)
     const params = new URLSearchParams();
     params.append('symbol', symbol);
     params.append('timestamp', Date.now().toString());
@@ -617,12 +617,45 @@ export class WebhookService {
     const signature = crypto.createHmac('sha256', apiSecret).update(queryString).digest('hex');
 
     try {
-      await axios.delete(`${baseURL}${endpoint}?${queryString}&signature=${signature}`, {
+      await axios.delete(`${baseURL}/fapi/v1/allOpenOrders?${queryString}&signature=${signature}`, {
         headers: { 'X-MBX-APIKEY': apiKey }
       });
       this.logger.log(`[BINANCE] Cancelled all open orders for ${symbol}`);
     } catch (error: any) {
        this.logger.warn(`[BINANCE] Failed to cancel open orders: ${error.response?.data?.msg || error.message}`);
+    }
+
+    // Also cancel Algo Orders (CONDITIONAL - STOP_MARKET, etc)
+    try {
+      const algoParams = new URLSearchParams();
+      algoParams.append('symbol', symbol);
+      algoParams.append('timestamp', Date.now().toString());
+      const algoQuery = algoParams.toString();
+      const algoSig = crypto.createHmac('sha256', apiSecret).update(algoQuery).digest('hex');
+
+      const algoOrdersResponse = await axios.get(
+        `${baseURL}/fapi/v1/openAlgoOrders?${algoQuery}&signature=${algoSig}`,
+        { headers: { 'X-MBX-APIKEY': apiKey } }
+      );
+
+      for (const algoOrder of algoOrdersResponse.data) {
+        try {
+          const cancelAlgoParams = new URLSearchParams();
+          cancelAlgoParams.append('algoId', algoOrder.algoId.toString());
+          cancelAlgoParams.append('timestamp', Date.now().toString());
+          const cancelAlgoQuery = cancelAlgoParams.toString();
+          const cancelAlgoSig = crypto.createHmac('sha256', apiSecret).update(cancelAlgoQuery).digest('hex');
+
+          await axios.delete(`${baseURL}/fapi/v1/algoOrder?${cancelAlgoQuery}&signature=${cancelAlgoSig}`, {
+            headers: { 'X-MBX-APIKEY': apiKey }
+          });
+          this.logger.log(`[BINANCE] Cancelled algo order ${algoOrder.algoId} for ${symbol}`);
+        } catch (e: any) {
+          this.logger.warn(`[BINANCE] Failed to cancel algo order ${algoOrder.algoId}: ${e.message}`);
+        }
+      }
+    } catch (e: any) {
+      this.logger.warn(`[BINANCE] Failed to fetch/cancel algo orders: ${e.message}`);
     }
   }
 
