@@ -1550,9 +1550,9 @@ export class WebhookService {
       this.logger.log(`[QUANTITY CALC] Using explicit quantity from signal: ${this.formatQuantityWithUsdt(quantity, effectivePrice!)}`);
     } else if (signal.accountPercentage && effectivePrice) {
       const accountBalance = await this.getAccountBalance(strategy);
-      this.logger.log(`[QUANTITY CALC] Signal percentage mode - Balance: ${accountBalance.toFixed(2)} USDT, Percentage: ${signal.accountPercentage}%`);
+      this.logger.log(`[QUANTITY CALC] Signal percentage mode - Balance: ${accountBalance.toFixed(2)} USDT, Percentage: ${signal.accountPercentage}%, Leverage: ${strategy.leverage}x`);
 
-      const targetNotional = accountBalance * (signal.accountPercentage / 100);
+      const targetNotional = accountBalance * (signal.accountPercentage / 100) * strategy.leverage;
       quantity = targetNotional / effectivePrice;
       notional = targetNotional;
 
@@ -1568,9 +1568,9 @@ export class WebhookService {
           this.logger.log(`[COMPOUND OFF] Using fixed quantity from first trade: ${this.formatQuantityWithUsdt(quantity, effectivePrice)}, Notional: ${notional.toFixed(2)} USDT`);
         } else {
           const accountBalance = await this.getAccountBalance(strategy);
-          this.logger.log(`[COMPOUND OFF] First trade - Balance: ${accountBalance.toFixed(2)} USDT, Percentage: ${strategy.accountPercentage}%`);
+          this.logger.log(`[COMPOUND OFF] First trade - Balance: ${accountBalance.toFixed(2)} USDT, Percentage: ${strategy.accountPercentage}%, Leverage: ${strategy.leverage}x`);
 
-          const targetNotional = accountBalance * (strategy.accountPercentage / 100);
+          const targetNotional = accountBalance * (strategy.accountPercentage / 100) * strategy.leverage;
           quantity = targetNotional / effectivePrice;
           notional = targetNotional;
 
@@ -1578,9 +1578,9 @@ export class WebhookService {
         }
       } else {
         const accountBalance = await this.getAccountBalance(strategy);
-        this.logger.log(`[COMPOUND ON] Balance: ${accountBalance.toFixed(2)} USDT, Percentage: ${strategy.accountPercentage}%`);
+        this.logger.log(`[COMPOUND ON] Balance: ${accountBalance.toFixed(2)} USDT, Percentage: ${strategy.accountPercentage}%, Leverage: ${strategy.leverage}x`);
 
-        const targetNotional = accountBalance * (strategy.accountPercentage / 100);
+        const targetNotional = accountBalance * (strategy.accountPercentage / 100) * strategy.leverage;
         quantity = targetNotional / effectivePrice;
         notional = targetNotional;
 

@@ -720,38 +720,44 @@ export class PositionSyncService {
             if (tp3Price && markPrice >= tp3Price && tp2Price) {
                  if (strategy.breakAgain && (!trade.currentStopLoss || trade.currentStopLoss < tp2Price)) {
                     newStopLoss = tp2Price;
-                    triggeredLevel = 'TP3 Crossed -> Move SL to TP2';
+                    triggeredLevel = 'TP3 -> SL to TP2';
                  }
             }
             else if (tp2Price && markPrice >= tp2Price && tp1Price) {
                 if (strategy.breakAgain && (!trade.currentStopLoss || trade.currentStopLoss < tp1Price)) {
                     newStopLoss = tp1Price;
-                    triggeredLevel = 'TP2 Crossed -> Move SL to TP1';
+                    triggeredLevel = 'TP2 -> SL to TP1';
                 }
             }
             else if (tp1Price && markPrice >= tp1Price) {
-                if ((strategy.breakAgain || strategy.moveSLToBreakeven) && (!trade.currentStopLoss || trade.currentStopLoss < entryPrice)) {
-                    newStopLoss = entryPrice * 1.001; 
-                    triggeredLevel = 'TP1 Crossed -> Move SL to Breakeven';
+                if (strategy.moveSLToBreakeven && (!trade.currentStopLoss || trade.currentStopLoss < entryPrice)) {
+                    newStopLoss = entryPrice;
+                    triggeredLevel = 'TP1 -> SL to Breakeven';
+                } else if (strategy.breakAgain && (!trade.currentStopLoss || trade.currentStopLoss < entryPrice)) {
+                    newStopLoss = entryPrice;
+                    triggeredLevel = 'TP1 -> SL to Entry';
                 }
             }
         } else {
             if (tp3Price && markPrice <= tp3Price && tp2Price) {
                  if (strategy.breakAgain && (!trade.currentStopLoss || trade.currentStopLoss > tp2Price)) {
                     newStopLoss = tp2Price;
-                    triggeredLevel = 'TP3 Crossed -> Move SL to TP2';
+                    triggeredLevel = 'TP3 -> SL to TP2';
                  }
             }
             else if (tp2Price && markPrice <= tp2Price && tp1Price) {
                 if (strategy.breakAgain && (!trade.currentStopLoss || trade.currentStopLoss > tp1Price)) {
                     newStopLoss = tp1Price;
-                    triggeredLevel = 'TP2 Crossed -> Move SL to TP1';
+                    triggeredLevel = 'TP2 -> SL to TP1';
                 }
             }
             else if (tp1Price && markPrice <= tp1Price) {
-                if ((strategy.breakAgain || strategy.moveSLToBreakeven) && (!trade.currentStopLoss || trade.currentStopLoss > entryPrice)) {
-                    newStopLoss = entryPrice * 0.999;
-                    triggeredLevel = 'TP1 Crossed -> Move SL to Breakeven';
+                if (strategy.moveSLToBreakeven && (!trade.currentStopLoss || trade.currentStopLoss > entryPrice)) {
+                    newStopLoss = entryPrice;
+                    triggeredLevel = 'TP1 -> SL to Breakeven';
+                } else if (strategy.breakAgain && (!trade.currentStopLoss || trade.currentStopLoss > entryPrice)) {
+                    newStopLoss = entryPrice;
+                    triggeredLevel = 'TP1 -> SL to Entry';
                 }
             }
         }
@@ -774,30 +780,36 @@ export class PositionSyncService {
             } else {
                      try {
                         const baseUrl = strategy.isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
-                        const timestamp = Date.now();
+
                         if (trade.stopLossOrderId) {
-                             const q = `symbol=${trade.symbol}&orderId=${trade.stopLossOrderId}&timestamp=${timestamp}`;
-                             const s = crypto.createHmac('sha256', apiSecret).update(q).digest('hex');
-                             await axios.delete(`${baseUrl}/fapi/v1/order?${q}&signature=${s}`, { headers: { 'X-MBX-APIKEY': apiKey } }).catch(() => {});
+                             await this.cancelBinanceOrderOrAlgo(trade.stopLossOrderId, trade.symbol, apiKey, apiSecret, strategy.isTestnet);
                         }
 
                         const closeSide = side === 'BUY' ? 'SELL' : 'BUY';
+                        const positionSize = Math.abs(position.size);
                         const params = new URLSearchParams();
                         params.append('symbol', trade.symbol);
                         params.append('side', closeSide);
+                        params.append('algoType', 'CONDITIONAL');
                         params.append('type', 'STOP_MARKET');
-                        params.append('stopPrice', formattedStopLoss);
-                        params.append('closePosition', 'true');
+                        params.append('quantity', positionSize.toFixed(2));
+                        params.append('triggerPrice', formattedStopLoss);
                         params.append('workingType', 'MARK_PRICE');
+
+                        if (strategy.hedgeMode) {
+                            const positionSide = side === 'BUY' ? 'LONG' : 'SHORT';
+                            params.append('positionSide', positionSide);
+                        }
+
                         params.append('timestamp', Date.now().toString());
-                        
+
                         const q2 = params.toString();
                         const s2 = crypto.createHmac('sha256', apiSecret).update(q2).digest('hex');
-                         const res = await axios.post(`${baseUrl}/fapi/v1/order`, `${q2}&signature=${s2}`, { 
-                            headers: { 'X-MBX-APIKEY': apiKey, 'Content-Type': 'application/x-www-form-urlencoded' } 
+                         const res = await axios.post(`${baseUrl}/fapi/v1/algoOrder`, `${q2}&signature=${s2}`, {
+                            headers: { 'X-MBX-APIKEY': apiKey, 'Content-Type': 'application/x-www-form-urlencoded' }
                         });
-                        
-                        trade.stopLossOrderId = res.data.orderId.toString();
+
+                        trade.stopLossOrderId = res.data.algoId.toString();
                      } catch(err) {
                          this.logger.error(`[BREAK AGAIN] Failed to update SL on Binance: ${err.message}`);
                      }
