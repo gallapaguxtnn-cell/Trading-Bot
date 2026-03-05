@@ -362,27 +362,51 @@ export class BybitClientService {
     isTestnet: boolean
   ): Promise<number> {
     const baseUrl = this.getBaseUrl(isTestnet);
-    const endpoint = '/v5/account/wallet-balance';
-
-    const params = {
-      accountType: 'UNIFIED',
-    };
-
-    const queryString = new URLSearchParams(params).toString();
-    const headers = this.getHeaders(apiKey, apiSecret, queryString);
 
     try {
-      const response = await axios.get(`${baseUrl}${endpoint}?${queryString}`, { headers });
+      const positionEndpoint = '/v5/position/list';
+      const positionParams = {
+        category: 'linear',
+        settleCoin: 'USDT',
+      };
 
-      if (response.data.retCode !== 0) {
-        throw new Error(`Bybit API Error: ${response.data.retMsg}`);
+      const positionQueryString = new URLSearchParams(positionParams).toString();
+      const positionHeaders = this.getHeaders(apiKey, apiSecret, positionQueryString);
+
+      const positionResponse = await axios.get(`${baseUrl}${positionEndpoint}?${positionQueryString}`, { headers: positionHeaders });
+
+      if (positionResponse.data.retCode === 0) {
+        const result = positionResponse.data.result;
+
+        if (result && result.list && result.list.length > 0) {
+          const position = result.list[0];
+          const availableBalance = parseFloat(position.availableBalance || '0');
+
+          if (availableBalance > 0) {
+            this.logger.log(`[BYBIT] Balance from position endpoint (Contract Trading permission): ${availableBalance.toFixed(2)} USDT`);
+            return availableBalance;
+          }
+        }
       }
 
-      const accounts = response.data.result.list || [];
+      const walletEndpoint = '/v5/account/wallet-balance';
+      const walletParams = { accountType: 'UNIFIED' };
+      const walletQueryString = new URLSearchParams(walletParams).toString();
+      const walletHeaders = this.getHeaders(apiKey, apiSecret, walletQueryString);
+
+      const walletResponse = await axios.get(`${baseUrl}${walletEndpoint}?${walletQueryString}`, { headers: walletHeaders });
+
+      if (walletResponse.data.retCode !== 0) {
+        throw new Error(`Bybit API Error: ${walletResponse.data.retMsg}`);
+      }
+
+      const accounts = walletResponse.data.result.list || [];
       if (accounts.length > 0) {
         const coins = accounts[0].coin || [];
         const usdt = coins.find((c: any) => c.coin === 'USDT');
-        return parseFloat(usdt?.availableToWithdraw || '0');
+        const balance = parseFloat(usdt?.availableToWithdraw || '0');
+        this.logger.log(`[BYBIT] Balance from wallet endpoint (requires Wallet permission): ${balance.toFixed(2)} USDT`);
+        return balance;
       }
 
       return 0;
@@ -393,13 +417,13 @@ export class BybitClientService {
       if (statusCode === 403) {
         this.logger.error(
           `[BYBIT] API Key Permission Error (403 Forbidden):\n` +
-          `  - Check API Key has "Read" permission for Account\n` +
-          `  - Check API Key has "Contract Trading" permission\n` +
+          `  - Ensure "Contract Trading" permission is enabled (REQUIRED)\n` +
           `  - Verify IP is whitelisted if IP restriction is enabled\n` +
           `  - Ensure Unified Trading Account is enabled on Bybit\n` +
+          `  Note: "Ativos > Carteira" permission is NOT required (using position endpoint)\n` +
           `  Error: ${retMsg || error.message}`
         );
-        throw new Error('Bybit API Key lacks permissions or IP not whitelisted. Check API settings.');
+        throw new Error('Bybit API Key lacks "Contract Trading" permission or IP not whitelisted.');
       }
 
       this.logger.error(`[BYBIT] Failed to get wallet balance: ${retMsg || error.message}`);
