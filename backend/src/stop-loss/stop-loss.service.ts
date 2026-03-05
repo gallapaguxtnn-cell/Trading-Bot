@@ -160,11 +160,19 @@ export class StopLossService {
       const remainingQty = parseFloat(trade.quantity as any);
       if (!remainingQty || remainingQty <= 0) return false;
 
-      const entryPrice = parseFloat(trade.entryPrice as any);
-      const slPercent = strategy.stopLossPercentage / 100;
-      const stopPrice = trade.side === 'BUY'
-        ? entryPrice * (1 - slPercent)
-        : entryPrice * (1 + slPercent);
+      // CRITICAL: Use currentStopLoss if Break Even/Break Again has moved the SL
+      let stopPrice: number;
+      if (trade.currentStopLoss) {
+        stopPrice = parseFloat(trade.currentStopLoss as any);
+        this.logger.log(`[SL RECREATE] Using currentStopLoss: ${stopPrice} (Break Even/Break Again price)`);
+      } else {
+        const entryPrice = parseFloat(trade.entryPrice as any);
+        const slPercent = strategy.stopLossPercentage / 100;
+        stopPrice = trade.side === 'BUY'
+          ? entryPrice * (1 - slPercent)
+          : entryPrice * (1 + slPercent);
+        this.logger.log(`[SL RECREATE] Using original SL: ${stopPrice} (${strategy.stopLossPercentage}%)`);
+      }
 
       const closeSide = trade.side === 'BUY' ? 'SELL' : 'BUY';
       const qty = remainingQty.toFixed(3);
@@ -362,6 +370,11 @@ export class StopLossService {
   }
 
   private calculateStopLoss(trade: Trade, strategy: any): number {
+    // If Break Even/Break Again has moved the SL, use that instead of recalculating
+    if (trade.currentStopLoss) {
+      return parseFloat(trade.currentStopLoss as any);
+    }
+
     const slPercent = strategy.stopLossPercentage / 100;
     const entryPrice = parseFloat(trade.entryPrice as any);
 

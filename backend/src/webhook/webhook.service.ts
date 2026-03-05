@@ -1712,6 +1712,7 @@ export class WebhookService {
       let tradeDetails: any;
       let stopLossOrderId: string | null = null;
       let takeProfitOrderId: string | null = null;
+      let actualStopLossPrice: number | null = null;
 
       if (exchange === Exchange.BYBIT) {
         tradeDetails = await this.executeBybitOrder(
@@ -1853,6 +1854,7 @@ export class WebhookService {
         }
 
         if (stopLossPrice) {
+          actualStopLossPrice = stopLossPrice;
           const rules = await this.getSymbolRules(normalizedSymbol, strategy.isTestnet, exchange);
           const slPriceRounded = parseFloat(this.roundTick(stopLossPrice, rules.priceTick));
           const effectiveSlPercent = side === 'BUY'
@@ -1876,42 +1878,16 @@ export class WebhookService {
               normalizedSymbol, bybitSide, this.roundTick(stopLossPrice, rules.priceTick), undefined
             );
           } else if (isAveragingTrade && activeTrade && !strategy.hedgeMode) {
-            const existingTradesForSide = openTrades.filter(
-              t => t.symbol === normalizedSymbol && t.strategyId === strategy.id && t.side === side
+            this.logger.log(
+              `[SL] One-way mode averaging: Each entry has independent SL based on its own entry price. ` +
+              `This entry (SL=${stopLossPrice}) will be monitored by software. ` +
+              `Each trade manages its own Stop Loss independently.`
             );
-
-            for (const existingTrade of existingTradesForSide) {
-              if (
-                existingTrade.stopLossOrderId &&
-                !existingTrade.stopLossOrderId.startsWith('ROLLBACK')
-              ) {
-                try {
-                  await this.cancelBinanceOrderOrAlgo(normalizedSymbol, existingTrade.stopLossOrderId, decryptedKey, decryptedSecret, strategy.isTestnet);
-                  this.logger.log(`[SL UNIFY] Cancelled SL ${existingTrade.stopLossOrderId} for trade ${existingTrade.id}`);
-                } catch (e: any) {
-                  this.logger.warn(`[SL UNIFY] Could not cancel SL ${existingTrade.stopLossOrderId}: ${e.message}`);
-                }
-              }
-            }
-
-            const existingTotalQty = existingTradesForSide.reduce(
-              (sum, t) => sum + parseFloat(t.quantity as any), 0
-            );
-            const unifiedQty = existingTotalQty + quantity;
-
-            stopLossOrderId = await this.createBinanceStopLossOrder(
-              normalizedSymbol, side, unifiedQty, stopLossPrice, decryptedKey, decryptedSecret, strategy.isTestnet, false
-            );
-
-            for (const existingTrade of existingTradesForSide) {
-              await this.tradesService.updateTrade(existingTrade.id, { stopLossOrderId });
-            }
-
-            this.logger.log(`[SL UNIFY] One-way mode: unified SL ${stopLossOrderId} for ${unifiedQty} (${existingTradesForSide.length + 1} entries)`);
           } else if (isAveragingTrade && strategy.hedgeMode) {
             this.logger.log(
               `[SL] Hedge mode averaging: Binance allows only 1 STOP per positionSide. ` +
-              `Stop for this entry (price=${stopLossPrice}) will be monitored by software (stop-loss service).`
+              `This entry (SL=${stopLossPrice} based on entry ${priceForProtectionOrders}) will be monitored by software. ` +
+              `Each trade has independent SL based on its own entry price.`
             );
           } else {
             stopLossOrderId = await this.createBinanceStopLossOrder(
@@ -2077,6 +2053,7 @@ export class WebhookService {
         exchangeOrderId: tradeData.exchangeOrderId,
         stopLossOrderId: stopLossOrderId || undefined,
         takeProfitOrderId: takeProfitOrderId || undefined,
+        currentStopLoss: actualStopLossPrice ? parseFloat(this.roundTick(actualStopLossPrice, (await this.getSymbolRules(normalizedSymbol, strategy.isTestnet, exchange)).priceTick)) as any : undefined,
       });
 
       this.logger.log(`[TRADE] Updated trade ${savedTrade.id} with order details`);

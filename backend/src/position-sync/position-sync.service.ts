@@ -171,7 +171,6 @@ export class PositionSyncService {
         await this.importOrphanPosition(strategy, position);
         imported++;
       } else if (existingTrades.length === 1) {
-        // Check Break-Again / Trailing Logic
         if (strategy.breakAgain || strategy.moveSLToBreakeven) {
              await this.checkBreakAgain(existingTrades[0], position, strategy, apiKey, apiSecret);
         }
@@ -179,6 +178,10 @@ export class PositionSyncService {
         await this.updateTradeFromPosition(existingTrades[0], position);
         synced++;
       } else {
+        if (strategy.breakAgain || strategy.moveSLToBreakeven) {
+          await this.checkBreakAgain(existingTrades[0], position, strategy, apiKey, apiSecret);
+        }
+
         await this.consolidateTrades(existingTrades, position, exchange, apiKey, apiSecret, strategy.isTestnet);
         consolidated += existingTrades.length - 1;
         synced++;
@@ -715,57 +718,70 @@ export class PositionSyncService {
         const tp1Price = tp1Percent ? getPriceAtPercent(tp1Percent) : null;
         const tp2Price = tp2Percent ? getPriceAtPercent(tp2Percent) : null;
         const tp3Price = tp3Percent ? getPriceAtPercent(tp3Percent) : null;
-        
+
         if (side === 'BUY') {
             if (tp3Price && markPrice >= tp3Price && tp2Price) {
-                 if (strategy.breakAgain && (!trade.currentStopLoss || trade.currentStopLoss < tp2Price)) {
+                 if (strategy.breakAgain && trade.currentStopLoss && trade.currentStopLoss < tp2Price) {
                     newStopLoss = tp2Price;
                     triggeredLevel = 'TP3 -> SL to TP2';
+                    this.logger.log(`[BREAK AGAIN] ${triggeredLevel}: MarkPrice ${markPrice.toFixed(4)} >= TP3 ${tp3Price.toFixed(4)}, moving SL from ${trade.currentStopLoss} to ${tp2Price.toFixed(4)}`);
                  }
             }
             else if (tp2Price && markPrice >= tp2Price && tp1Price) {
-                if (strategy.breakAgain && (!trade.currentStopLoss || trade.currentStopLoss < tp1Price)) {
+                if (strategy.breakAgain && trade.currentStopLoss && trade.currentStopLoss < tp1Price) {
                     newStopLoss = tp1Price;
                     triggeredLevel = 'TP2 -> SL to TP1';
+                    this.logger.log(`[BREAK AGAIN] ${triggeredLevel}: MarkPrice ${markPrice.toFixed(4)} >= TP2 ${tp2Price.toFixed(4)}, moving SL from ${trade.currentStopLoss} to ${tp1Price.toFixed(4)}`);
                 }
             }
             else if (tp1Price && markPrice >= tp1Price) {
-                if (strategy.moveSLToBreakeven && (!trade.currentStopLoss || trade.currentStopLoss < entryPrice)) {
+                if (strategy.moveSLToBreakeven && trade.currentStopLoss && trade.currentStopLoss < entryPrice) {
                     newStopLoss = entryPrice;
                     triggeredLevel = 'TP1 -> SL to Breakeven';
-                } else if (strategy.breakAgain && (!trade.currentStopLoss || trade.currentStopLoss < entryPrice)) {
+                    this.logger.log(`[BREAK EVEN] ${triggeredLevel}: MarkPrice ${markPrice.toFixed(4)} >= TP1 ${tp1Price.toFixed(4)}, moving SL from ${trade.currentStopLoss} to ${entryPrice.toFixed(4)}`);
+                } else if (strategy.breakAgain && trade.currentStopLoss && trade.currentStopLoss < entryPrice) {
                     newStopLoss = entryPrice;
                     triggeredLevel = 'TP1 -> SL to Entry';
+                    this.logger.log(`[BREAK AGAIN] ${triggeredLevel}: MarkPrice ${markPrice.toFixed(4)} >= TP1 ${tp1Price.toFixed(4)}, moving SL from ${trade.currentStopLoss} to ${entryPrice.toFixed(4)}`);
                 }
             }
         } else {
             if (tp3Price && markPrice <= tp3Price && tp2Price) {
-                 if (strategy.breakAgain && (!trade.currentStopLoss || trade.currentStopLoss > tp2Price)) {
+                 if (strategy.breakAgain && trade.currentStopLoss && trade.currentStopLoss > tp2Price) {
                     newStopLoss = tp2Price;
                     triggeredLevel = 'TP3 -> SL to TP2';
+                    this.logger.log(`[BREAK AGAIN] ${triggeredLevel}: MarkPrice ${markPrice.toFixed(4)} <= TP3 ${tp3Price.toFixed(4)}, moving SL from ${trade.currentStopLoss} to ${tp2Price.toFixed(4)}`);
                  }
             }
             else if (tp2Price && markPrice <= tp2Price && tp1Price) {
-                if (strategy.breakAgain && (!trade.currentStopLoss || trade.currentStopLoss > tp1Price)) {
+                if (strategy.breakAgain && trade.currentStopLoss && trade.currentStopLoss > tp1Price) {
                     newStopLoss = tp1Price;
                     triggeredLevel = 'TP2 -> SL to TP1';
+                    this.logger.log(`[BREAK AGAIN] ${triggeredLevel}: MarkPrice ${markPrice.toFixed(4)} <= TP2 ${tp2Price.toFixed(4)}, moving SL from ${trade.currentStopLoss} to ${tp1Price.toFixed(4)}`);
                 }
             }
             else if (tp1Price && markPrice <= tp1Price) {
-                if (strategy.moveSLToBreakeven && (!trade.currentStopLoss || trade.currentStopLoss > entryPrice)) {
+                if (strategy.moveSLToBreakeven && trade.currentStopLoss && trade.currentStopLoss > entryPrice) {
                     newStopLoss = entryPrice;
                     triggeredLevel = 'TP1 -> SL to Breakeven';
-                } else if (strategy.breakAgain && (!trade.currentStopLoss || trade.currentStopLoss > entryPrice)) {
+                    this.logger.log(`[BREAK EVEN] ${triggeredLevel}: MarkPrice ${markPrice.toFixed(4)} <= TP1 ${tp1Price.toFixed(4)}, moving SL from ${trade.currentStopLoss} to ${entryPrice.toFixed(4)}`);
+                } else if (strategy.breakAgain && trade.currentStopLoss && trade.currentStopLoss > entryPrice) {
                     newStopLoss = entryPrice;
                     triggeredLevel = 'TP1 -> SL to Entry';
+                    this.logger.log(`[BREAK AGAIN] ${triggeredLevel}: MarkPrice ${markPrice.toFixed(4)} <= TP1 ${tp1Price.toFixed(4)}, moving SL from ${trade.currentStopLoss} to ${entryPrice.toFixed(4)}`);
                 }
             }
         }
 
         if (newStopLoss) {
-            this.logger.log(`[BREAK AGAIN] ${triggeredLevel} for ${trade.symbol}. New SL: ${newStopLoss}`);
-            
-            // Use dynamic price formatting based on price magnitude
+            this.logger.log(
+              `[BREAK] ${triggeredLevel} | ` +
+              `Trade ID: ${trade.id.substring(0, 8)} | Symbol: ${trade.symbol} | ` +
+              `Qty: ${parseFloat(trade.quantity as any).toFixed(2)} | ` +
+              `Old SL: ${trade.currentStopLoss?.toFixed(4) || 'N/A'} → New SL: ${newStopLoss.toFixed(4)} | ` +
+              `Note: Other trades in same position keep their own independent SL`
+            );
+
             const formattedStopLoss = this.formatPrice(newStopLoss);
 
             if (strategy.exchange === Exchange.BYBIT) {
@@ -786,13 +802,13 @@ export class PositionSyncService {
                         }
 
                         const closeSide = side === 'BUY' ? 'SELL' : 'BUY';
-                        const positionSize = Math.abs(position.size);
+                        const tradeQuantity = Math.abs(parseFloat(trade.quantity as any));
                         const params = new URLSearchParams();
                         params.append('symbol', trade.symbol);
                         params.append('side', closeSide);
                         params.append('algoType', 'CONDITIONAL');
                         params.append('type', 'STOP_MARKET');
-                        params.append('quantity', positionSize.toFixed(2));
+                        params.append('quantity', tradeQuantity.toFixed(2));
                         params.append('triggerPrice', formattedStopLoss);
                         params.append('workingType', 'MARK_PRICE');
 
@@ -815,7 +831,7 @@ export class PositionSyncService {
                      }
             }
             
-            trade.currentStopLoss = newStopLoss as any; 
+            trade.currentStopLoss = newStopLoss as any;
             await this.tradesRepository.save(trade);
         }
 
