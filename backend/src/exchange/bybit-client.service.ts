@@ -387,8 +387,23 @@ export class BybitClientService {
 
       return 0;
     } catch (error: any) {
-      this.logger.error(`[BYBIT] Failed to get wallet balance: ${error.response?.data?.retMsg || error.message}`);
-      return 0;
+      const statusCode = error.response?.status;
+      const retMsg = error.response?.data?.retMsg;
+
+      if (statusCode === 403) {
+        this.logger.error(
+          `[BYBIT] API Key Permission Error (403 Forbidden):\n` +
+          `  - Check API Key has "Read" permission for Account\n` +
+          `  - Check API Key has "Contract Trading" permission\n` +
+          `  - Verify IP is whitelisted if IP restriction is enabled\n` +
+          `  - Ensure Unified Trading Account is enabled on Bybit\n` +
+          `  Error: ${retMsg || error.message}`
+        );
+        throw new Error('Bybit API Key lacks permissions or IP not whitelisted. Check API settings.');
+      }
+
+      this.logger.error(`[BYBIT] Failed to get wallet balance: ${retMsg || error.message}`);
+      throw new Error(`Failed to get Bybit wallet balance: ${retMsg || error.message}`);
     }
   }
 

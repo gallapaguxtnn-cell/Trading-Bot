@@ -290,16 +290,29 @@ export class WebhookService {
         return balance;
       }
     } catch (error: any) {
+      if (error.message && error.message.includes('Bybit API Key lacks permissions')) {
+        this.logger.error(
+          `[BALANCE] BYBIT PERMISSION ERROR:\n` +
+          `  - Go to Bybit > API Management\n` +
+          `  - Enable "Read" permission for Account\n` +
+          `  - Enable "Contract Trading" permission\n` +
+          `  - Add Railway IP to whitelist if IP restriction is ON\n` +
+          `  - Ensure Unified Trading Account is enabled`
+        );
+        throw error;
+      }
+
       if (error.response) {
         const errorCode = error.response.data?.code;
         const errorMsg = error.response.data?.msg;
+        const retMsg = error.response.data?.retMsg;
         const statusCode = error.response.status;
 
         this.logger.error(
           `[BALANCE] API ERROR! ` +
           `HTTP ${statusCode} | ` +
           `Code: ${errorCode} | ` +
-          `Message: ${errorMsg} | ` +
+          `Message: ${errorMsg || retMsg} | ` +
           `Full response: ${JSON.stringify(error.response.data)}`
         );
 
