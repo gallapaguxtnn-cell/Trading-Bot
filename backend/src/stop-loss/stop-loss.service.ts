@@ -227,17 +227,43 @@ export class StopLossService {
 
       const baseUrl = isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
       const timestamp = Date.now();
-      const queryString = `symbol=${symbol}&orderId=${orderId}&timestamp=${timestamp}`;
-      const signature = crypto.createHmac('sha256', apiSecret).update(queryString).digest('hex');
 
-      const response = await axios.get(
-        `${baseUrl}/fapi/v1/order?${queryString}&signature=${signature}`,
-        { headers: { 'X-MBX-APIKEY': apiKey } }
-      );
+      // Try Algo Order first (for Stop Loss orders created with new API)
+      try {
+        const algoQueryString = `algoId=${orderId}&timestamp=${timestamp}`;
+        const algoSignature = crypto.createHmac('sha256', apiSecret).update(algoQueryString).digest('hex');
 
-      return response.data.status;
-    } catch (error) {
-      this.logger.error(`Failed to check order status: ${error.message}`);
+        const algoResponse = await axios.get(
+          `${baseUrl}/fapi/v1/algoOrder?${algoQueryString}&signature=${algoSignature}`,
+          { headers: { 'X-MBX-APIKEY': apiKey } }
+        );
+
+        // Algo Order status mapping: NEW -> active, CANCELLED -> cancelled, TRIGGERED -> filled
+        const algoStatus = algoResponse.data.algoStatus;
+        if (algoStatus === 'WORKING') return 'NEW';
+        if (algoStatus === 'CANCELLED') return 'CANCELED';
+        if (algoStatus === 'FILLED') return 'FILLED';
+        return algoStatus;
+      } catch (algoError: any) {
+        const errorCode = algoError.response?.data?.code;
+
+        // If algo order not found (-4143, -1102), try regular order
+        if (errorCode === -4143 || errorCode === -1102 || errorCode === -2013) {
+          const queryString = `symbol=${symbol}&orderId=${orderId}&timestamp=${Date.now()}`;
+          const signature = crypto.createHmac('sha256', apiSecret).update(queryString).digest('hex');
+
+          const response = await axios.get(
+            `${baseUrl}/fapi/v1/order?${queryString}&signature=${signature}`,
+            { headers: { 'X-MBX-APIKEY': apiKey } }
+          );
+
+          return response.data.status;
+        }
+
+        throw algoError;
+      }
+    } catch (error: any) {
+      this.logger.error(`Failed to check order status for ${orderId}: ${error.message}`);
       return null;
     }
   }

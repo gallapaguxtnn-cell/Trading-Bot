@@ -220,17 +220,16 @@ export class WebhookService {
         return balance;
       }
 
-      if (strategy.isTestnet && exchange === Exchange.BINANCE) {
-        const baseURL = `${this.BINANCE_TESTNET_URL}/fapi/v2`;
-        const endpoint = '/balance';
+      if (exchange === Exchange.BINANCE) {
+        const baseURL = strategy.isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
         const timestamp = Date.now();
         const queryString = `timestamp=${timestamp}`;
         const signature = crypto.createHmac('sha256', decryptedSecret).update(queryString).digest('hex');
 
-        this.logger.log(`[BALANCE] Fetching from: ${baseURL}${endpoint}`);
+        this.logger.log(`[BALANCE] Fetching from: ${baseURL}/fapi/v2/balance`);
         this.logger.debug(`[BALANCE] API Key: ${decryptedKey.substring(0, 8)}...`);
 
-        const response = await axios.get(`${baseURL}${endpoint}?${queryString}&signature=${signature}`, {
+        const response = await axios.get(`${baseURL}/fapi/v2/balance?${queryString}&signature=${signature}`, {
           headers: { 'X-MBX-APIKEY': decryptedKey }
         });
 
@@ -260,7 +259,7 @@ export class WebhookService {
         const crossWalletBalance = parseFloat(usdtBalance.crossWalletBalance || '0');
 
         this.logger.log(
-          `[BALANCE] Binance Testnet USDT: ` +
+          `[BALANCE] Binance ${strategy.isTestnet ? 'Testnet' : 'Mainnet'} Futures USDT: ` +
           `Available=${availableBalance.toFixed(2)}, ` +
           `Wallet=${walletBalance.toFixed(2)}, ` +
           `Cross=${crossWalletBalance.toFixed(2)}`
@@ -281,17 +280,8 @@ export class WebhookService {
 
         return balance;
       } else {
-        const exchangeInstance = await this.exchangeService.getExchange(
-          exchange,
-          decryptedKey,
-          decryptedSecret,
-          strategy.isTestnet
-        );
-
-        const balanceData = await exchangeInstance.fetchBalance();
-        const balance = balanceData.free['USDT'] || 0;
-
-        this.logger.log(`[BALANCE] Binance Mainnet: ${balance.toFixed(2)} USDT`);
+        const balance = await this.bybitClient.getWalletBalance(decryptedKey, decryptedSecret, strategy.isTestnet);
+        this.logger.log(`[BALANCE] Bybit ${strategy.isTestnet ? 'Testnet' : 'Mainnet'}: ${balance.toFixed(2)} USDT`);
 
         if (balance === 0) {
           this.logger.warn(`[BALANCE] WARNING: Account balance is 0 USDT. This will cause notional errors.`);
@@ -1342,16 +1332,24 @@ export class WebhookService {
     }
 
     const signalKey = `${signal.strategyId}:${signal.symbol}:${signal.action}`;
+    const requestId = `${Date.now()}-${Math.random().toString(36).substring(7)}`;
+
+    this.logger.log(`[WEBHOOK] Request ID: ${requestId} | Signal Key: ${signalKey}`);
+
     if (this.activeSignals.has(signalKey)) {
-      this.logger.warn(`[MUTEX] Signal ${signalKey} already in progress, ignoring duplicate (TradingView retry or concurrent request)`);
+      this.logger.warn(`[MUTEX] Request ${requestId} | Signal ${signalKey} already in progress, ignoring duplicate (TradingView retry or concurrent request)`);
       return { status: 'skipped', message: 'Signal already being processed' };
     }
     this.activeSignals.add(signalKey);
+    this.logger.log(`[MUTEX] Request ${requestId} | Acquired lock for ${signalKey}`);
 
     try {
-      return await this._processSignalInternal(signal);
+      const result = await this._processSignalInternal(signal);
+      this.logger.log(`[MUTEX] Request ${requestId} | Releasing lock for ${signalKey}`);
+      return result;
     } finally {
       this.activeSignals.delete(signalKey);
+      this.logger.log(`[MUTEX] Request ${requestId} | Lock released for ${signalKey}`);
     }
   }
 
@@ -1687,8 +1685,29 @@ export class WebhookService {
 
       this.logger.log(`[DEBUG] Targeting Exchange: ${exchange} (Testnet: ${strategy.isTestnet})`);
 
+      // Check for existing open trade
+      if (strategy.id) {
+        const existingTrade = await this.tradesService.findOpenTradeBySymbolAndSide(
+          strategy.id,
+          normalizedSymbol,
+          side
+        );
+
+        if (existingTrade) {
+          this.logger.warn(
+            `[DB] WARNING: Open trade already exists! ` +
+            `Existing Trade ID=${existingTrade.id}, ` +
+            `Symbol=${existingTrade.symbol}, ` +
+            `Side=${existingTrade.side}, ` +
+            `Created at=${existingTrade.timestamp}. ` +
+            `This may indicate a duplicate webhook!`
+          );
+        }
+      }
+
+      this.logger.log(`[DB] Creating trade in database: Strategy=${strategy.id}, Symbol=${tradeData.symbol}, Side=${tradeData.side}, Qty=${tradeData.quantity}`);
       savedTrade = await this.tradesService.create(tradeData);
-      this.logger.log(`[TRADE] Pre-saved trade ${savedTrade.id} before order`);
+      this.logger.log(`[DB] Trade created successfully: ID=${savedTrade.id}, Status=${savedTrade.status}`);
 
       let tradeDetails: any;
       let stopLossOrderId: string | null = null;
