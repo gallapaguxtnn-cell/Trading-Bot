@@ -784,7 +784,7 @@ export class PositionSyncService {
 
             const formattedStopLoss = this.formatPrice(newStopLoss);
 
-            if (strategy.exchange === Exchange.BYBIT) {
+            if (strategy.exchange === Exchange.BYBIT && !trade.isFromAveraging) {
                  await this.bybitClient.setTradingStop(
                      apiKey,
                      apiSecret,
@@ -792,6 +792,14 @@ export class PositionSyncService {
                      trade.symbol,
                      side === 'BUY' ? 'Buy' : 'Sell',
                      formattedStopLoss
+                 );
+                 this.logger.log(
+                   `[BYBIT] Updated position-level SL via setTradingStop to ${formattedStopLoss} (first entry only)`
+                 );
+            } else if (strategy.exchange === Exchange.BYBIT && trade.isFromAveraging) {
+                 this.logger.log(
+                   `[BYBIT] Averaging trade: Updated currentStopLoss to ${formattedStopLoss} in DB (software monitoring). ` +
+                   `Note: Cannot use setTradingStop for averaging trades (only 1 position-level SL allowed).`
                  );
             } else {
                      try {

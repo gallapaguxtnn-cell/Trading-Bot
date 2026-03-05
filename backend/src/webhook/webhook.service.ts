@@ -1884,11 +1884,21 @@ export class WebhookService {
             `  Effective %: ${effectiveSlPercent.toFixed(4)}%`
           );
 
-          if (exchange === Exchange.BYBIT) {
+          if (exchange === Exchange.BYBIT && !isAveragingTrade) {
             const bybitSide = side === 'BUY' ? 'Buy' : 'Sell';
             await this.bybitClient.setTradingStop(
               decryptedKey, decryptedSecret, strategy.isTestnet,
               normalizedSymbol, bybitSide, this.roundTick(stopLossPrice, rules.priceTick), undefined
+            );
+            this.logger.log(
+              `[SL] Bybit first entry: setTradingStop configured at ${this.roundTick(stopLossPrice, rules.priceTick)}. ` +
+              `This is a position-level protection (not an order).`
+            );
+          } else if (exchange === Exchange.BYBIT && isAveragingTrade) {
+            this.logger.log(
+              `[SL] Bybit averaging entry: Each entry has independent SL based on its own entry price. ` +
+              `This entry (SL=${stopLossPrice}) will be monitored by software. ` +
+              `Note: Bybit only allows 1 position-level SL, so averaging trades cannot use setTradingStop.`
             );
           } else if (isAveragingTrade && activeTrade && !strategy.hedgeMode) {
             this.logger.log(
