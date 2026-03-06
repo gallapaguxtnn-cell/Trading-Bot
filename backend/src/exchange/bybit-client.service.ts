@@ -48,8 +48,49 @@ export class BybitClientService {
   private readonly TESTNET_URL = 'https://api-testnet.bybit.com';
   private readonly RECV_WINDOW = '5000';
 
+  // Proxy configuration (set via environment variables)
+  private readonly HTTP_PROXY = process.env.HTTP_PROXY || process.env.HTTPS_PROXY;
+
   private getBaseUrl(isTestnet: boolean): string {
     return isTestnet ? this.TESTNET_URL : this.MAINNET_URL;
+  }
+
+  private getAxiosConfig(): any {
+    const config: any = {};
+
+    // Add proxy configuration if available
+    if (this.HTTP_PROXY) {
+      try {
+        const proxyUrl = new URL(this.HTTP_PROXY);
+        config.proxy = {
+          host: proxyUrl.hostname,
+          port: parseInt(proxyUrl.port || (proxyUrl.protocol === 'https:' ? '443' : '80')),
+          protocol: proxyUrl.protocol.replace(':', ''),
+        };
+
+        if (proxyUrl.username) {
+          config.proxy.auth = {
+            username: decodeURIComponent(proxyUrl.username),
+            password: decodeURIComponent(proxyUrl.password || ''),
+          };
+        }
+
+        this.logger.log(`[BYBIT] Using proxy: ${config.proxy.protocol}://${proxyUrl.hostname}:${config.proxy.port}`);
+      } catch (error: any) {
+        this.logger.error(`[BYBIT] Invalid proxy URL: ${this.HTTP_PROXY} - ${error.message}`);
+      }
+    }
+
+    return config;
+  }
+
+  private isGeoBlockingError(error: any): boolean {
+    const errorData = error.response?.data;
+    if (typeof errorData === 'string') {
+      return errorData.includes('CloudFront') &&
+             errorData.includes('configured to block access from your country');
+    }
+    return false;
   }
 
   private generateSignature(
@@ -130,9 +171,10 @@ export class BybitClientService {
 
     const bodyString = JSON.stringify(body);
     const headers = this.getHeaders(apiKey, apiSecret, bodyString);
+    const axiosConfig = { ...this.getAxiosConfig(), headers };
 
     try {
-      const response = await axios.post(`${baseUrl}${endpoint}`, body, { headers });
+      const response = await axios.post(`${baseUrl}${endpoint}`, body, axiosConfig);
 
       if (response.data.retCode !== 0) {
         throw new Error(`Bybit API Error: ${response.data.retMsg}`);
@@ -165,9 +207,10 @@ export class BybitClientService {
 
     const bodyString = JSON.stringify(body);
     const headers = this.getHeaders(apiKey, apiSecret, bodyString);
+    const axiosConfig = { ...this.getAxiosConfig(), headers };
 
     try {
-      const response = await axios.post(`${baseUrl}${endpoint}`, body, { headers });
+      const response = await axios.post(`${baseUrl}${endpoint}`, body, axiosConfig);
 
       if (response.data.retCode === 0) {
         this.logger.log(`[BYBIT] Leverage set to ${leverage}x for ${symbol}`);
@@ -208,9 +251,10 @@ export class BybitClientService {
 
     const bodyString = JSON.stringify(body);
     const headers = this.getHeaders(apiKey, apiSecret, bodyString);
+    const axiosConfig = { ...this.getAxiosConfig(), headers };
 
     try {
-      const response = await axios.post(`${baseUrl}${endpoint}`, body, { headers });
+      const response = await axios.post(`${baseUrl}${endpoint}`, body, axiosConfig);
 
       if (response.data.retCode === 0) {
         this.logger.log(`[BYBIT] Margin mode set to ${marginMode} for ${symbol}`);
@@ -248,9 +292,10 @@ export class BybitClientService {
 
     const queryString = new URLSearchParams(params).toString();
     const headers = this.getHeaders(apiKey, apiSecret, queryString);
+    const axiosConfig = { ...this.getAxiosConfig(), headers };
 
     try {
-      const response = await axios.get(`${baseUrl}${endpoint}?${queryString}`, { headers });
+      const response = await axios.get(`${baseUrl}${endpoint}?${queryString}`, axiosConfig);
 
       if (response.data.retCode !== 0) {
         throw new Error(`Bybit API Error: ${response.data.retMsg}`);
@@ -281,9 +326,10 @@ export class BybitClientService {
 
     const queryString = new URLSearchParams(params).toString();
     const headers = this.getHeaders(apiKey, apiSecret, queryString);
+    const axiosConfig = { ...this.getAxiosConfig(), headers };
 
     try {
-      const response = await axios.get(`${baseUrl}${endpoint}?${queryString}`, { headers });
+      const response = await axios.get(`${baseUrl}${endpoint}?${queryString}`, axiosConfig);
 
       if (response.data.retCode !== 0) {
         return null;
@@ -315,9 +361,10 @@ export class BybitClientService {
 
     const queryString = new URLSearchParams(params).toString();
     const headers = this.getHeaders(apiKey, apiSecret, queryString);
+    const axiosConfig = { ...this.getAxiosConfig(), headers };
 
     try {
-      const response = await axios.get(`${baseUrl}${endpoint}?${queryString}`, { headers });
+      const response = await axios.get(`${baseUrl}${endpoint}?${queryString}`, axiosConfig);
 
       if (response.data.retCode !== 0) {
         return null;
@@ -349,9 +396,10 @@ export class BybitClientService {
 
     const bodyString = JSON.stringify(body);
     const headers = this.getHeaders(apiKey, apiSecret, bodyString);
+    const axiosConfig = { ...this.getAxiosConfig(), headers };
 
     try {
-      const response = await axios.post(`${baseUrl}${endpoint}`, body, { headers });
+      const response = await axios.post(`${baseUrl}${endpoint}`, body, axiosConfig);
 
       if (response.data.retCode === 0) {
         this.logger.log(`[BYBIT] Order ${orderId} cancelled`);
@@ -386,11 +434,12 @@ export class BybitClientService {
 
       let queryString = new URLSearchParams(params).toString();
       let headers = this.getHeaders(apiKey, apiSecret, queryString);
+      const axiosConfig = { ...this.getAxiosConfig(), headers };
 
       this.logger.debug(`[BYBIT] Request URL: ${baseUrl}${endpoint}?${queryString}`);
       this.logger.debug(`[BYBIT] API Key (first 8 chars): ${apiKey.substring(0, 8)}...`);
 
-      let response = await axios.get(`${baseUrl}${endpoint}?${queryString}`, { headers });
+      let response = await axios.get(`${baseUrl}${endpoint}?${queryString}`, axiosConfig);
 
       // If UNIFIED fails with specific error, try CONTRACT
       if (response.data.retCode !== 0) {
@@ -400,8 +449,9 @@ export class BybitClientService {
         params = { accountType: 'CONTRACT' };
         queryString = new URLSearchParams(params).toString();
         headers = this.getHeaders(apiKey, apiSecret, queryString);
+        const contractAxiosConfig = { ...this.getAxiosConfig(), headers };
 
-        response = await axios.get(`${baseUrl}${endpoint}?${queryString}`, { headers });
+        response = await axios.get(`${baseUrl}${endpoint}?${queryString}`, contractAxiosConfig);
 
         if (response.data.retCode !== 0) {
           throw new Error(`Bybit API Error: ${response.data.retMsg}`);
@@ -413,20 +463,46 @@ export class BybitClientService {
         const account = accounts[0];
         const accountType = params.accountType;
 
-        const totalAvailableBalance = parseFloat(account.totalAvailableBalance || '0');
-        const totalEquity = parseFloat(account.totalEquity || '0');
-        const totalWalletBalance = parseFloat(account.totalWalletBalance || '0');
-        const totalMarginBalance = parseFloat(account.totalMarginBalance || '0');
+        // DEBUG: Log complete response structure
+        this.logger.debug(`[BYBIT] Complete account response: ${JSON.stringify(account, null, 2)}`);
 
-        this.logger.log(
-          `[BYBIT] ${accountType} Account Balance:\n` +
-          `  Available for Trading: ${totalAvailableBalance.toFixed(2)} USD (FREE balance)\n` +
-          `  Total Equity: ${totalEquity.toFixed(2)} USD (includes unrealized PnL)\n` +
-          `  Total Wallet: ${totalWalletBalance.toFixed(2)} USD\n` +
-          `  Total Margin: ${totalMarginBalance.toFixed(2)} USD`
-        );
+        // For UNIFIED accounts, we need to find USDT coin data
+        let availableBalance = 0;
 
-        return totalAvailableBalance;
+        if (accountType === 'UNIFIED' && account.coin) {
+          // UNIFIED account has coin array with individual balances
+          const usdtCoin = account.coin.find((c: any) => c.coin === 'USDT');
+          if (usdtCoin) {
+            // Use availableToWithdraw for available balance
+            availableBalance = parseFloat(usdtCoin.availableToWithdraw || usdtCoin.walletBalance || '0');
+
+            this.logger.log(
+              `[BYBIT] ${accountType} Account - USDT Balance:\n` +
+              `  Available to Trade: ${availableBalance.toFixed(2)} USDT\n` +
+              `  Wallet Balance: ${parseFloat(usdtCoin.walletBalance || '0').toFixed(2)} USDT\n` +
+              `  Equity: ${parseFloat(usdtCoin.equity || '0').toFixed(2)} USDT\n` +
+              `  Available to Withdraw: ${parseFloat(usdtCoin.availableToWithdraw || '0').toFixed(2)} USDT`
+            );
+          } else {
+            this.logger.warn(`[BYBIT] No USDT found in UNIFIED account coins`);
+          }
+        } else {
+          // CONTRACT account uses old structure
+          availableBalance = parseFloat(account.totalAvailableBalance || '0');
+          const totalEquity = parseFloat(account.totalEquity || '0');
+          const totalWalletBalance = parseFloat(account.totalWalletBalance || '0');
+          const totalMarginBalance = parseFloat(account.totalMarginBalance || '0');
+
+          this.logger.log(
+            `[BYBIT] ${accountType} Account Balance:\n` +
+            `  Available for Trading: ${availableBalance.toFixed(2)} USD\n` +
+            `  Total Equity: ${totalEquity.toFixed(2)} USD\n` +
+            `  Total Wallet: ${totalWalletBalance.toFixed(2)} USD\n` +
+            `  Total Margin: ${totalMarginBalance.toFixed(2)} USD`
+          );
+        }
+
+        return availableBalance;
       }
 
       this.logger.warn(`[BYBIT] No account data returned from wallet balance endpoint`);
@@ -437,13 +513,35 @@ export class BybitClientService {
       const retMsg = error.response?.data?.retMsg;
       const fullErrorData = error.response?.data;
 
+      // Check for geo-blocking first
+      if (this.isGeoBlockingError(error)) {
+        this.logger.error(
+          `[BYBIT] ⚠️⚠️⚠️  GEO-BLOCKING DETECTED  ⚠️⚠️⚠️\n` +
+          `\n` +
+          `  CloudFront is blocking access from your country/region!\n` +
+          `  This is NOT an API key permission issue.\n` +
+          `\n` +
+          `  SOLUTIONS:\n` +
+          `  1. Configure HTTP proxy in your .env file:\n` +
+          `     HTTP_PROXY=http://proxy-server:port\n` +
+          `     Example: HTTP_PROXY=http://myproxy.com:8080\n` +
+          `\n` +
+          `  2. Use a VPN to connect from an allowed country\n` +
+          `\n` +
+          `  3. Deploy bot to a server in an allowed region (US, EU, Asia)\n` +
+          `\n` +
+          `  After configuring proxy, restart the bot for changes to take effect.\n`
+        );
+        throw new Error('Bybit API blocked by geo-restriction. Configure HTTP_PROXY environment variable to use a proxy.');
+      }
+
       // Log complete error details for debugging
       this.logger.error(
         `[BYBIT] Wallet Balance Request Failed:\n` +
         `  HTTP Status: ${statusCode}\n` +
         `  Bybit retCode: ${retCode}\n` +
         `  Bybit retMsg: ${retMsg}\n` +
-        `  Full Response: ${JSON.stringify(fullErrorData, null, 2)}\n` +
+        `  Full Response: ${typeof fullErrorData === 'string' ? fullErrorData.substring(0, 200) + '...' : JSON.stringify(fullErrorData, null, 2)}\n` +
         `  Request Headers: ${JSON.stringify({
           'X-BAPI-API-KEY': apiKey.substring(0, 8) + '...',
           'X-BAPI-TIMESTAMP': 'REDACTED',
@@ -485,9 +583,10 @@ export class BybitClientService {
   async getServerTime(isTestnet: boolean): Promise<number> {
     const baseUrl = this.getBaseUrl(isTestnet);
     const endpoint = '/v5/market/time';
+    const axiosConfig = this.getAxiosConfig();
 
     try {
-      const response = await axios.get(`${baseUrl}${endpoint}`);
+      const response = await axios.get(`${baseUrl}${endpoint}`, axiosConfig);
 
       if (response.data.retCode !== 0) {
         this.logger.warn(`[BYBIT] Failed to get server time: ${response.data.retMsg}`);
@@ -507,7 +606,23 @@ export class BybitClientService {
 
       return serverTime;
     } catch (error: any) {
-      this.logger.error(`[BYBIT] Failed to get server time: ${error.message}`);
+      if (this.isGeoBlockingError(error)) {
+        this.logger.error(
+          `[BYBIT] ⚠️  GEO-BLOCKING DETECTED ⚠️\n` +
+          `  CloudFront is blocking access from your country/region!\n` +
+          `\n` +
+          `  SOLUTIONS:\n` +
+          `  1. Configure a proxy/VPN by setting environment variable:\n` +
+          `     HTTP_PROXY=http://your-proxy-host:port\n` +
+          `     Example: HTTP_PROXY=http://proxy.example.com:8080\n` +
+          `  2. Use a VPN service to connect from an allowed country\n` +
+          `  3. Deploy your bot to a server in an allowed region\n` +
+          `\n` +
+          `  Error: ${error.message}`
+        );
+      } else {
+        this.logger.error(`[BYBIT] Failed to get server time: ${error.message}`);
+      }
       return Date.now();
     }
   }
@@ -555,9 +670,10 @@ export class BybitClientService {
 
     const queryString = new URLSearchParams(params).toString();
     const headers = this.getHeaders(apiKey, apiSecret, queryString);
+    const axiosConfig = { ...this.getAxiosConfig(), headers };
 
     try {
-      const response = await axios.get(`${baseUrl}${endpoint}?${queryString}`, { headers });
+      const response = await axios.get(`${baseUrl}${endpoint}?${queryString}`, axiosConfig);
 
       if (response.data.retCode !== 0) {
         return null;
@@ -605,9 +721,10 @@ export class BybitClientService {
 
     const bodyString = JSON.stringify(body);
     const headers = this.getHeaders(apiKey, apiSecret, bodyString);
+    const axiosConfig = { ...this.getAxiosConfig(), headers };
 
     try {
-      const response = await axios.post(`${baseUrl}${endpoint}`, body, { headers });
+      const response = await axios.post(`${baseUrl}${endpoint}`, body, axiosConfig);
 
       if (response.data.retCode === 0) {
         this.logger.log(`[BYBIT] Trading stop set for ${symbol}`);
@@ -641,9 +758,10 @@ export class BybitClientService {
 
     const queryString = new URLSearchParams(params).toString();
     const headers = this.getHeaders(apiKey, apiSecret, queryString);
+    const axiosConfig = { ...this.getAxiosConfig(), headers };
 
     try {
-      const response = await axios.get(`${baseUrl}${endpoint}?${queryString}`, { headers });
+      const response = await axios.get(`${baseUrl}${endpoint}?${queryString}`, axiosConfig);
 
       if (response.data.retCode !== 0) {
         throw new Error(`Bybit API Error: ${response.data.retMsg}`);
@@ -715,9 +833,10 @@ export class BybitClientService {
 
     const bodyString = JSON.stringify(body);
     const headers = this.getHeaders(apiKey, apiSecret, bodyString);
+    const axiosConfig = { ...this.getAxiosConfig(), headers };
 
     try {
-      const response = await axios.post(`${baseUrl}${endpoint}`, body, { headers });
+      const response = await axios.post(`${baseUrl}${endpoint}`, body, axiosConfig);
 
       if (response.data.retCode === 0) {
         this.logger.log(`[BYBIT] All orders cancelled for ${symbol}`);
