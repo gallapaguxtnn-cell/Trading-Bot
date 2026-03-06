@@ -383,20 +383,22 @@ export class BybitClientService {
 
       const accounts = response.data.result.list || [];
       if (accounts.length > 0) {
-        const coins = accounts[0].coin || [];
-        const usdt = coins.find((c: any) => c.coin === 'USDT');
+        const account = accounts[0];
 
-        const walletBalance = parseFloat(usdt?.walletBalance || '0');
-        const availableToWithdraw = parseFloat(usdt?.availableToWithdraw || '0');
-        const equity = parseFloat(usdt?.equity || '0');
-
-        const balance = Math.max(walletBalance, availableToWithdraw, equity);
+        const totalAvailableBalance = parseFloat(account.totalAvailableBalance || '0');
+        const totalEquity = parseFloat(account.totalEquity || '0');
+        const totalWalletBalance = parseFloat(account.totalWalletBalance || '0');
+        const totalMarginBalance = parseFloat(account.totalMarginBalance || '0');
 
         this.logger.log(
-          `[BYBIT] Balance (Unified Trading Account): ${balance.toFixed(2)} USDT ` +
-          `(walletBalance: ${walletBalance.toFixed(2)}, availableToWithdraw: ${availableToWithdraw.toFixed(2)}, equity: ${equity.toFixed(2)})`
+          `[BYBIT] Unified Trading Account Balance:\n` +
+          `  Available for Trading: ${totalAvailableBalance.toFixed(2)} USD (FREE balance)\n` +
+          `  Total Equity: ${totalEquity.toFixed(2)} USD (includes unrealized PnL)\n` +
+          `  Total Wallet: ${totalWalletBalance.toFixed(2)} USD\n` +
+          `  Total Margin: ${totalMarginBalance.toFixed(2)} USD`
         );
-        return balance;
+
+        return totalAvailableBalance;
       }
 
       this.logger.warn(`[BYBIT] No account data returned from wallet balance endpoint`);
