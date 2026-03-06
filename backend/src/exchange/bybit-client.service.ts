@@ -366,14 +366,15 @@ export class BybitClientService {
 
     try {
       const params = {
-        accountType: 'UNIFIED',
-        coin: 'USDT'
+        accountType: 'UNIFIED'
       };
 
       const queryString = new URLSearchParams(params).toString();
       const headers = this.getHeaders(apiKey, apiSecret, queryString);
 
       this.logger.debug(`[BYBIT] Fetching wallet balance with accountType=UNIFIED (Unified Trading Account)`);
+      this.logger.debug(`[BYBIT] Request URL: ${baseUrl}${endpoint}?${queryString}`);
+      this.logger.debug(`[BYBIT] API Key (first 8 chars): ${apiKey.substring(0, 8)}...`);
 
       const response = await axios.get(`${baseUrl}${endpoint}?${queryString}`, { headers });
 
