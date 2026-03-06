@@ -59,7 +59,16 @@ export class BybitClientService {
     params: string
   ): string {
     const preSign = timestamp + apiKey + this.RECV_WINDOW + params;
-    return crypto.createHmac('sha256', apiSecret).update(preSign).digest('hex');
+    const signature = crypto.createHmac('sha256', apiSecret).update(preSign).digest('hex');
+
+    this.logger.debug(`[BYBIT AUTH] Timestamp: ${timestamp}`);
+    this.logger.debug(`[BYBIT AUTH] API Key (8 chars): ${apiKey.substring(0, 8)}...`);
+    this.logger.debug(`[BYBIT AUTH] Recv Window: ${this.RECV_WINDOW}`);
+    this.logger.debug(`[BYBIT AUTH] Params: ${params}`);
+    this.logger.debug(`[BYBIT AUTH] PreSign String: ${preSign.substring(0, 50)}...`);
+    this.logger.debug(`[BYBIT AUTH] Signature: ${signature.substring(0, 16)}...`);
+
+    return signature;
   }
 
   private getHeaders(apiKey: string, apiSecret: string, params: string): Record<string, string> {
