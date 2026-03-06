@@ -374,26 +374,44 @@ export class BybitClientService {
     const endpoint = '/v5/account/wallet-balance';
 
     try {
-      const params = {
+      // First check server time sync
+      await this.getServerTime(isTestnet);
+
+      // Try UNIFIED first (modern Unified Trading Account)
+      this.logger.log(`[BYBIT] Attempting to fetch wallet balance with accountType=UNIFIED...`);
+
+      let params = {
         accountType: 'UNIFIED'
       };
 
-      const queryString = new URLSearchParams(params).toString();
-      const headers = this.getHeaders(apiKey, apiSecret, queryString);
+      let queryString = new URLSearchParams(params).toString();
+      let headers = this.getHeaders(apiKey, apiSecret, queryString);
 
-      this.logger.debug(`[BYBIT] Fetching wallet balance with accountType=UNIFIED (Unified Trading Account)`);
       this.logger.debug(`[BYBIT] Request URL: ${baseUrl}${endpoint}?${queryString}`);
       this.logger.debug(`[BYBIT] API Key (first 8 chars): ${apiKey.substring(0, 8)}...`);
 
-      const response = await axios.get(`${baseUrl}${endpoint}?${queryString}`, { headers });
+      let response = await axios.get(`${baseUrl}${endpoint}?${queryString}`, { headers });
 
+      // If UNIFIED fails with specific error, try CONTRACT
       if (response.data.retCode !== 0) {
-        throw new Error(`Bybit API Error: ${response.data.retMsg}`);
+        this.logger.warn(`[BYBIT] UNIFIED account type failed (retCode: ${response.data.retCode}): ${response.data.retMsg}`);
+        this.logger.log(`[BYBIT] Retrying with accountType=CONTRACT (legacy account)...`);
+
+        params = { accountType: 'CONTRACT' };
+        queryString = new URLSearchParams(params).toString();
+        headers = this.getHeaders(apiKey, apiSecret, queryString);
+
+        response = await axios.get(`${baseUrl}${endpoint}?${queryString}`, { headers });
+
+        if (response.data.retCode !== 0) {
+          throw new Error(`Bybit API Error: ${response.data.retMsg}`);
+        }
       }
 
       const accounts = response.data.result.list || [];
       if (accounts.length > 0) {
         const account = accounts[0];
+        const accountType = params.accountType;
 
         const totalAvailableBalance = parseFloat(account.totalAvailableBalance || '0');
         const totalEquity = parseFloat(account.totalEquity || '0');
@@ -401,7 +419,7 @@ export class BybitClientService {
         const totalMarginBalance = parseFloat(account.totalMarginBalance || '0');
 
         this.logger.log(
-          `[BYBIT] Unified Trading Account Balance:\n` +
+          `[BYBIT] ${accountType} Account Balance:\n` +
           `  Available for Trading: ${totalAvailableBalance.toFixed(2)} USD (FREE balance)\n` +
           `  Total Equity: ${totalEquity.toFixed(2)} USD (includes unrealized PnL)\n` +
           `  Total Wallet: ${totalWalletBalance.toFixed(2)} USD\n` +
@@ -417,6 +435,22 @@ export class BybitClientService {
       const statusCode = error.response?.status;
       const retCode = error.response?.data?.retCode;
       const retMsg = error.response?.data?.retMsg;
+      const fullErrorData = error.response?.data;
+
+      // Log complete error details for debugging
+      this.logger.error(
+        `[BYBIT] Wallet Balance Request Failed:\n` +
+        `  HTTP Status: ${statusCode}\n` +
+        `  Bybit retCode: ${retCode}\n` +
+        `  Bybit retMsg: ${retMsg}\n` +
+        `  Full Response: ${JSON.stringify(fullErrorData, null, 2)}\n` +
+        `  Request Headers: ${JSON.stringify({
+          'X-BAPI-API-KEY': apiKey.substring(0, 8) + '...',
+          'X-BAPI-TIMESTAMP': 'REDACTED',
+          'X-BAPI-SIGN': 'REDACTED',
+          'X-BAPI-RECV-WINDOW': this.RECV_WINDOW
+        }, null, 2)}`
+      );
 
       if (statusCode === 403 || retCode === 10003 || retCode === 10005) {
         this.logger.error(
@@ -432,14 +466,49 @@ export class BybitClientService {
           `  4. Save and wait 1-2 minutes for changes to propagate\n` +
           `  5. Ensure "Unified Trading Account" is ACTIVE on your Bybit account\n` +
           `  6. If IP restriction is enabled, add your server IP to the whitelist\n` +
+          `  7. Check if your Bybit account has Unified Trading Account (UTA) enabled\n` +
+          `  8. Verify your local server time is synchronized (check logs above for time sync)\n` +
           `\n` +
           `  Error Details: ${retMsg || error.message}`
         );
-        throw new Error('Bybit API Key lacks required permissions. Enable "Read-Only" or "Account Transfer" permission.');
+        throw new Error(`Bybit API Error: ${retMsg || error.message}`);
       }
 
       this.logger.error(`[BYBIT] Failed to get wallet balance: ${retMsg || error.message}`);
       throw new Error(`Failed to get Bybit wallet balance: ${retMsg || error.message}`);
+    }
+  }
+
+  /**
+   * Get Bybit server time to check if local time is synchronized
+   */
+  async getServerTime(isTestnet: boolean): Promise<number> {
+    const baseUrl = this.getBaseUrl(isTestnet);
+    const endpoint = '/v5/market/time';
+
+    try {
+      const response = await axios.get(`${baseUrl}${endpoint}`);
+
+      if (response.data.retCode !== 0) {
+        this.logger.warn(`[BYBIT] Failed to get server time: ${response.data.retMsg}`);
+        return Date.now();
+      }
+
+      const serverTime = parseInt(response.data.result.timeSecond) * 1000;
+      const localTime = Date.now();
+      const timeDiff = Math.abs(serverTime - localTime);
+
+      this.logger.log(
+        `[BYBIT] Time Sync Check:\n` +
+        `  Server Time: ${new Date(serverTime).toISOString()}\n` +
+        `  Local Time:  ${new Date(localTime).toISOString()}\n` +
+        `  Difference:  ${timeDiff}ms ${timeDiff > 1000 ? '⚠️  WARNING: Time difference > 1 second!' : '✓ OK'}`
+      );
+
+      return serverTime;
+    } catch (error: any) {
+      this.logger.error(`[BYBIT] Failed to get server time: ${error.message}`);
+      return Date.now();
     }
   }
 
