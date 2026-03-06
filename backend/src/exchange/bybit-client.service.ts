@@ -366,14 +366,14 @@ export class BybitClientService {
 
     try {
       const params = {
-        accountType: 'CONTRACT',
+        accountType: 'UNIFIED',
         coin: 'USDT'
       };
 
       const queryString = new URLSearchParams(params).toString();
       const headers = this.getHeaders(apiKey, apiSecret, queryString);
 
-      this.logger.debug(`[BYBIT] Fetching wallet balance with accountType=CONTRACT (only requires Contract Trading permission)`);
+      this.logger.debug(`[BYBIT] Fetching wallet balance with accountType=UNIFIED (Unified Trading Account)`);
 
       const response = await axios.get(`${baseUrl}${endpoint}?${queryString}`, { headers });
 
@@ -393,7 +393,7 @@ export class BybitClientService {
         const balance = Math.max(walletBalance, availableToWithdraw, equity);
 
         this.logger.log(
-          `[BYBIT] Balance (CONTRACT account, Unified Trading): ${balance.toFixed(2)} USDT ` +
+          `[BYBIT] Balance (Unified Trading Account): ${balance.toFixed(2)} USDT ` +
           `(walletBalance: ${walletBalance.toFixed(2)}, availableToWithdraw: ${availableToWithdraw.toFixed(2)}, equity: ${equity.toFixed(2)})`
         );
         return balance;
@@ -406,16 +406,24 @@ export class BybitClientService {
       const retCode = error.response?.data?.retCode;
       const retMsg = error.response?.data?.retMsg;
 
-      if (statusCode === 403 || retCode === 10003) {
+      if (statusCode === 403 || retCode === 10003 || retCode === 10005) {
         this.logger.error(
-          `[BYBIT] API Key Permission Error:\n` +
-          `  - Ensure "Contract Trading" permission is ENABLED in your API key settings\n` +
-          `  - Ensure "Unified Trading Account" is ACTIVE on your Bybit account\n` +
-          `  - If IP restriction is enabled, add your server IP to the whitelist\n` +
-          `  - Note: You do NOT need "Ativos > Carteira" permission - only Contract Trading\n` +
-          `  Error: ${retMsg || error.message}`
+          `[BYBIT] API Key Permission Error (${statusCode || retCode}):\n` +
+          `  REQUIRED API KEY PERMISSIONS:\n` +
+          `  ✓ Contract Trading (for placing orders)\n` +
+          `  ✓ Read-Only OR Account Transfer (for reading wallet balance)\n` +
+          `\n` +
+          `  TROUBLESHOOTING:\n` +
+          `  1. Go to Bybit > API Management > Select your API key > Edit Permissions\n` +
+          `  2. Enable "Contract Trading" permission\n` +
+          `  3. Enable "Read-Only" permission (recommended) OR "Account Transfer"\n` +
+          `  4. Save and wait 1-2 minutes for changes to propagate\n` +
+          `  5. Ensure "Unified Trading Account" is ACTIVE on your Bybit account\n` +
+          `  6. If IP restriction is enabled, add your server IP to the whitelist\n` +
+          `\n` +
+          `  Error Details: ${retMsg || error.message}`
         );
-        throw new Error('Bybit: Enable "Contract Trading" permission in API key settings, or whitelist your IP address.');
+        throw new Error('Bybit API Key lacks required permissions. Enable "Read-Only" or "Account Transfer" permission.');
       }
 
       this.logger.error(`[BYBIT] Failed to get wallet balance: ${retMsg || error.message}`);
