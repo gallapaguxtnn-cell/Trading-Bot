@@ -215,11 +215,17 @@ export class TradesController {
       this.logger.log(`[CLOSE] Closing ${trade.symbol}: side=${closeSide}, qty=${formattedQty}`);
 
       if (exchange === Exchange.BYBIT) {
+        const originalSide = trade.side === 'BUY' ? 'Buy' : 'Sell';
+        const positionIdx = await this.bybitClient.getPositionIdx(
+          apiKey, apiSecret, strategy.isTestnet, trade.symbol, originalSide
+        );
+
         await this.bybitClient.createOrder(apiKey, apiSecret, strategy.isTestnet, {
           symbol: trade.symbol,
           side: closeSide === 'BUY' ? 'Buy' : 'Sell',
           orderType: 'Market',
           qty: formattedQty,
+          positionIdx,
           reduceOnly: true
         });
       } else {

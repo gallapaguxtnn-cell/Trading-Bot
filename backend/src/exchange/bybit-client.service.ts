@@ -363,6 +363,47 @@ export class BybitClientService {
     return 0;
   }
 
+  async waitForPosition(
+    apiKey: string,
+    apiSecret: string,
+    isTestnet: boolean,
+    symbol: string,
+    side: 'Buy' | 'Sell',
+    maxRetries: number = 10,
+    delayMs: number = 500
+  ): Promise<boolean> {
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        const positions = await this.getPositions(apiKey, apiSecret, isTestnet, symbol);
+
+        const targetPositionIdx = await this.getPositionIdx(apiKey, apiSecret, isTestnet, symbol, side);
+
+        const hasPosition = positions.some((pos: any) => {
+          const hasSize = parseFloat(pos.size || '0') > 0;
+          const matchesIdx = pos.positionIdx === targetPositionIdx;
+          return hasSize && matchesIdx;
+        });
+
+        if (hasPosition) {
+          this.logger.log(`[BYBIT] Position confirmed for ${symbol} ${side} after ${attempt} attempt(s)`);
+          return true;
+        }
+
+        if (attempt < maxRetries) {
+          await new Promise(resolve => setTimeout(resolve, delayMs));
+        }
+      } catch (error: any) {
+        this.logger.warn(`[BYBIT] Attempt ${attempt} to check position failed: ${error.message}`);
+        if (attempt < maxRetries) {
+          await new Promise(resolve => setTimeout(resolve, delayMs));
+        }
+      }
+    }
+
+    this.logger.warn(`[BYBIT] Position not confirmed for ${symbol} ${side} after ${maxRetries} attempts`);
+    return false;
+  }
+
   async getOrderInfo(
     apiKey: string,
     apiSecret: string,

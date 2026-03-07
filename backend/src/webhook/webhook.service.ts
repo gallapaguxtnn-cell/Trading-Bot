@@ -1450,16 +1450,21 @@ export class WebhookService {
                 } else {
                     const closeSide = oppositeActiveTrade.side === 'BUY' ? 'SELL' : 'BUY';
                     this.logger.log(`[ONE-WAY] Closing ${oppositeActiveTrade.symbol} (${closeQty}) before reversal.`);
-                    
-                    // Fetch rules for proper formatting
+
                     const rules = await this.getSymbolRules(normalizedSymbol, strategy.isTestnet);
 
                     if (exchange === Exchange.BYBIT) {
+                        const originalSide = oppositeActiveTrade.side === 'BUY' ? 'Buy' : 'Sell';
+                        const positionIdx = await this.bybitClient.getPositionIdx(
+                            decryptedKey, decryptedSecret, strategy.isTestnet, normalizedSymbol, originalSide
+                        );
+
                         await this.bybitClient.createOrder(decryptedKey, decryptedSecret, strategy.isTestnet, {
                             symbol: normalizedSymbol,
                             side: closeSide === 'BUY' ? 'Buy' : 'Sell',
                             orderType: 'Market',
                             qty: this.normalizeQuantity(closeQty, rules.qtyStep, rules.minQty),
+                            positionIdx,
                             reduceOnly: true
                         });
                     } else {
@@ -1936,6 +1941,24 @@ export class WebhookService {
           this.logger.log(`[TP] Creating independent TPs for new entry: ${quantityForTPs} (existing entry keeps its own TPs)`);
         }
 
+        let bybitPositionIdx: number | undefined;
+        if (exchange === Exchange.BYBIT) {
+          this.logger.log(`[BYBIT] Waiting for position to be confirmed before creating TP orders...`);
+          const bybitSide = side === 'BUY' ? 'Buy' : 'Sell';
+          const positionConfirmed = await this.bybitClient.waitForPosition(
+            decryptedKey, decryptedSecret, strategy.isTestnet, normalizedSymbol, bybitSide
+          );
+
+          if (!positionConfirmed) {
+            this.logger.warn(`[BYBIT] Position not confirmed within timeout. TP orders may fail.`);
+          }
+
+          bybitPositionIdx = await this.bybitClient.getPositionIdx(
+            decryptedKey, decryptedSecret, strategy.isTestnet, normalizedSymbol, bybitSide
+          );
+          this.logger.log(`[BYBIT] Using positionIdx ${bybitPositionIdx} for TP orders (original position side: ${bybitSide})`);
+        }
+
         for (const tp of tpConfigs) {
           if (tp.percent && tp.percent > 0) {
             const tpPriceRaw = this.calculateTakeProfitPrice(side, priceForProtectionOrders, tp.percent);
@@ -1970,6 +1993,7 @@ export class WebhookService {
                     orderType: 'Limit',
                     qty: this.normalizeQuantity(tpQty, rules.qtyStep, rules.minQty),
                     price: this.roundTick(tpPriceRaw, rules.priceTick),
+                    positionIdx: bybitPositionIdx,
                     reduceOnly: true
                   }
                 );

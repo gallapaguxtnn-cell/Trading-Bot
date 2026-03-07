@@ -432,6 +432,11 @@ export class StopLossService {
       const quantity = parseFloat(trade.quantity as any);
 
       if (exchange === Exchange.BYBIT) {
+        const originalSide = trade.side === 'BUY' ? 'Buy' : 'Sell';
+        const positionIdx = await this.bybitClient.getPositionIdx(
+          apiKey, apiSecret, strategy.isTestnet, trade.symbol, originalSide
+        );
+
         const bybitSide = closeSide === 'BUY' ? 'Buy' : 'Sell';
         await this.bybitClient.createOrder(
           apiKey,
@@ -442,6 +447,8 @@ export class StopLossService {
             side: bybitSide,
             orderType: 'Market',
             qty: quantity.toFixed(3),
+            positionIdx,
+            reduceOnly: true
           }
         );
         this.logger.warn(`[BYBIT] Closed ${trade.symbol} via ${reason}`);
