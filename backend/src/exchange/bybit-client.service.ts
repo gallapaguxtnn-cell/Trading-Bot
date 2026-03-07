@@ -144,13 +144,18 @@ export class BybitClientService {
     const baseUrl = this.getBaseUrl(isTestnet);
     const endpoint = '/v5/order/create';
 
+    let positionIdx = params.positionIdx;
+    if (positionIdx === undefined) {
+      positionIdx = await this.getPositionIdx(apiKey, apiSecret, isTestnet, params.symbol, params.side);
+    }
+
     const body: Record<string, any> = {
       category: 'linear',
       symbol: params.symbol,
       side: params.side,
       orderType: params.orderType,
       qty: params.qty,
-      positionIdx: params.positionIdx ?? 0,
+      positionIdx,
       reduceOnly: params.reduceOnly ?? false,
     };
 
@@ -306,6 +311,56 @@ export class BybitClientService {
       this.logger.error(`[BYBIT] Failed to get positions: ${error.response?.data?.retMsg || error.message}`);
       throw error;
     }
+  }
+
+  async detectPositionMode(
+    apiKey: string,
+    apiSecret: string,
+    isTestnet: boolean,
+    symbol: string
+  ): Promise<'HEDGE' | 'ONE_WAY' | null> {
+    try {
+      const positions = await this.getPositions(apiKey, apiSecret, isTestnet, symbol);
+
+      if (positions && positions.length > 0) {
+        const hasHedgeMode = positions.some((pos: any) =>
+          pos.positionIdx === 1 || pos.positionIdx === 2
+        );
+
+        if (hasHedgeMode) {
+          this.logger.debug(`[BYBIT] Detected HEDGE mode for ${symbol}`);
+          return 'HEDGE';
+        }
+
+        const hasOneWayMode = positions.some((pos: any) => pos.positionIdx === 0);
+        if (hasOneWayMode) {
+          this.logger.debug(`[BYBIT] Detected ONE_WAY mode for ${symbol}`);
+          return 'ONE_WAY';
+        }
+      }
+
+      this.logger.debug(`[BYBIT] Cannot determine position mode for ${symbol} (no positions)`);
+      return null;
+    } catch (error: any) {
+      this.logger.warn(`[BYBIT] Failed to detect position mode: ${error.message}`);
+      return null;
+    }
+  }
+
+  async getPositionIdx(
+    apiKey: string,
+    apiSecret: string,
+    isTestnet: boolean,
+    symbol: string,
+    side: 'Buy' | 'Sell'
+  ): Promise<number> {
+    const mode = await this.detectPositionMode(apiKey, apiSecret, isTestnet, symbol);
+
+    if (mode === 'HEDGE') {
+      return side === 'Buy' ? 1 : 2;
+    }
+
+    return 0;
   }
 
   async getOrderInfo(
@@ -703,10 +758,12 @@ export class BybitClientService {
     const baseUrl = this.getBaseUrl(isTestnet);
     const endpoint = '/v5/position/trading-stop';
 
+    const positionIdx = await this.getPositionIdx(apiKey, apiSecret, isTestnet, symbol, side);
+
     const body: Record<string, any> = {
       category: 'linear',
       symbol,
-      positionIdx: 0,
+      positionIdx,
     };
 
     if (stopLoss) {
