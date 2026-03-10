@@ -791,7 +791,9 @@ export class PositionSyncService {
                      strategy.isTestnet,
                      trade.symbol,
                      side === 'BUY' ? 'Buy' : 'Sell',
-                     formattedStopLoss
+                     formattedStopLoss,
+                     undefined,
+                     strategy.hedgeMode
                  );
                  this.logger.log(
                    `[BYBIT] Updated position-level SL via setTradingStop to ${formattedStopLoss} (first entry only)`

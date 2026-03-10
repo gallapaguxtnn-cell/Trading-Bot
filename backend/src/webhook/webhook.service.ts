@@ -1108,6 +1108,156 @@ export class WebhookService {
     run().catch(err => this.logger.error(`[LIMIT SL/TP] Critical background error: ${err.message}`));
   }
 
+  private scheduleBybitProtectionOrders(
+    tradeId: string,
+    symbol: string,
+    side: 'BUY' | 'SELL',
+    strategy: any,
+    decryptedKey: string,
+    decryptedSecret: string,
+    orderQuantity: number,
+  ): void {
+    const run = async () => {
+      const maxAttempts = 30;
+      const delayMs = 10000;
+
+      for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        await new Promise(r => setTimeout(r, delayMs));
+
+        try {
+          const trade = await this.tradesService.findById(tradeId);
+          if (!trade || trade.status !== 'OPEN' || trade.stopLossOrderId) return;
+
+          if (!trade.exchangeOrderId) {
+            this.logger.debug(`[BYBIT LIMIT SL/TP] Attempt ${attempt + 1}/${maxAttempts}: no entry order ID yet`);
+            continue;
+          }
+
+          let orderData = await this.bybitClient.getOrderInfo(
+            decryptedKey, decryptedSecret, strategy.isTestnet, symbol, trade.exchangeOrderId
+          );
+
+          if (!orderData) {
+            orderData = await this.bybitClient.getOrderHistory(
+              decryptedKey, decryptedSecret, strategy.isTestnet, symbol, trade.exchangeOrderId
+            );
+          }
+
+          if (!orderData) {
+            this.logger.debug(`[BYBIT LIMIT SL/TP] Attempt ${attempt + 1}/${maxAttempts}: order ${trade.exchangeOrderId} not found`);
+            continue;
+          }
+
+          if (orderData.orderStatus !== 'Filled') {
+            this.logger.debug(`[BYBIT LIMIT SL/TP] Attempt ${attempt + 1}/${maxAttempts}: order ${trade.exchangeOrderId} status=${orderData.orderStatus}`);
+
+            if (orderData.orderStatus === 'Cancelled' || orderData.orderStatus === 'Rejected') {
+              this.logger.warn(`[BYBIT LIMIT SL/TP] Entry order ${trade.exchangeOrderId} was ${orderData.orderStatus}. Stopping protection scheduling.`);
+              await this.tradesService.updateTrade(tradeId, { status: 'ERROR', error: `Entry order was ${orderData.orderStatus} before filling.` });
+              return;
+            }
+            continue;
+          }
+
+          const actualEntryPrice = parseFloat(orderData.avgPrice);
+          const actualQty = parseFloat(orderData.cumExecQty);
+
+          if (!actualEntryPrice || !actualQty || actualQty <= 0) {
+            this.logger.warn(`[BYBIT LIMIT SL/TP] Invalid fill data: avgPrice=${actualEntryPrice}, executedQty=${actualQty}`);
+            continue;
+          }
+
+          this.logger.log(`[BYBIT LIMIT SL/TP] Order filled: ${symbol} qty=${actualQty} avgPrice=${actualEntryPrice}`);
+
+          const bybitSide = side === 'BUY' ? 'Buy' : 'Sell';
+          const positionConfirmed = await this.bybitClient.waitForPosition(
+            decryptedKey, decryptedSecret, strategy.isTestnet, symbol, bybitSide, 10, 500, strategy.hedgeMode
+          );
+
+          if (!positionConfirmed) {
+            this.logger.warn(`[BYBIT LIMIT SL/TP] Position not confirmed after order fill. Retrying...`);
+            continue;
+          }
+
+          let slSuccess = false;
+          if (strategy.stopLossPercentage && strategy.stopLossPercentage > 0) {
+            const slPrice = this.calculateStopLossPrice(side, actualEntryPrice, strategy.stopLossPercentage);
+            const rules = await this.getSymbolRules(symbol, strategy.isTestnet, Exchange.BYBIT);
+            const slPriceRounded = this.roundTick(slPrice, rules.priceTick);
+
+            try {
+              slSuccess = await this.bybitClient.setTradingStop(
+                decryptedKey, decryptedSecret, strategy.isTestnet,
+                symbol, bybitSide, slPriceRounded, undefined, strategy.hedgeMode
+              );
+              if (slSuccess) {
+                this.logger.log(`[BYBIT LIMIT SL/TP] SL created at ${slPriceRounded}`);
+              }
+            } catch (e: any) {
+              this.logger.warn(`[BYBIT LIMIT SL/TP] SL creation failed: ${e.message}`);
+            }
+          }
+
+          const tpConfigs = [
+            { percent: strategy.takeProfitPercentage1, qtyPercent: strategy.takeProfitQuantity1 || 33, id: 1 },
+            { percent: strategy.takeProfitPercentage2, qtyPercent: strategy.takeProfitQuantity2 || 33, id: 2 },
+            { percent: strategy.takeProfitPercentage3, qtyPercent: strategy.takeProfitQuantity3 || 34, id: 3 },
+          ];
+          const tpOrderIds: string[] = [];
+
+          const bybitPositionIdx = await this.bybitClient.getPositionIdx(
+            decryptedKey, decryptedSecret, strategy.isTestnet, symbol, bybitSide, strategy.hedgeMode
+          );
+
+          for (const tp of tpConfigs) {
+            if (tp.percent && tp.percent > 0) {
+              const tpPrice = this.calculateTakeProfitPrice(side, actualEntryPrice, tp.percent);
+              const tpQty = (actualQty * tp.qtyPercent) / 100;
+              if (tpQty <= 0) continue;
+
+              const rules = await this.getSymbolRules(symbol, strategy.isTestnet, Exchange.BYBIT);
+              try {
+                const tpOrder = await this.bybitClient.createOrder(
+                  decryptedKey, decryptedSecret, strategy.isTestnet,
+                  {
+                    symbol,
+                    side: side === 'BUY' ? 'Sell' : 'Buy',
+                    orderType: 'Limit',
+                    qty: this.normalizeQuantity(tpQty, rules.qtyStep, rules.minQty),
+                    price: this.roundTick(tpPrice, rules.priceTick),
+                    positionIdx: bybitPositionIdx,
+                    reduceOnly: true,
+                    hedgeMode: strategy.hedgeMode
+                  }
+                );
+                tpOrderIds.push(`${tp.id}:${tpOrder.orderId}`);
+                this.logger.log(`[BYBIT LIMIT TP${tp.id}] Created: ${tpOrder.orderId}`);
+              } catch (e: any) {
+                this.logger.warn(`[BYBIT LIMIT TP${tp.id}] Failed: ${e.message}`);
+              }
+            }
+          }
+
+          await this.tradesService.updateTrade(tradeId, {
+            entryPrice: actualEntryPrice as any,
+            quantity: actualQty as any,
+            stopLossOrderId: slSuccess ? 'BYBIT_POSITION_SL' : undefined,
+            takeProfitOrderId: tpOrderIds.length > 0 ? tpOrderIds.join('|') : undefined,
+          });
+
+          this.logger.log(`[BYBIT LIMIT SL/TP] All protection orders created for trade ${tradeId}`);
+          return;
+        } catch (err: any) {
+          this.logger.warn(`[BYBIT LIMIT SL/TP] Attempt ${attempt + 1} error: ${err.message}`);
+        }
+      }
+
+      this.logger.warn(`[BYBIT LIMIT SL/TP] Could not create protection for trade ${tradeId} after ${maxAttempts * delayMs / 1000}s`);
+    };
+
+    run().catch(err => this.logger.error(`[BYBIT LIMIT SL/TP] Critical background error: ${err.message}`));
+  }
+
   /**
    * Verifies that hedge mode was successfully set on Binance.
    * Checks the account position mode setting to confirm dual position mode.
@@ -1456,7 +1606,7 @@ export class WebhookService {
                     if (exchange === Exchange.BYBIT) {
                         const originalSide = oppositeActiveTrade.side === 'BUY' ? 'Buy' : 'Sell';
                         const positionIdx = await this.bybitClient.getPositionIdx(
-                            decryptedKey, decryptedSecret, strategy.isTestnet, normalizedSymbol, originalSide
+                            decryptedKey, decryptedSecret, strategy.isTestnet, normalizedSymbol, originalSide, strategy.hedgeMode
                         );
 
                         await this.bybitClient.createOrder(decryptedKey, decryptedSecret, strategy.isTestnet, {
@@ -1770,14 +1920,20 @@ export class WebhookService {
       tradeData.entryPrice = entryPrice;
       tradeData.exchangeOrderId = tradeDetails.id;
 
-      // For LIMIT orders on Binance: position won't exist until the order fills.
+      // For LIMIT orders: position won't exist until the order fills.
       // Schedule SL/TP creation in background and return immediately.
-      if (isLimitOrder && exchange === Exchange.BINANCE) {
+      if (isLimitOrder) {
         await this.tradesService.updateTrade(savedTrade.id, {
           entryPrice: tradeData.entryPrice,
           exchangeOrderId: tradeData.exchangeOrderId,
         });
-        this.scheduleProtectionOrders(savedTrade.id, normalizedSymbol, side, strategy, decryptedKey, decryptedSecret);
+
+        if (exchange === Exchange.BINANCE) {
+          this.scheduleProtectionOrders(savedTrade.id, normalizedSymbol, side, strategy, decryptedKey, decryptedSecret);
+        } else if (exchange === Exchange.BYBIT) {
+          this.scheduleBybitProtectionOrders(savedTrade.id, normalizedSymbol, side, strategy, decryptedKey, decryptedSecret, quantity);
+        }
+
         this.logger.log(`[LIMIT] Entry order placed (${tradeData.exchangeOrderId}). SL/TP will be created when position is confirmed.`);
         return {
           status: 'success',
@@ -1893,7 +2049,7 @@ export class WebhookService {
             const bybitSide = side === 'BUY' ? 'Buy' : 'Sell';
             await this.bybitClient.setTradingStop(
               decryptedKey, decryptedSecret, strategy.isTestnet,
-              normalizedSymbol, bybitSide, this.roundTick(stopLossPrice, rules.priceTick), undefined
+              normalizedSymbol, bybitSide, this.roundTick(stopLossPrice, rules.priceTick), undefined, strategy.hedgeMode
             );
             this.logger.log(
               `[SL] Bybit first entry: setTradingStop configured at ${this.roundTick(stopLossPrice, rules.priceTick)}. ` +
@@ -1946,7 +2102,7 @@ export class WebhookService {
           this.logger.log(`[BYBIT] Waiting for position to be confirmed before creating TP orders...`);
           const bybitSide = side === 'BUY' ? 'Buy' : 'Sell';
           const positionConfirmed = await this.bybitClient.waitForPosition(
-            decryptedKey, decryptedSecret, strategy.isTestnet, normalizedSymbol, bybitSide
+            decryptedKey, decryptedSecret, strategy.isTestnet, normalizedSymbol, bybitSide, 10, 500, strategy.hedgeMode
           );
 
           if (!positionConfirmed) {
@@ -1954,7 +2110,7 @@ export class WebhookService {
           }
 
           bybitPositionIdx = await this.bybitClient.getPositionIdx(
-            decryptedKey, decryptedSecret, strategy.isTestnet, normalizedSymbol, bybitSide
+            decryptedKey, decryptedSecret, strategy.isTestnet, normalizedSymbol, bybitSide, strategy.hedgeMode
           );
           this.logger.log(`[BYBIT] Using positionIdx ${bybitPositionIdx} for TP orders (original position side: ${bybitSide})`);
         }
@@ -1994,7 +2150,8 @@ export class WebhookService {
                     qty: this.normalizeQuantity(tpQty, rules.qtyStep, rules.minQty),
                     price: this.roundTick(tpPriceRaw, rules.priceTick),
                     positionIdx: bybitPositionIdx,
-                    reduceOnly: true
+                    reduceOnly: true,
+                    hedgeMode: strategy.hedgeMode
                   }
                 );
                 if (bybitOrder?.orderId) {
@@ -2180,8 +2337,9 @@ export class WebhookService {
         symbol,
         side: bybitSide,
         orderType,
-        qty: formattedQty, // Use properly formatted quantity from Bybit rules
+        qty: formattedQty,
         price: isLimitOrder ? formattedPrice : undefined,
+        hedgeMode: strategy.hedgeMode
       }
     );
 

@@ -217,7 +217,7 @@ export class TradesController {
       if (exchange === Exchange.BYBIT) {
         const originalSide = trade.side === 'BUY' ? 'Buy' : 'Sell';
         const positionIdx = await this.bybitClient.getPositionIdx(
-          apiKey, apiSecret, strategy.isTestnet, trade.symbol, originalSide
+          apiKey, apiSecret, strategy.isTestnet, trade.symbol, originalSide, strategy.hedgeMode
         );
 
         await this.bybitClient.createOrder(apiKey, apiSecret, strategy.isTestnet, {
@@ -226,7 +226,8 @@ export class TradesController {
           orderType: 'Market',
           qty: formattedQty,
           positionIdx,
-          reduceOnly: true
+          reduceOnly: true,
+          hedgeMode: strategy.hedgeMode
         });
       } else {
         await this.closeBinancePosition(

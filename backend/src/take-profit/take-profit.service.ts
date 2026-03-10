@@ -613,7 +613,7 @@ export class TakeProfitService {
       if (exchange === Exchange.BYBIT) {
         const originalSide = trade.side === 'BUY' ? 'Buy' : 'Sell';
         const positionIdx = await this.bybitClient.getPositionIdx(
-          apiKey, apiSecret, strategy.isTestnet, trade.symbol, originalSide
+          apiKey, apiSecret, strategy.isTestnet, trade.symbol, originalSide, strategy.hedgeMode
         );
 
         const bybitSide = closeSide === 'BUY' ? 'Buy' : 'Sell';
@@ -627,7 +627,8 @@ export class TakeProfitService {
             orderType: 'Market',
             qty: closeQuantity.toFixed(3),
             positionIdx,
-            reduceOnly: true
+            reduceOnly: true,
+            hedgeMode: strategy.hedgeMode
           }
         );
         this.logger.log(`[BYBIT] Closed ${(closePercent * 100).toFixed(0)}% of ${trade.symbol} via ${reason}`);

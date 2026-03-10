@@ -139,6 +139,7 @@ export class BybitClientService {
       takeProfit?: string;
       positionIdx?: number;
       reduceOnly?: boolean;
+      hedgeMode?: boolean;
     }
   ): Promise<BybitOrderResponse> {
     const baseUrl = this.getBaseUrl(isTestnet);
@@ -146,7 +147,7 @@ export class BybitClientService {
 
     let positionIdx = params.positionIdx;
     if (positionIdx === undefined) {
-      positionIdx = await this.getPositionIdx(apiKey, apiSecret, isTestnet, params.symbol, params.side);
+      positionIdx = await this.getPositionIdx(apiKey, apiSecret, isTestnet, params.symbol, params.side, params.hedgeMode);
     }
 
     const body: Record<string, any> = {
@@ -352,8 +353,19 @@ export class BybitClientService {
     apiSecret: string,
     isTestnet: boolean,
     symbol: string,
-    side: 'Buy' | 'Sell'
+    side: 'Buy' | 'Sell',
+    hedgeMode?: boolean
   ): Promise<number> {
+    if (hedgeMode !== undefined) {
+      if (hedgeMode) {
+        this.logger.debug(`[BYBIT] Using HEDGE mode from strategy config`);
+        return side === 'Buy' ? 1 : 2;
+      } else {
+        this.logger.debug(`[BYBIT] Using ONE_WAY mode from strategy config`);
+        return 0;
+      }
+    }
+
     const mode = await this.detectPositionMode(apiKey, apiSecret, isTestnet, symbol);
 
     if (mode === 'HEDGE') {
@@ -370,13 +382,14 @@ export class BybitClientService {
     symbol: string,
     side: 'Buy' | 'Sell',
     maxRetries: number = 10,
-    delayMs: number = 500
+    delayMs: number = 500,
+    hedgeMode?: boolean
   ): Promise<boolean> {
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
         const positions = await this.getPositions(apiKey, apiSecret, isTestnet, symbol);
 
-        const targetPositionIdx = await this.getPositionIdx(apiKey, apiSecret, isTestnet, symbol, side);
+        const targetPositionIdx = await this.getPositionIdx(apiKey, apiSecret, isTestnet, symbol, side, hedgeMode);
 
         const hasPosition = positions.some((pos: any) => {
           const hasSize = parseFloat(pos.size || '0') > 0;
@@ -566,18 +579,28 @@ export class BybitClientService {
         let availableBalance = 0;
 
         if (accountType === 'UNIFIED' && account.coin) {
-          // UNIFIED account has coin array with individual balances
           const usdtCoin = account.coin.find((c: any) => c.coin === 'USDT');
           if (usdtCoin) {
-            // Use availableToWithdraw for available balance
-            availableBalance = parseFloat(usdtCoin.availableToWithdraw || usdtCoin.walletBalance || '0');
+            const walletBalance = parseFloat(usdtCoin.walletBalance || '0') || 0;
+            const equity = parseFloat(usdtCoin.equity || '0') || 0;
+            const totalPositionIM = parseFloat(usdtCoin.totalPositionIM || '0') || 0;
+            const totalOrderIM = parseFloat(usdtCoin.totalOrderIM || '0') || 0;
+            const availableToWithdraw = parseFloat(usdtCoin.availableToWithdraw || '0') || 0;
+
+            availableBalance = equity - totalPositionIM - totalOrderIM;
+
+            if (availableBalance < 0) {
+              availableBalance = 0;
+            }
 
             this.logger.log(
               `[BYBIT] ${accountType} Account - USDT Balance:\n` +
               `  Available to Trade: ${availableBalance.toFixed(2)} USDT\n` +
-              `  Wallet Balance: ${parseFloat(usdtCoin.walletBalance || '0').toFixed(2)} USDT\n` +
-              `  Equity: ${parseFloat(usdtCoin.equity || '0').toFixed(2)} USDT\n` +
-              `  Available to Withdraw: ${parseFloat(usdtCoin.availableToWithdraw || '0').toFixed(2)} USDT`
+              `  Wallet Balance: ${walletBalance.toFixed(2)} USDT\n` +
+              `  Equity: ${equity.toFixed(2)} USDT\n` +
+              `  Total Position IM: ${totalPositionIM.toFixed(2)} USDT\n` +
+              `  Total Order IM: ${totalOrderIM.toFixed(2)} USDT\n` +
+              `  Available to Withdraw: ${availableToWithdraw.toFixed(2)} USDT`
             );
           } else {
             this.logger.warn(`[BYBIT] No USDT found in UNIFIED account coins`);
@@ -794,12 +817,13 @@ export class BybitClientService {
     symbol: string,
     side: 'Buy' | 'Sell',
     stopLoss?: string,
-    takeProfit?: string
+    takeProfit?: string,
+    hedgeMode?: boolean
   ): Promise<boolean> {
     const baseUrl = this.getBaseUrl(isTestnet);
     const endpoint = '/v5/position/trading-stop';
 
-    const positionIdx = await this.getPositionIdx(apiKey, apiSecret, isTestnet, symbol, side);
+    const positionIdx = await this.getPositionIdx(apiKey, apiSecret, isTestnet, symbol, side, hedgeMode);
 
     const body: Record<string, any> = {
       category: 'linear',
