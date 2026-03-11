@@ -2084,13 +2084,17 @@ export class WebhookService {
 
           if (exchange === Exchange.BYBIT && !isAveragingTrade) {
             const bybitSide = side === 'BUY' ? 'Buy' : 'Sell';
-            const slOrder = await this.bybitClient.createStopLossOrder(
-              decryptedKey, decryptedSecret, strategy.isTestnet,
-              normalizedSymbol, bybitSide, this.normalizeQuantity(quantity, rules.qtyStep, rules.minQty),
-              this.roundTick(stopLossPrice, rules.priceTick), strategy.hedgeMode
-            );
-            stopLossOrderId = slOrder.orderId;
-            this.logger.log(`[SL] Bybit Stop Loss order created: ${stopLossOrderId} at ${this.roundTick(stopLossPrice, rules.priceTick)}`);
+            try {
+              const slOrder = await this.bybitClient.createStopLossOrder(
+                decryptedKey, decryptedSecret, strategy.isTestnet,
+                normalizedSymbol, bybitSide, this.normalizeQuantity(quantity, rules.qtyStep, rules.minQty),
+                this.roundTick(stopLossPrice, rules.priceTick), strategy.hedgeMode
+              );
+              stopLossOrderId = slOrder.orderId;
+              this.logger.log(`[SL] Bybit Stop Loss order created: ${stopLossOrderId} at ${this.roundTick(stopLossPrice, rules.priceTick)}`);
+            } catch (slError: any) {
+              this.logger.error(`[SL] Failed to create Bybit SL order: ${slError.message}. Continuing with TP creation...`);
+            }
           } else if (exchange === Exchange.BYBIT && isAveragingTrade) {
             this.logger.log(
               `[SL] Bybit averaging entry: Each entry has independent SL based on its own entry price. ` +
@@ -2110,10 +2114,14 @@ export class WebhookService {
               `Each trade has independent SL based on its own entry price.`
             );
           } else {
-            stopLossOrderId = await this.createBinanceStopLossOrder(
-              normalizedSymbol, side, quantity, stopLossPrice, decryptedKey, decryptedSecret, strategy.isTestnet, strategy.hedgeMode
-            );
-            this.logger.log(`[SL] Successfully created Stop Loss order: ${stopLossOrderId}`);
+            try {
+              stopLossOrderId = await this.createBinanceStopLossOrder(
+                normalizedSymbol, side, quantity, stopLossPrice, decryptedKey, decryptedSecret, strategy.isTestnet, strategy.hedgeMode
+              );
+              this.logger.log(`[SL] Successfully created Stop Loss order: ${stopLossOrderId}`);
+            } catch (slError: any) {
+              this.logger.error(`[SL] Failed to create Binance SL order: ${slError.message}. Continuing with TP creation...`);
+            }
           }
         }
 
