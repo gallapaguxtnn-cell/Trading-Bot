@@ -806,6 +806,7 @@ export class BybitClientService {
     const positionIdx = await this.getPositionIdx(apiKey, apiSecret, isTestnet, symbol, side, hedgeMode);
 
     const oppositeSide = side === 'Buy' ? 'Sell' : 'Buy';
+    const triggerDirection = side === 'Buy' ? 1 : 2;
 
     const body: Record<string, any> = {
       category: 'linear',
@@ -814,6 +815,7 @@ export class BybitClientService {
       orderType: 'Market',
       qty,
       triggerPrice,
+      triggerDirection,
       triggerBy: 'MarkPrice',
       positionIdx,
       reduceOnly: true,
