@@ -76,7 +76,6 @@ export class PositionSyncService {
   @Cron(CronExpression.EVERY_10_SECONDS)
   async syncPositions(): Promise<void> {
     if (this.syncInProgress) {
-      this.logger.debug('Sync already in progress, skipping...');
       return;
     }
 
@@ -131,7 +130,6 @@ export class PositionSyncService {
 
   private async syncStrategyPositions(strategy: Strategy): Promise<{ synced: number; closed: number; imported: number; consolidated: number }> {
     if (!strategy.apiKey || !strategy.apiSecret) {
-      this.logger.debug(`[SYNC] Skipping strategy ${strategy.name} - No API keys configured`);
       return { synced: 0, closed: 0, imported: 0, consolidated: 0 };
     }
 
@@ -163,8 +161,6 @@ export class PositionSyncService {
         },
         order: { timestamp: 'ASC' }
       });
-
-      this.logger.debug(`[SYNC DEBUG] ${position.symbol} (${position.side}) - strategyId: ${strategy.id} - Found ${existingTrades.length} existing trades`);
 
       if (existingTrades.length === 0) {
         this.logger.warn(`[SYNC] Orphan position detected: ${position.symbol} (${position.side}) - importing...`);
@@ -212,10 +208,6 @@ export class PositionSyncService {
       where: { strategyId: strategy.id, status: 'OPEN' }
     });
 
-    this.logger.debug(`[SYNC] Found ${allLocalOpenTrades.length} local open trades to check against ${openPositions.length} positions`);
-
-    // Minimum age (in seconds) for a trade before sync will close it
-    // This prevents race condition where sync closes a trade that was just created by webhook
     const MIN_TRADE_AGE_SECONDS = 30;
     const now = Date.now();
 
@@ -230,10 +222,6 @@ export class PositionSyncService {
         const tradeAgeSeconds = tradeAgeMs / 1000;
 
         if (tradeAgeSeconds < MIN_TRADE_AGE_SECONDS) {
-          this.logger.debug(
-            `[SYNC] Trade ${trade.id} for ${trade.symbol} is only ${tradeAgeSeconds.toFixed(1)}s old. ` +
-            `Waiting at least ${MIN_TRADE_AGE_SECONDS}s before closing to avoid race condition.`
-          );
           continue;
         }
 
@@ -248,7 +236,6 @@ export class PositionSyncService {
           );
 
           if (orderStatus === 'NEW' || orderStatus === 'PARTIALLY_FILLED') {
-            this.logger.debug(`[SYNC] Trade ${trade.id} has pending LIMIT order (${orderStatus}), skipping close`);
             continue;
           }
 
@@ -637,10 +624,6 @@ export class PositionSyncService {
     trade.entryPrice = position.entryPrice as any;
 
     await this.tradesRepository.save(trade);
-
-    this.logger.debug(
-      `[SYNC] ${trade.symbol} | P&L: ${position.unrealizedPnl.toFixed(4)} | Qty: ${position.size} | Entry: ${position.entryPrice}`
-    );
   }
 
   private async getCurrentPrice(symbol: string, exchange: Exchange, isTestnet: boolean): Promise<number> {

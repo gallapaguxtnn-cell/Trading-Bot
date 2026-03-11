@@ -1179,30 +1179,68 @@ export class WebhookService {
             continue;
           }
 
-          let slSuccess = false;
+          let slOrderId: string | null = null;
           if (strategy.stopLossPercentage && strategy.stopLossPercentage > 0) {
             const slPrice = this.calculateStopLossPrice(side, actualEntryPrice, strategy.stopLossPercentage);
             const rules = await this.getSymbolRules(symbol, strategy.isTestnet, Exchange.BYBIT);
             const slPriceRounded = this.roundTick(slPrice, rules.priceTick);
 
             try {
-              slSuccess = await this.bybitClient.setTradingStop(
+              const slOrder = await this.bybitClient.createStopLossOrder(
                 decryptedKey, decryptedSecret, strategy.isTestnet,
-                symbol, bybitSide, slPriceRounded, undefined, strategy.hedgeMode
+                symbol, bybitSide, this.normalizeQuantity(actualQty, rules.qtyStep, rules.minQty),
+                slPriceRounded, strategy.hedgeMode
               );
-              if (slSuccess) {
-                this.logger.log(`[BYBIT LIMIT SL/TP] SL created at ${slPriceRounded}`);
-              }
+              slOrderId = slOrder.orderId;
+              this.logger.log(`[BYBIT LIMIT SL/TP] SL order created: ${slOrderId} at ${slPriceRounded}`);
             } catch (e: any) {
               this.logger.warn(`[BYBIT LIMIT SL/TP] SL creation failed: ${e.message}`);
             }
           }
 
-          const tpConfigs = [
+          const rules = await this.getSymbolRules(symbol, strategy.isTestnet, Exchange.BYBIT);
+          const minQty = parseFloat(rules.minQty);
+
+          const configuredTPs = [
             { percent: strategy.takeProfitPercentage1, qtyPercent: strategy.takeProfitQuantity1 || 33, id: 1 },
             { percent: strategy.takeProfitPercentage2, qtyPercent: strategy.takeProfitQuantity2 || 33, id: 2 },
             { percent: strategy.takeProfitPercentage3, qtyPercent: strategy.takeProfitQuantity3 || 34, id: 3 },
-          ];
+          ].filter(tp => tp.percent && tp.percent > 0);
+
+          let tpConfigs;
+          const maxPossibleTPs = Math.floor(actualQty / minQty);
+
+          if (maxPossibleTPs >= configuredTPs.length) {
+            tpConfigs = configuredTPs;
+          } else if (maxPossibleTPs === 2) {
+            this.logger.warn(
+              `[BYBIT LIMIT TP] Quantity allows 2 TPs (not 3)\n` +
+              `  Total Quantity: ${actualQty}\n` +
+              `  Min Quantity: ${minQty}\n` +
+              `  Creating 2 TPs at first and last % targets`
+            );
+            tpConfigs = [
+              { percent: configuredTPs[0].percent, qtyPercent: 50, id: 1 },
+              { percent: configuredTPs[configuredTPs.length - 1].percent, qtyPercent: 50, id: 2 },
+            ];
+          } else if (maxPossibleTPs === 1) {
+            this.logger.warn(
+              `[BYBIT LIMIT TP] Quantity allows only 1 TP\n` +
+              `  Total Quantity: ${actualQty}\n` +
+              `  Min Quantity: ${minQty}\n` +
+              `  Creating single TP at highest % target with 100% quantity`
+            );
+            const highestTp = configuredTPs.reduce((max, tp) => tp.percent > max.percent ? tp : max, configuredTPs[0]);
+            tpConfigs = [{ percent: highestTp.percent, qtyPercent: 100, id: 1 }];
+          } else {
+            this.logger.error(
+              `[BYBIT LIMIT TP] Quantity too small for any TP\n` +
+              `  Total Quantity: ${actualQty}\n` +
+              `  Min Quantity: ${minQty}\n` +
+              `  Skipping TP creation`
+            );
+            tpConfigs = [];
+          }
           const tpOrderIds: string[] = [];
 
           const bybitPositionIdx = await this.bybitClient.getPositionIdx(
@@ -1215,7 +1253,6 @@ export class WebhookService {
               const tpQty = (actualQty * tp.qtyPercent) / 100;
               if (tpQty <= 0) continue;
 
-              const rules = await this.getSymbolRules(symbol, strategy.isTestnet, Exchange.BYBIT);
               try {
                 const tpOrder = await this.bybitClient.createOrder(
                   decryptedKey, decryptedSecret, strategy.isTestnet,
@@ -1241,7 +1278,7 @@ export class WebhookService {
           await this.tradesService.updateTrade(tradeId, {
             entryPrice: actualEntryPrice as any,
             quantity: actualQty as any,
-            stopLossOrderId: slSuccess ? 'BYBIT_POSITION_SL' : undefined,
+            stopLossOrderId: slOrderId || undefined,
             takeProfitOrderId: tpOrderIds.length > 0 ? tpOrderIds.join('|') : undefined,
           });
 
@@ -2047,14 +2084,13 @@ export class WebhookService {
 
           if (exchange === Exchange.BYBIT && !isAveragingTrade) {
             const bybitSide = side === 'BUY' ? 'Buy' : 'Sell';
-            await this.bybitClient.setTradingStop(
+            const slOrder = await this.bybitClient.createStopLossOrder(
               decryptedKey, decryptedSecret, strategy.isTestnet,
-              normalizedSymbol, bybitSide, this.roundTick(stopLossPrice, rules.priceTick), undefined, strategy.hedgeMode
+              normalizedSymbol, bybitSide, this.normalizeQuantity(quantity, rules.qtyStep, rules.minQty),
+              this.roundTick(stopLossPrice, rules.priceTick), strategy.hedgeMode
             );
-            this.logger.log(
-              `[SL] Bybit first entry: setTradingStop configured at ${this.roundTick(stopLossPrice, rules.priceTick)}. ` +
-              `This is a position-level protection (not an order).`
-            );
+            stopLossOrderId = slOrder.orderId;
+            this.logger.log(`[SL] Bybit Stop Loss order created: ${stopLossOrderId} at ${this.roundTick(stopLossPrice, rules.priceTick)}`);
           } else if (exchange === Exchange.BYBIT && isAveragingTrade) {
             this.logger.log(
               `[SL] Bybit averaging entry: Each entry has independent SL based on its own entry price. ` +
@@ -2084,12 +2120,49 @@ export class WebhookService {
         // --- MULTI-PARTIAL TAKE PROFITS ---
         // Each entry (including averaging) creates its own independent TPs for its own quantity
         const quantityForTPs = quantity;
+        const rules = await this.getSymbolRules(normalizedSymbol, strategy.isTestnet, exchange);
+        const minQty = parseFloat(rules.minQty);
 
-        const tpConfigs = [
+        const configuredTPs = [
           { percent: strategy.takeProfitPercentage1, qtyPercent: strategy.takeProfitQuantity1 || 33, id: 1 },
           { percent: strategy.takeProfitPercentage2, qtyPercent: strategy.takeProfitQuantity2 || 33, id: 2 },
           { percent: strategy.takeProfitPercentage3, qtyPercent: strategy.takeProfitQuantity3 || 34, id: 3 },
-        ];
+        ].filter(tp => tp.percent && tp.percent > 0);
+
+        let tpConfigs;
+        const maxPossibleTPs = Math.floor(quantityForTPs / minQty);
+
+        if (maxPossibleTPs >= configuredTPs.length) {
+          tpConfigs = configuredTPs;
+        } else if (maxPossibleTPs === 2) {
+          this.logger.warn(
+            `[TP] Quantity allows 2 TPs (not 3)\n` +
+            `  Total Quantity: ${quantityForTPs}\n` +
+            `  Min Quantity: ${minQty}\n` +
+            `  Creating 2 TPs at first and last % targets`
+          );
+          tpConfigs = [
+            { percent: configuredTPs[0].percent, qtyPercent: 50, id: 1 },
+            { percent: configuredTPs[configuredTPs.length - 1].percent, qtyPercent: 50, id: 2 },
+          ];
+        } else if (maxPossibleTPs === 1) {
+          this.logger.warn(
+            `[TP] Quantity allows only 1 TP\n` +
+            `  Total Quantity: ${quantityForTPs}\n` +
+            `  Min Quantity: ${minQty}\n` +
+            `  Creating single TP at highest % target with 100% quantity`
+          );
+          const highestTp = configuredTPs.reduce((max, tp) => tp.percent > max.percent ? tp : max, configuredTPs[0]);
+          tpConfigs = [{ percent: highestTp.percent, qtyPercent: 100, id: 1 }];
+        } else {
+          this.logger.error(
+            `[TP] Quantity too small for any TP\n` +
+            `  Total Quantity: ${quantityForTPs}\n` +
+            `  Min Quantity: ${minQty}\n` +
+            `  Skipping TP creation`
+          );
+          tpConfigs = [];
+        }
 
         const tpOrderIds: string[] = [];
 

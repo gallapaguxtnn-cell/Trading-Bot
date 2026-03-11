@@ -101,14 +101,6 @@ export class BybitClientService {
   ): string {
     const preSign = timestamp + apiKey + this.RECV_WINDOW + params;
     const signature = crypto.createHmac('sha256', apiSecret).update(preSign).digest('hex');
-
-    this.logger.debug(`[BYBIT AUTH] Timestamp: ${timestamp}`);
-    this.logger.debug(`[BYBIT AUTH] API Key (8 chars): ${apiKey.substring(0, 8)}...`);
-    this.logger.debug(`[BYBIT AUTH] Recv Window: ${this.RECV_WINDOW}`);
-    this.logger.debug(`[BYBIT AUTH] Params: ${params}`);
-    this.logger.debug(`[BYBIT AUTH] PreSign String: ${preSign.substring(0, 50)}...`);
-    this.logger.debug(`[BYBIT AUTH] Signature: ${signature.substring(0, 16)}...`);
-
     return signature;
   }
 
@@ -357,13 +349,7 @@ export class BybitClientService {
     hedgeMode?: boolean
   ): Promise<number> {
     if (hedgeMode !== undefined) {
-      if (hedgeMode) {
-        this.logger.debug(`[BYBIT] Using HEDGE mode from strategy config`);
-        return side === 'Buy' ? 1 : 2;
-      } else {
-        this.logger.debug(`[BYBIT] Using ONE_WAY mode from strategy config`);
-        return 0;
-      }
+      return hedgeMode ? (side === 'Buy' ? 1 : 2) : 0;
     }
 
     const mode = await this.detectPositionMode(apiKey, apiSecret, isTestnet, symbol);
@@ -545,9 +531,6 @@ export class BybitClientService {
       let headers = this.getHeaders(apiKey, apiSecret, queryString);
       const axiosConfig = { ...this.getAxiosConfig(), headers };
 
-      this.logger.debug(`[BYBIT] Request URL: ${baseUrl}${endpoint}?${queryString}`);
-      this.logger.debug(`[BYBIT] API Key (first 8 chars): ${apiKey.substring(0, 8)}...`);
-
       let response = await axios.get(`${baseUrl}${endpoint}?${queryString}`, axiosConfig);
 
       // If UNIFIED fails with specific error, try CONTRACT
@@ -571,9 +554,6 @@ export class BybitClientService {
       if (accounts.length > 0) {
         const account = accounts[0];
         const accountType = params.accountType;
-
-        // DEBUG: Log complete response structure
-        this.logger.debug(`[BYBIT] Complete account response: ${JSON.stringify(account, null, 2)}`);
 
         // For UNIFIED accounts, we need to find USDT coin data
         let availableBalance = 0;
@@ -810,6 +790,54 @@ export class BybitClientService {
     }
   }
 
+  async createStopLossOrder(
+    apiKey: string,
+    apiSecret: string,
+    isTestnet: boolean,
+    symbol: string,
+    side: 'Buy' | 'Sell',
+    qty: string,
+    triggerPrice: string,
+    hedgeMode?: boolean
+  ): Promise<BybitOrderResponse> {
+    const baseUrl = this.getBaseUrl(isTestnet);
+    const endpoint = '/v5/order/create';
+
+    const positionIdx = await this.getPositionIdx(apiKey, apiSecret, isTestnet, symbol, side, hedgeMode);
+
+    const oppositeSide = side === 'Buy' ? 'Sell' : 'Buy';
+
+    const body: Record<string, any> = {
+      category: 'linear',
+      symbol,
+      side: oppositeSide,
+      orderType: 'Market',
+      qty,
+      triggerPrice,
+      triggerBy: 'MarkPrice',
+      positionIdx,
+      reduceOnly: true,
+    };
+
+    const bodyString = JSON.stringify(body);
+    const headers = this.getHeaders(apiKey, apiSecret, bodyString);
+    const axiosConfig = { ...this.getAxiosConfig(), headers };
+
+    try {
+      const response = await axios.post(`${baseUrl}${endpoint}`, body, axiosConfig);
+
+      if (response.data.retCode !== 0) {
+        throw new Error(`Bybit API Error: ${response.data.retMsg}`);
+      }
+
+      this.logger.log(`[BYBIT] Stop Loss order created: ${response.data.result.orderId} at trigger ${triggerPrice}`);
+      return response.data.result;
+    } catch (error: any) {
+      this.logger.error(`[BYBIT] Failed to create SL order: ${error.response?.data?.retMsg || error.message}`);
+      throw error;
+    }
+  }
+
   async setTradingStop(
     apiKey: string,
     apiSecret: string,
@@ -928,7 +956,6 @@ export class BybitClientService {
           priceTick: priceFilter.tickSize || '0.01',
         };
 
-        this.logger.debug(`[BYBIT] Symbol rules for ${symbol}: Step=${rules.qtyStep}, Tick=${rules.priceTick}, MinQty=${rules.minQty}`);
         return rules;
       }
 
