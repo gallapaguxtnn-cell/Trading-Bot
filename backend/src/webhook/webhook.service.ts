@@ -1600,6 +1600,16 @@ export class WebhookService {
     const activeTrade = activeTradesForSymbol.find(t => t.side === side);
     const oppositeActiveTrade = activeTradesForSymbol.find(t => t.side !== side);
 
+    // Check for pending LIMIT orders in opposite direction that haven't been filled yet
+    const oppositePendingOrder = openTrades.find(t =>
+      t.symbol === normalizedSymbol &&
+      t.strategyId === strategy.id &&
+      t.side !== side &&
+      t.type === 'LIMIT' &&
+      t.status === 'OPEN' &&
+      !t.binancePositionAmt  // Order not yet filled
+    );
+
     if (activeTrade) {
         if (strategy.allowAveraging) {
             this.logger.log(`[AVERAGING] Adding to existing ${side} position for ${normalizedSymbol}.`);
@@ -1609,83 +1619,117 @@ export class WebhookService {
         }
     }
 
+    // Cancel pending BUFFER LIMIT order only (not all orders)
+    if (oppositePendingOrder && !oppositeActiveTrade) {
+        this.logger.log(`[BUFFER CANCEL] Detected pending ${oppositePendingOrder.side} LIMIT order. Cancelling it due to opposite signal.`);
+        try {
+            const decryptedKey = (await EncryptionUtil.decrypt(strategy.apiKey)).trim();
+            const decryptedSecret = (await EncryptionUtil.decrypt(strategy.apiSecret)).trim();
+
+            // Cancel only this specific LIMIT order from the buffer
+            if (oppositePendingOrder.exchangeOrderId) {
+                if (exchange === Exchange.BYBIT) {
+                    await this.bybitClient.cancelOrder(decryptedKey, decryptedSecret, strategy.isTestnet, normalizedSymbol, oppositePendingOrder.exchangeOrderId);
+                } else {
+                    await this.cancelBinanceOrderOrAlgo(normalizedSymbol, oppositePendingOrder.exchangeOrderId, decryptedKey, decryptedSecret, strategy.isTestnet);
+                }
+                this.logger.log(`[BUFFER CANCEL] Cancelled buffer order ${oppositePendingOrder.exchangeOrderId}`);
+            }
+
+            // Mark as cancelled in database
+            await this.tradesService.updateTrade(oppositePendingOrder.id, {
+                status: 'ERROR',
+                error: 'Cancelled by opposite signal',
+                closeReason: 'SIGNAL'
+            });
+            this.logger.log(`[BUFFER CANCEL] Pending LIMIT order marked as cancelled. Proceeding with new ${side} signal.`);
+        } catch (cancelError) {
+            this.logger.warn(`[BUFFER CANCEL] Failed to cancel order: ${cancelError.message}. Continuing anyway.`);
+        }
+    }
+
     if (oppositeActiveTrade && !strategy.hedgeMode) {
-            this.logger.log(`[ONE-WAY] Flipping position! Closing ${oppositeActiveTrade.side} to open ${side}.`);
+            this.logger.log(`[ONE-WAY] Detected opposite ${oppositeActiveTrade.side} position. Closing it before opening new ${side} position.`);
+
             // Close existing position logic (Generic close via Market)
             try {
                 const decryptedKey = (await EncryptionUtil.decrypt(strategy.apiKey)).trim();
                 const decryptedSecret = (await EncryptionUtil.decrypt(strategy.apiSecret)).trim();
 
-                this.logger.log(`[ONE-WAY] Cancelling all open orders for ${normalizedSymbol}...`);
+                // Cancel all protection orders (TP/SL) for this position
+                this.logger.log(`[ONE-WAY] Cancelling all protection orders for ${normalizedSymbol}...`);
                 if (exchange === Exchange.BYBIT) {
                     await this.bybitClient.cancelAllOrders(decryptedKey, decryptedSecret, strategy.isTestnet, normalizedSymbol);
                 } else {
                     await this.cancelAllBinanceOrders(decryptedKey, decryptedSecret, strategy.isTestnet, normalizedSymbol);
                 }
 
-                let closeQty = 0;
-                try {
-                     closeQty = await this.getPositionSize(oppositeActiveTrade.symbol, exchange, decryptedKey, decryptedSecret, strategy.isTestnet);
-                } catch (e) {
-                     this.logger.warn(`[ONE-WAY] Failed to fetch live position size, falling back to DB: ${e.message}`);
-                     closeQty = parseFloat(oppositeActiveTrade.quantity as any);
-                }
-
-                if (closeQty <= 0) {
-                     this.logger.warn(`[ONE-WAY] Position size is 0, assuming already closed.`);
-                     await this.tradesService.updateTrade(oppositeActiveTrade.id, { status: 'CLOSED' });
-                } else {
-                    const closeSide = oppositeActiveTrade.side === 'BUY' ? 'SELL' : 'BUY';
-                    this.logger.log(`[ONE-WAY] Closing ${oppositeActiveTrade.symbol} (${closeQty}) before reversal.`);
-
-                    const rules = await this.getSymbolRules(normalizedSymbol, strategy.isTestnet);
-
-                    if (exchange === Exchange.BYBIT) {
-                        const originalSide = oppositeActiveTrade.side === 'BUY' ? 'Buy' : 'Sell';
-                        const positionIdx = await this.bybitClient.getPositionIdx(
-                            decryptedKey, decryptedSecret, strategy.isTestnet, normalizedSymbol, originalSide, strategy.hedgeMode
-                        );
-
-                        await this.bybitClient.createOrder(decryptedKey, decryptedSecret, strategy.isTestnet, {
-                            symbol: normalizedSymbol,
-                            side: closeSide === 'BUY' ? 'Buy' : 'Sell',
-                            orderType: 'Market',
-                            qty: this.normalizeQuantity(closeQty, rules.qtyStep, rules.minQty),
-                            positionIdx,
-                            reduceOnly: true
-                        });
-                    } else {
-                        const params = new URLSearchParams();
-                        params.append('symbol', normalizedSymbol);
-                        params.append('side', closeSide);
-                        params.append('type', 'MARKET');
-                        params.append('quantity', this.normalizeQuantity(closeQty, rules.qtyStep, rules.minQty));
-                        params.append('reduceOnly', 'true');
-                        await this.createBinanceOrder(params, decryptedKey, decryptedSecret, strategy.isTestnet);
+                // Only close active position if it exists
+                if (oppositeActiveTrade) {
+                    let closeQty = 0;
+                    try {
+                         closeQty = await this.getPositionSize(oppositeActiveTrade.symbol, exchange, decryptedKey, decryptedSecret, strategy.isTestnet);
+                    } catch (e) {
+                         this.logger.warn(`[ONE-WAY] Failed to fetch live position size, falling back to DB: ${e.message}`);
+                         closeQty = parseFloat(oppositeActiveTrade.quantity as any);
                     }
-                    this.logger.log(`[ONE-WAY] Position closed successfully.`);
-                }
 
-                 const exitPrice = await this.getCurrentPrice(normalizedSymbol, exchange, strategy.isTestnet);
-                 const entryPrice = parseFloat(oppositeActiveTrade.entryPrice as any);
-                 const quantity = parseFloat(oppositeActiveTrade.quantity as any);
-                 let pnl: number;
-                 if (oppositeActiveTrade.side === 'BUY') {
-                   pnl = (exitPrice - entryPrice) * quantity;
-                 } else {
-                   pnl = (entryPrice - exitPrice) * quantity;
-                 }
+                    if (closeQty <= 0) {
+                         this.logger.warn(`[ONE-WAY] Position size is 0, assuming already closed.`);
+                         await this.tradesService.updateTrade(oppositeActiveTrade.id, { status: 'CLOSED' });
+                    } else {
+                        const closeSide = oppositeActiveTrade.side === 'BUY' ? 'SELL' : 'BUY';
+                        this.logger.log(`[ONE-WAY] Closing ${oppositeActiveTrade.symbol} (${closeQty}) before reversal.`);
 
-                 await this.tradesService.updateTrade(oppositeActiveTrade.id, {
-                   status: 'CLOSED',
-                   pnl,
-                   exitPrice,
-                   closeReason: 'SIGNAL',
-                   closedAt: new Date()
-                 });
-                 this.logger.log(`[ONE-WAY] Position closed | Qty: ${this.formatQuantityWithUsdt(quantity, exitPrice)} | P&L: ${pnl > 0 ? '+' : ''}${pnl.toFixed(2)} USDT`);
-                 this.logger.log(`[ONE-WAY] Waiting 2s before new entry...`);
-                 await new Promise(r => setTimeout(r, 2000)); 
+                        const rules = await this.getSymbolRules(normalizedSymbol, strategy.isTestnet);
+
+                        if (exchange === Exchange.BYBIT) {
+                            const originalSide = oppositeActiveTrade.side === 'BUY' ? 'Buy' : 'Sell';
+                            const positionIdx = await this.bybitClient.getPositionIdx(
+                                decryptedKey, decryptedSecret, strategy.isTestnet, normalizedSymbol, originalSide, strategy.hedgeMode
+                            );
+
+                            await this.bybitClient.createOrder(decryptedKey, decryptedSecret, strategy.isTestnet, {
+                                symbol: normalizedSymbol,
+                                side: closeSide === 'BUY' ? 'Buy' : 'Sell',
+                                orderType: 'Market',
+                                qty: this.normalizeQuantity(closeQty, rules.qtyStep, rules.minQty),
+                                positionIdx,
+                                reduceOnly: true
+                            });
+                        } else {
+                            const params = new URLSearchParams();
+                            params.append('symbol', normalizedSymbol);
+                            params.append('side', closeSide);
+                            params.append('type', 'MARKET');
+                            params.append('quantity', this.normalizeQuantity(closeQty, rules.qtyStep, rules.minQty));
+                            params.append('reduceOnly', 'true');
+                            await this.createBinanceOrder(params, decryptedKey, decryptedSecret, strategy.isTestnet);
+                        }
+                        this.logger.log(`[ONE-WAY] Position closed successfully.`);
+                    }
+
+                     const exitPrice = await this.getCurrentPrice(normalizedSymbol, exchange, strategy.isTestnet);
+                     const entryPrice = parseFloat(oppositeActiveTrade.entryPrice as any);
+                     const quantity = parseFloat(oppositeActiveTrade.quantity as any);
+                     let pnl: number;
+                     if (oppositeActiveTrade.side === 'BUY') {
+                       pnl = (exitPrice - entryPrice) * quantity;
+                     } else {
+                       pnl = (entryPrice - exitPrice) * quantity;
+                     }
+
+                     await this.tradesService.updateTrade(oppositeActiveTrade.id, {
+                       status: 'CLOSED',
+                       pnl,
+                       exitPrice,
+                       closeReason: 'SIGNAL',
+                       closedAt: new Date()
+                     });
+                     this.logger.log(`[ONE-WAY] Position closed | Qty: ${this.formatQuantityWithUsdt(quantity, exitPrice)} | P&L: ${pnl > 0 ? '+' : ''}${pnl.toFixed(2)} USDT`);
+                     this.logger.log(`[ONE-WAY] Waiting 2s before new entry...`);
+                     await new Promise(r => setTimeout(r, 2000));
+                } 
 
             } catch (err) {
                  this.logger.error(`[ONE-WAY] CRITICAL: Failed to close opposite position: ${err.message}`);
@@ -1696,20 +1740,20 @@ export class WebhookService {
     let isLimitOrder = signal.orderType === OrderType.LIMIT && !!signal.price;
     let effectivePrice = signal.price;
 
-    // Next Candle / Percent Offset Logic
-    if (strategy.nextCandleEntry && strategy.nextCandlePercentage && signal.price && signal.orderType !== OrderType.MARKET) {
-      const offset = signal.price * (strategy.nextCandlePercentage / 100);
+    // Buffer / Percent Offset Logic (Conservative Entry)
+    if (strategy.bufferEntry && strategy.bufferPercentage && signal.price && signal.orderType !== OrderType.MARKET) {
+      const offset = signal.price * (strategy.bufferPercentage / 100);
       if (side === 'BUY') {
-        effectivePrice = signal.price - offset;
+        effectivePrice = signal.price - offset;  // BUY: entry BELOW signal price (waits for price to drop)
       } else {
-        effectivePrice = signal.price + offset;
+        effectivePrice = signal.price + offset;  // SELL: entry ABOVE signal price (waits for price to rise)
       }
       isLimitOrder = true;
       // Update signal to reflect the forced limit order so downstream methods use the correct price
       signal.price = effectivePrice;
       signal.orderType = OrderType.LIMIT;
-      
-      this.logger.log(`[NEXT CANDLE] Adjusted entry price to ${effectivePrice} (${strategy.nextCandlePercentage}% offset)`);
+
+      this.logger.log(`[BUFFER] Entry adjusted to ${effectivePrice} (${strategy.bufferPercentage}% buffer ${side === 'BUY' ? 'below' : 'above'} signal)`);
     }
 
     this.logger.log(

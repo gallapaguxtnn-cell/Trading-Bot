@@ -39,6 +39,11 @@ export class TradesController {
     return this.tradesService.getStats();
   }
 
+  @Get(':id/executions')
+  async getTradeExecutions(@Param('id') id: string) {
+    return this.tradesService.findExecutions(id);
+  }
+
   @Post('sync')
   async forceSync() {
     const result = await this.positionSyncService.forceSync();

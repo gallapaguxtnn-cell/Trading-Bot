@@ -1,8 +1,10 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Inject, forwardRef } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Trade, CloseReason } from '../strategies/trade.entity';
+import { TradesService } from '../trades/trades.service';
+import { ExecutionType } from '../trades/trade-execution.entity';
 import { StrategiesService } from '../strategies/strategies.service';
 import { ExchangeService } from '../exchange/exchange.service';
 import { BybitClientService } from '../exchange/bybit-client.service';
@@ -20,6 +22,8 @@ export class TakeProfitService {
   constructor(
     @InjectRepository(Trade)
     private tradesRepository: Repository<Trade>,
+    @Inject(forwardRef(() => TradesService))
+    private tradesService: TradesService,
     private strategiesService: StrategiesService,
     private exchangeService: ExchangeService,
     private bybitClient: BybitClientService,
@@ -679,6 +683,21 @@ export class TakeProfitService {
 
       const pnl = this.calculatePnL(trade, exitPrice, closePercent);
 
+      // Save execution record
+      const executionType = reason === 'TAKE_PROFIT_1' ? ExecutionType.TAKE_PROFIT_1 :
+                           reason === 'TAKE_PROFIT_2' ? ExecutionType.TAKE_PROFIT_2 :
+                           ExecutionType.TAKE_PROFIT_3;
+
+      await this.tradesService.createExecution({
+        tradeId: trade.id,
+        type: executionType,
+        price: exitPrice,
+        quantity: closeQuantity,
+        pnl: pnl,
+        percentOfPosition: closePercent * 100,
+        exchangeOrderId: null
+      });
+
       if (closePercent >= 1.0) {
         trade.status = 'CLOSED';
         trade.exitPrice = exitPrice as any;
@@ -698,6 +717,7 @@ export class TakeProfitService {
         trade.quantity = remainingQuantity as any;
         const currentPnl = parseFloat(trade.pnl as any) || 0;
         trade.pnl = (currentPnl + pnl) as any;
+        trade.exitPrice = exitPrice as any;  // IMPORTANT: Update exitPrice to latest execution price
         trade.binancePositionAmt = remainingQuantity as any;
 
         await this.tradesRepository.save(trade);

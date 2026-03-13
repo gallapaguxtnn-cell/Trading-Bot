@@ -1,6 +1,7 @@
 import { Module, forwardRef } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { Trade } from '../strategies/trade.entity';
+import { TradeExecution } from './trade-execution.entity';
 import { TradesService } from './trades.service';
 import { TradesController } from './trades.controller';
 import { PositionSyncModule } from '../position-sync/position-sync.module';
@@ -9,7 +10,7 @@ import { ExchangeModule } from '../exchange/exchange.module';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Trade]),
+    TypeOrmModule.forFeature([Trade, TradeExecution]),
     forwardRef(() => PositionSyncModule),
     StrategiesModule,
     ExchangeModule,

@@ -20,8 +20,8 @@ const DEFAULT_FORM_DATA = {
   apiKey: '',
   apiSecret: '',
   defaultQuantity: 0.002,
-  nextCandleEntry: false,
-  nextCandlePercentage: 0.2,
+  bufferEntry: false,
+  bufferPercentage: 0.2,
   useAccountPercentage: false,
   accountPercentage: 10,
   takeProfitQuantity1: 33,
@@ -75,8 +75,8 @@ export default function StrategiesPage() {
       apiKey: '',
       apiSecret: '',
       defaultQuantity: strategy.defaultQuantity || 0.002,
-      nextCandleEntry: strategy.nextCandleEntry || false,
-      nextCandlePercentage: strategy.nextCandlePercentage || 0.2,
+      bufferEntry: strategy.bufferEntry || false,
+      bufferPercentage: strategy.bufferPercentage || 0.2,
       useAccountPercentage: strategy.useAccountPercentage || false,
       accountPercentage: strategy.accountPercentage || 10,
       takeProfitQuantity1: strategy.takeProfitQuantity1 || 33,
@@ -127,8 +127,8 @@ export default function StrategiesPage() {
       isRealAccount: formData.isRealAccount,
       isActive: true,
       defaultQuantity: Number(formData.defaultQuantity),
-      nextCandleEntry: formData.nextCandleEntry,
-      nextCandlePercentage: formData.nextCandleEntry ? Number(formData.nextCandlePercentage) : null,
+      bufferEntry: formData.bufferEntry,
+      bufferPercentage: formData.bufferEntry ? Number(formData.bufferPercentage) : null,
       useAccountPercentage: formData.useAccountPercentage,
       accountPercentage: formData.useAccountPercentage ? Number(formData.accountPercentage) : null,
       takeProfitQuantity1: Number(formData.takeProfitQuantity1),
@@ -171,7 +171,7 @@ export default function StrategiesPage() {
   };
 
   const copyWebhookJson = async (strategy: any, action?: 'buy' | 'sell') => {
-    const orderType = strategy.nextCandleEntry ? 'limit' : 'market';
+    const orderType = strategy.bufferEntry ? 'limit' : 'market';
     try {
       const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000/api'}/strategies/${strategy.id}/webhook-json?orderType=${orderType}`);
       const data = await response.json();
@@ -496,30 +496,30 @@ export default function StrategiesPage() {
                    <div className="flex bg-slate-800 rounded-lg p-1 border border-slate-700">
                       <button
                         type="button"
-                        onClick={() => setFormData(prev => ({ ...prev, nextCandleEntry: false }))}
-                        className={`flex-1 py-1.5 text-xs font-medium rounded ${!formData.nextCandleEntry ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-400 hover:text-white'}`}
+                        onClick={() => setFormData(prev => ({ ...prev, bufferEntry: false }))}
+                        className={`flex-1 py-1.5 text-xs font-medium rounded ${!formData.bufferEntry ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-400 hover:text-white'}`}
                       >
                         Market
                       </button>
                       <button
                         type="button"
-                        onClick={() => setFormData(prev => ({ ...prev, nextCandleEntry: true }))}
-                        className={`flex-1 py-1.5 text-xs font-medium rounded ${formData.nextCandleEntry ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-400 hover:text-white'}`}
+                        onClick={() => setFormData(prev => ({ ...prev, bufferEntry: true }))}
+                        className={`flex-1 py-1.5 text-xs font-medium rounded ${formData.bufferEntry ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-400 hover:text-white'}`}
                       >
-                        Next Candle (Limit)
+                        Buffer (Limit)
                       </button>
                    </div>
                    
-                   {formData.nextCandleEntry && (
+                   {formData.bufferEntry && (
                      <div className="space-y-1 animate-in fade-in slide-in-from-top-2 duration-200">
                         <label className="text-xs text-blue-400">Entry Offset (%)</label>
                         <input
                           type="number"
                           step="0.01"
-                          name="nextCandlePercentage"
+                          name="bufferPercentage"
                           placeholder="0.2"
                           className="w-full bg-slate-800 border border-blue-500/50 rounded p-2 text-white text-sm focus:border-blue-500 outline-none"
-                          value={formData.nextCandlePercentage}
+                          value={formData.bufferPercentage}
                           onChange={handleChange}
                         />
                         <p className="text-[10px] text-slate-500">

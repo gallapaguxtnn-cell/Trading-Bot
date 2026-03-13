@@ -4,11 +4,13 @@ import { useEffect, useState } from 'react';
 import { useTradesSocket } from '@/hooks/useTradesSocket';
 import { StatsCard } from '@/components/dashboard/StatsCard';
 import { Table } from '@/components/ui/Table';
+import { TradeCard } from '@/components/trades/TradeCard';
 import { closeAllPositions, pauseAllStrategies, resumeAllStrategies, closePosition } from '@/lib/api';
 
 export default function Home() {
   const { stats, isConnected, lastUpdate, forceSync, isSyncing } = useTradesSocket();
   const [filter, setFilter] = useState<'ALL' | 'OPEN' | 'CLOSED'>('ALL');
+  const [viewMode, setViewMode] = useState<'table' | 'cards'>('cards');
   const [isClosingAll, setIsClosingAll] = useState(false);
   const [isPausingAll, setIsPausingAll] = useState(false);
   const [allPaused, setAllPaused] = useState(false);
@@ -269,26 +271,58 @@ export default function Home() {
       <div className="mt-8">
         <div className="flex justify-between items-center mb-4">
           <h3 className="text-xl font-semibold text-white">Recent Trades</h3>
-          <div className="flex gap-2">
-            {(['ALL', 'OPEN', 'CLOSED'] as const).map((f) => (
+          <div className="flex gap-4">
+            <div className="flex gap-2">
+              {(['ALL', 'OPEN', 'CLOSED'] as const).map((f) => (
+                <button
+                  key={f}
+                  onClick={() => setFilter(f)}
+                  className={`px-3 py-1 rounded-lg text-sm font-medium transition-all ${
+                    filter === f
+                      ? 'bg-blue-600 text-white'
+                      : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
+                  }`}
+                >
+                  {f}
+                </button>
+              ))}
+            </div>
+            <div className="flex gap-2 border-l border-slate-600 pl-4">
               <button
-                key={f}
-                onClick={() => setFilter(f)}
+                onClick={() => setViewMode('cards')}
                 className={`px-3 py-1 rounded-lg text-sm font-medium transition-all ${
-                  filter === f
+                  viewMode === 'cards'
                     ? 'bg-blue-600 text-white'
                     : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
                 }`}
               >
-                {f}
+                Cards
               </button>
-            ))}
+              <button
+                onClick={() => setViewMode('table')}
+                className={`px-3 py-1 rounded-lg text-sm font-medium transition-all ${
+                  viewMode === 'table'
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
+                }`}
+              >
+                Table
+              </button>
+            </div>
           </div>
         </div>
-        <div className="bg-slate-800/50 rounded-xl border border-slate-700 overflow-hidden">
-          <Table
-            data={filteredTrades}
-            columns={[
+
+        {viewMode === 'cards' ? (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {filteredTrades.map((trade) => (
+              <TradeCard key={trade.id} trade={trade} />
+            ))}
+          </div>
+        ) : (
+          <div className="bg-slate-800/50 rounded-xl border border-slate-700 overflow-hidden">
+            <Table
+              data={filteredTrades}
+              columns={[
               {
                 header: 'Date',
                 accessor: (item) => {
@@ -386,7 +420,8 @@ export default function Home() {
               },
             ]}
           />
-        </div>
+          </div>
+        )}
       </div>
     </div>
   );

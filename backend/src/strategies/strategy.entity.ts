@@ -90,10 +90,10 @@ export class Strategy {
   moveSLToBreakeven: boolean;
 
   @Column({ default: false })
-  nextCandleEntry: boolean;
+  bufferEntry: boolean;
 
   @Column({ type: 'float', nullable: true })
-  nextCandlePercentage: number;
+  bufferPercentage: number;
 
   @Column({ default: false })
   useAccountPercentage: boolean;

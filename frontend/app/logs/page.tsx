@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
+import { TradeCard } from '@/components/trades/TradeCard';
 
 interface LogEntry {
   id: string;
@@ -24,6 +25,7 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000';
 export default function LogsPage() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [filter, setFilter] = useState<LogLevel>('ALL');
+  const [viewMode, setViewMode] = useState<'logs' | 'cards'>('logs');
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -182,31 +184,63 @@ export default function LogsPage() {
       </div>
 
       {/* Filters */}
-      <div className="flex gap-2">
-        {(['ALL', 'INFO', 'SUCCESS', 'ERROR'] as const).map((level) => (
+      <div className="flex justify-between items-center">
+        <div className="flex gap-2">
+          {(['ALL', 'INFO', 'SUCCESS', 'ERROR'] as const).map((level) => (
+            <button
+              key={level}
+              onClick={() => setFilter(level)}
+              className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+                filter === level
+                  ? level === 'ERROR' ? 'bg-rose-600 text-white' :
+                    level === 'SUCCESS' ? 'bg-emerald-600 text-white' :
+                    'bg-blue-600 text-white'
+                  : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
+              }`}
+            >
+              {level}
+              {level !== 'ALL' && (
+                <span className="ml-2 text-xs opacity-70">
+                  ({logs.filter(l => (level as string) === 'ALL' ? true : getLogLevel(l) === level).length})
+                </span>
+              )}
+            </button>
+          ))}
+        </div>
+
+        <div className="flex gap-2">
           <button
-            key={level}
-            onClick={() => setFilter(level)}
-            className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
-              filter === level
-                ? level === 'ERROR' ? 'bg-rose-600 text-white' :
-                  level === 'SUCCESS' ? 'bg-emerald-600 text-white' :
-                  'bg-blue-600 text-white'
+            onClick={() => setViewMode('logs')}
+            className={`px-3 py-1 rounded-lg text-sm font-medium transition-all ${
+              viewMode === 'logs'
+                ? 'bg-blue-600 text-white'
                 : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
             }`}
           >
-            {level}
-            {level !== 'ALL' && (
-              <span className="ml-2 text-xs opacity-70">
-                ({logs.filter(l => (level as string) === 'ALL' ? true : getLogLevel(l) === level).length})
-              </span>
-            )}
+            Logs
           </button>
-        ))}
+          <button
+            onClick={() => setViewMode('cards')}
+            className={`px-3 py-1 rounded-lg text-sm font-medium transition-all ${
+              viewMode === 'cards'
+                ? 'bg-blue-600 text-white'
+                : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
+            }`}
+          >
+            Cards
+          </button>
+        </div>
       </div>
 
-      {/* Logs List */}
-      <div className="bg-slate-800/50 rounded-xl border border-slate-700 overflow-hidden">
+      {/* Logs List / Cards View */}
+      {viewMode === 'cards' ? (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          {filteredLogs.map((log) => (
+            <TradeCard key={log.id} trade={log} />
+          ))}
+        </div>
+      ) : (
+        <div className="bg-slate-800/50 rounded-xl border border-slate-700 overflow-hidden">
         <div className="divide-y divide-slate-700/50">
           {filteredLogs.length === 0 ? (
             <div className="p-8 text-center text-slate-500">
@@ -249,7 +283,8 @@ export default function LogsPage() {
             })
           )}
         </div>
-      </div>
+        </div>
+      )}
 
       {/* Stats */}
       <div className="flex justify-between items-center text-sm text-slate-500">

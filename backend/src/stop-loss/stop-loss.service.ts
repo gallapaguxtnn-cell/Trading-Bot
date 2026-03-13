@@ -1,8 +1,10 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Inject, forwardRef } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Trade, CloseReason } from '../strategies/trade.entity';
+import { TradesService } from '../trades/trades.service';
+import { ExecutionType } from '../trades/trade-execution.entity';
 import { StrategiesService } from '../strategies/strategies.service';
 import { ExchangeService } from '../exchange/exchange.service';
 import { BybitClientService } from '../exchange/bybit-client.service';
@@ -20,6 +22,8 @@ export class StopLossService {
   constructor(
     @InjectRepository(Trade)
     private tradesRepository: Repository<Trade>,
+    @Inject(forwardRef(() => TradesService))
+    private tradesService: TradesService,
     private strategiesService: StrategiesService,
     private exchangeService: ExchangeService,
     private bybitClient: BybitClientService,
@@ -502,6 +506,17 @@ export class StopLossService {
 
       const pnl = this.calculatePnL(trade, exitPrice);
       const totalPnl = (parseFloat(trade.pnl as any) || 0) + pnl;
+
+      // Save execution record for stop loss
+      await this.tradesService.createExecution({
+        tradeId: trade.id,
+        type: ExecutionType.STOP_LOSS,
+        price: exitPrice,
+        quantity: quantity,
+        pnl: pnl,
+        percentOfPosition: 100,
+        exchangeOrderId: trade.stopLossOrderId || null
+      });
 
       trade.status = 'CLOSED';
       trade.exitPrice = exitPrice as any;

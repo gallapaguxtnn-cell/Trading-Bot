@@ -2,12 +2,15 @@ import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Trade } from '../strategies/trade.entity';
+import { TradeExecution } from './trade-execution.entity';
 
 @Injectable()
 export class TradesService {
   constructor(
     @InjectRepository(Trade)
     private readonly tradesRepository: Repository<Trade>,
+    @InjectRepository(TradeExecution)
+    private readonly executionsRepository: Repository<TradeExecution>,
   ) {}
 
   async create(trade: Partial<Trade>): Promise<Trade> {
@@ -173,4 +176,15 @@ export class TradesService {
     quantity: this.parsePrice(trade.quantity),
     binancePositionAmt: trade.binancePositionAmt ? this.parsePrice(trade.binancePositionAmt) : null
   });
+
+  async findExecutions(tradeId: string): Promise<TradeExecution[]> {
+    return this.executionsRepository.find({
+      where: { tradeId },
+      order: { executedAt: 'ASC' }
+    });
+  }
+
+  async createExecution(execution: Partial<TradeExecution>): Promise<TradeExecution> {
+    return this.executionsRepository.save(execution);
+  }
 }
