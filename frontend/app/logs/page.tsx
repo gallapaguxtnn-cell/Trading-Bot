@@ -61,7 +61,7 @@ export default function LogsPage() {
 
   const getLogLevel = (log: LogEntry): 'INFO' | 'SUCCESS' | 'ERROR' => {
     if (log.status === 'ERROR' || log.error) return 'ERROR';
-    if (log.status === 'CLOSED' && log.pnl !== undefined && log.pnl > 0) return 'SUCCESS';
+    if (log.status === 'CLOSED' && log.pnl != null && log.pnl > 0) return 'SUCCESS';
     return 'INFO';
   };
 
@@ -98,11 +98,11 @@ export default function LogsPage() {
 
     parts.push(
       <span key="price" className="text-slate-400 ml-2">
-        @ ${log.entryPrice?.toFixed(2)}
+        @ ${log.entryPrice ? log.entryPrice.toFixed(2) : 'N/A'}
       </span>
     );
 
-    if (log.exitPrice) {
+    if (log.exitPrice != null) {
       parts.push(
         <span key="exit" className="text-slate-400 ml-1">
           -&gt; ${log.exitPrice.toFixed(2)}
@@ -128,7 +128,7 @@ export default function LogsPage() {
       );
     }
 
-    if (log.pnl !== undefined && log.status === 'CLOSED') {
+    if (log.pnl != null && log.status === 'CLOSED') {
       parts.push(
         <span key="pnl" className={`ml-2 font-semibold ${log.pnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
           {log.pnl > 0 ? '+' : ''}${log.pnl.toFixed(2)}

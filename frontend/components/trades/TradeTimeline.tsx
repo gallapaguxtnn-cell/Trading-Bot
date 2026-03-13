@@ -95,8 +95,8 @@ export function TradeTimeline({ tradeId }: TradeTimelineProps) {
           <div className="flex-1 min-w-0">
             <div className="font-semibold text-sm">{formatType(event.type)}</div>
             <div className="text-xs text-gray-300">
-              {parseFloat(event.quantity.toString()).toFixed(4)} @ ${parseFloat(event.price.toString()).toFixed(2)}
-              {event.percentOfPosition && event.percentOfPosition < 100 && (
+              {event.quantity != null ? parseFloat(event.quantity.toString()).toFixed(4) : '0.0000'} @ ${event.price != null ? parseFloat(event.price.toString()).toFixed(2) : '0.00'}
+              {event.percentOfPosition != null && event.percentOfPosition < 100 && (
                 <span className="ml-1 text-gray-400">
                   ({parseFloat(event.percentOfPosition.toString()).toFixed(0)}%)
                 </span>

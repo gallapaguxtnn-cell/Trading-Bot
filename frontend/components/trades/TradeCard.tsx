@@ -78,7 +78,7 @@ export function TradeCard({ trade }: TradeCardProps) {
         </div>
         <div>
           <div className="text-gray-400 text-xs mb-1">Quantity</div>
-          <div className="font-mono">{parseFloat(trade.quantity.toString()).toFixed(4)}</div>
+          <div className="font-mono">{trade.quantity != null ? parseFloat(trade.quantity.toString()).toFixed(4) : '-'}</div>
         </div>
         <div>
           <div className="text-gray-400 text-xs mb-1">Type</div>
