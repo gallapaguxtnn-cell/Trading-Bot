@@ -695,7 +695,7 @@ export class TakeProfitService {
         quantity: closeQuantity,
         pnl: pnl,
         percentOfPosition: closePercent * 100,
-        exchangeOrderId: null
+        exchangeOrderId: undefined
       });
 
       if (closePercent >= 1.0) {

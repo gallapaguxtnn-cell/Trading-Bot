@@ -7,12 +7,14 @@ interface LogEntry {
   id: string;
   symbol: string;
   side: 'BUY' | 'SELL';
+  type: string;
   entryPrice: number;
   exitPrice?: number;
   quantity: number;
-  pnl: number | null;
+  pnl?: number;
   status: 'OPEN' | 'CLOSED' | 'ERROR';
   closeReason?: string;
+  closedAt?: string;
   error?: string;
   strategyId: string;
   timestamp: string;
@@ -59,7 +61,7 @@ export default function LogsPage() {
 
   const getLogLevel = (log: LogEntry): 'INFO' | 'SUCCESS' | 'ERROR' => {
     if (log.status === 'ERROR' || log.error) return 'ERROR';
-    if (log.status === 'CLOSED' && log.pnl !== null && log.pnl > 0) return 'SUCCESS';
+    if (log.status === 'CLOSED' && log.pnl !== undefined && log.pnl > 0) return 'SUCCESS';
     return 'INFO';
   };
 
@@ -126,7 +128,7 @@ export default function LogsPage() {
       );
     }
 
-    if (log.pnl !== null && log.status === 'CLOSED') {
+    if (log.pnl !== undefined && log.status === 'CLOSED') {
       parts.push(
         <span key="pnl" className={`ml-2 font-semibold ${log.pnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
           {log.pnl > 0 ? '+' : ''}${log.pnl.toFixed(2)}

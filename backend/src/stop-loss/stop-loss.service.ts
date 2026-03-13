@@ -515,7 +515,7 @@ export class StopLossService {
         quantity: quantity,
         pnl: pnl,
         percentOfPosition: 100,
-        exchangeOrderId: trade.stopLossOrderId || null
+        exchangeOrderId: trade.stopLossOrderId || undefined
       });
 
       trade.status = 'CLOSED';

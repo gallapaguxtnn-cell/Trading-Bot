@@ -7,10 +7,11 @@ interface Trade {
   id: string;
   symbol: string;
   side: 'BUY' | 'SELL';
+  type: string;
   entryPrice: number;
   exitPrice?: number;
   quantity: number;
-  pnl: number | null;
+  pnl?: number;
   status: 'OPEN' | 'CLOSED' | 'SIMULATED' | 'ERROR';
   closeReason?: string;
   closedAt?: string;

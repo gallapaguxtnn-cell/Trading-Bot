@@ -1,5 +1,5 @@
 import { Entity, PrimaryGeneratedColumn, Column, ManyToOne, CreateDateColumn, JoinColumn } from 'typeorm';
-import { Trade } from './trade.entity';
+import { Trade } from '../strategies/trade.entity';
 
 export enum ExecutionType {
   ENTRY = 'ENTRY',
