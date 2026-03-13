@@ -7,7 +7,7 @@ interface LogEntry {
   id: string;
   symbol: string;
   side: 'BUY' | 'SELL';
-  type: string;
+  type?: string;
   entryPrice: number;
   exitPrice?: number;
   quantity: number;

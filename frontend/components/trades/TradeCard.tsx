@@ -8,7 +8,7 @@ interface Trade {
   symbol: string;
   side: string;
   status: string;
-  type: string;
+  type?: string;
   entryPrice: number;
   exitPrice?: number;
   quantity: number;
@@ -82,7 +82,7 @@ export function TradeCard({ trade }: TradeCardProps) {
         </div>
         <div>
           <div className="text-gray-400 text-xs mb-1">Type</div>
-          <div className="uppercase text-xs">{trade.type}</div>
+          <div className="uppercase text-xs">{trade.type || 'MARKET'}</div>
         </div>
       </div>
 
