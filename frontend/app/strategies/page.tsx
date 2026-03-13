@@ -838,7 +838,7 @@ export default function StrategiesPage() {
                      checked={formData.breakAgain}
                      onChange={handleChange}
                    />
-                   <span className="text-sm text-slate-300 font-semibold text-blue-400">Enable "Break Again" (Trail SL to last TP)</span>
+                   <span className="text-sm font-semibold text-blue-400">Enable "Break Again" (Trail SL to last TP)</span>
                  </label>
               </div>
 
