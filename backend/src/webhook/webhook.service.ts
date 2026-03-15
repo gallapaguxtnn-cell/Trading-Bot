@@ -2106,6 +2106,11 @@ export class WebhookService {
 
       this.logger.log(`[DB] Creating trade in database: Strategy=${strategy.id}, Symbol=${tradeData.symbol}, Side=${tradeData.side}, Qty=${tradeData.quantity}`);
       savedTrade = await this.tradesService.create(tradeData);
+
+      if (!savedTrade) {
+        throw new Error('Failed to create trade in database');
+      }
+
       this.logger.log(`[DB] Trade created successfully: ID=${savedTrade.id}, Status=${savedTrade.status}`);
 
       let tradeDetails: any;
