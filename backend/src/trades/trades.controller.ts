@@ -30,18 +30,44 @@ export class TradesController {
   ) {}
 
   @Get()
-  findAll(@Query('status') status?: string, @Query('limit') limit?: string) {
-    return this.tradesService.findAll(status, limit ? parseInt(limit) : undefined);
+  async findAll(@Query('status') status?: string, @Query('limit') limit?: string) {
+    try {
+      return await this.tradesService.findAll(status, limit ? parseInt(limit) : undefined);
+    } catch (error: any) {
+      this.logger.error(`Failed to fetch trades: ${error.message}`);
+      return [];
+    }
   }
 
   @Get('stats')
-  getStats() {
-    return this.tradesService.getStats();
+  async getStats() {
+    try {
+      return await this.tradesService.getStats();
+    } catch (error: any) {
+      this.logger.error(`Failed to fetch stats: ${error.message}`);
+      return {
+        totalPnL: 0,
+        realizedPnL: 0,
+        unrealizedPnL: 0,
+        activePositions: 0,
+        winRate: 0,
+        totalTrades: 0,
+        wins: 0,
+        losses: 0,
+        recentSignals: [],
+        openPositions: []
+      };
+    }
   }
 
   @Get(':id/executions')
   async getTradeExecutions(@Param('id') id: string) {
-    return this.tradesService.findExecutions(id);
+    try {
+      return await this.tradesService.findExecutions(id);
+    } catch (error: any) {
+      this.logger.error(`Failed to fetch executions for trade ${id}: ${error.message}`);
+      return [];
+    }
   }
 
   @Post('sync')

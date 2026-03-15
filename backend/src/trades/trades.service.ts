@@ -14,7 +14,8 @@ export class TradesService {
   ) {}
 
   async create(trade: Partial<Trade>): Promise<Trade> {
-    return this.tradesRepository.save(trade);
+    const savedTrade = await this.tradesRepository.save(trade);
+    return this.normalizeTrade(savedTrade);
   }
 
   async findAll(status?: string, limit: number = 50): Promise<Trade[]> {
@@ -34,10 +35,11 @@ export class TradesService {
   }
 
   async findOpenTrades(): Promise<Trade[]> {
-    return this.tradesRepository.find({
+    const trades = await this.tradesRepository.find({
       where: { status: 'OPEN' },
       order: { timestamp: 'DESC' }
     });
+    return trades.map(this.normalizeTrade);
   }
 
   async findOpenTradeBySymbolAndSide(
@@ -45,9 +47,10 @@ export class TradesService {
     symbol: string,
     side: 'BUY' | 'SELL'
   ): Promise<Trade | null> {
-    return this.tradesRepository.findOne({
+    const trade = await this.tradesRepository.findOne({
       where: { strategyId, symbol, side, status: 'OPEN' }
     });
+    return trade ? this.normalizeTrade(trade) : null;
   }
 
   async findRecentTradeBySymbol(
@@ -57,7 +60,7 @@ export class TradesService {
   ): Promise<Trade | null> {
     const cutoffTime = new Date(Date.now() - secondsAgo * 1000);
 
-    return this.tradesRepository
+    const trade = await this.tradesRepository
       .createQueryBuilder('trade')
       .where('trade.strategyId = :strategyId', { strategyId })
       .andWhere('trade.symbol = :symbol', { symbol })
@@ -65,22 +68,27 @@ export class TradesService {
       .andWhere('trade.timestamp > :cutoffTime', { cutoffTime })
       .orderBy('trade.timestamp', 'DESC')
       .getOne();
+
+    return trade ? this.normalizeTrade(trade) : null;
   }
 
   async findLastTradeWithInitialQuantity(strategyId: string): Promise<Trade | null> {
-    return this.tradesRepository
+    const trade = await this.tradesRepository
       .createQueryBuilder('trade')
       .where('trade.strategyId = :strategyId', { strategyId })
       .andWhere('trade.initialQuantity IS NOT NULL')
       .orderBy('trade.timestamp', 'DESC')
       .getOne();
+
+    return trade ? this.normalizeTrade(trade) : null;
   }
 
   async findLastClosedTrade(strategyId: string): Promise<Trade | null> {
-    return this.tradesRepository.findOne({
+    const trade = await this.tradesRepository.findOne({
       where: { strategyId, status: 'CLOSED' },
       order: { timestamp: 'DESC' }
     });
+    return trade ? this.normalizeTrade(trade) : null;
   }
 
   async countClosedTrades(strategyId: string): Promise<number> {
@@ -90,50 +98,67 @@ export class TradesService {
   }
 
   async findById(id: string): Promise<Trade | null> {
-    return this.tradesRepository.findOneBy({ id });
+    const trade = await this.tradesRepository.findOneBy({ id });
+    return trade ? this.normalizeTrade(trade) : null;
   }
 
   async updateTrade(id: string, updates: Partial<Trade>): Promise<Trade | null> {
     await this.tradesRepository.update(id, updates);
-    return this.tradesRepository.findOneBy({ id });
+    const trade = await this.tradesRepository.findOneBy({ id });
+    return trade ? this.normalizeTrade(trade) : null;
   }
 
   async getStats() {
-    const [openTrades, closedTrades] = await Promise.all([
-      this.tradesRepository.find({
-        where: { status: 'OPEN' },
-        order: { timestamp: 'DESC' }
-      }),
-      this.tradesRepository.find({
-        where: { status: 'CLOSED' },
-        order: { timestamp: 'DESC' }
-      })
-    ]);
+    try {
+      const [openTrades, closedTrades] = await Promise.all([
+        this.tradesRepository.find({
+          where: { status: 'OPEN' },
+          order: { timestamp: 'DESC' }
+        }),
+        this.tradesRepository.find({
+          where: { status: 'CLOSED' },
+          order: { timestamp: 'DESC' }
+        })
+      ]);
 
-    const realizedPnL = this.calculateTotalPnL(closedTrades);
-    const unrealizedPnL = this.calculateTotalPnL(openTrades);
-    const totalPnL = realizedPnL + unrealizedPnL;
+      const realizedPnL = this.calculateTotalPnL(closedTrades);
+      const unrealizedPnL = this.calculateTotalPnL(openTrades);
+      const totalPnL = realizedPnL + unrealizedPnL;
 
-    const wins = this.countWins(closedTrades);
-    const losses = this.countLosses(closedTrades);
-    const winRate = this.calculateWinRate(wins, closedTrades.length);
+      const wins = this.countWins(closedTrades);
+      const losses = this.countLosses(closedTrades);
+      const winRate = this.calculateWinRate(wins, closedTrades.length);
 
-    const allTrades = [...openTrades, ...closedTrades]
-      .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
-      .slice(0, 50);
+      const allTrades = [...openTrades, ...closedTrades]
+        .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+        .slice(0, 50);
 
-    return {
-      totalPnL: this.roundToTwo(totalPnL),
-      realizedPnL: this.roundToTwo(realizedPnL),
-      unrealizedPnL: this.roundToTwo(unrealizedPnL),
-      activePositions: openTrades.length,
-      winRate: this.roundToOne(winRate),
-      totalTrades: closedTrades.length,
-      wins,
-      losses,
-      recentSignals: allTrades.map(this.normalizeTrade),
-      openPositions: openTrades.map(this.normalizeTrade)
-    };
+      return {
+        totalPnL: this.roundToTwo(totalPnL),
+        realizedPnL: this.roundToTwo(realizedPnL),
+        unrealizedPnL: this.roundToTwo(unrealizedPnL),
+        activePositions: openTrades.length,
+        winRate: this.roundToOne(winRate),
+        totalTrades: closedTrades.length,
+        wins,
+        losses,
+        recentSignals: allTrades.map(this.normalizeTrade),
+        openPositions: openTrades.map(this.normalizeTrade)
+      };
+    } catch (error) {
+      return {
+        totalPnL: 0,
+        realizedPnL: 0,
+        unrealizedPnL: 0,
+        activePositions: 0,
+        winRate: 0,
+        totalTrades: 0,
+        wins: 0,
+        losses: 0,
+        recentSignals: [],
+        openPositions: []
+      };
+    }
   }
 
   private calculateTotalPnL(trades: Trade[]): number {
@@ -157,34 +182,90 @@ export class TradesService {
   }
 
   private parsePrice(price: any): number {
-    return parseFloat(price) || 0;
+    if (price === null || price === undefined || price === '') {
+      return 0;
+    }
+    const parsed = parseFloat(price);
+    return isNaN(parsed) ? 0 : parsed;
   }
 
   private roundToTwo(value: number): number {
+    if (!isFinite(value) || isNaN(value)) {
+      return 0;
+    }
     return Math.round(value * 100) / 100;
   }
 
   private roundToOne(value: number): number {
+    if (!isFinite(value) || isNaN(value)) {
+      return 0;
+    }
     return Math.round(value * 10) / 10;
   }
 
-  private normalizeTrade = (trade: Trade) => ({
-    ...trade,
-    pnl: trade.pnl ? this.parsePnL(trade.pnl) : null,
-    entryPrice: this.parsePrice(trade.entryPrice),
-    exitPrice: trade.exitPrice ? this.parsePrice(trade.exitPrice) : null,
-    quantity: this.parsePrice(trade.quantity),
-    binancePositionAmt: trade.binancePositionAmt ? this.parsePrice(trade.binancePositionAmt) : null
-  });
+  private normalizeTrade = (trade: Trade) => {
+    try {
+      return {
+        ...trade,
+        pnl: trade.pnl ? this.parsePnL(trade.pnl) : null,
+        entryPrice: this.parsePrice(trade.entryPrice),
+        exitPrice: trade.exitPrice ? this.parsePrice(trade.exitPrice) : null,
+        quantity: this.parsePrice(trade.quantity),
+        binancePositionAmt: trade.binancePositionAmt ? this.parsePrice(trade.binancePositionAmt) : null,
+        currentStopLoss: trade.currentStopLoss ? this.parsePrice(trade.currentStopLoss) : null,
+        initialQuantity: trade.initialQuantity ? this.parsePrice(trade.initialQuantity) : null,
+        timestamp: trade.timestamp ? new Date(trade.timestamp).toISOString() : new Date().toISOString(),
+        closedAt: trade.closedAt ? new Date(trade.closedAt).toISOString() : null
+      };
+    } catch (error) {
+      return {
+        ...trade,
+        pnl: 0,
+        entryPrice: 0,
+        exitPrice: null,
+        quantity: 0,
+        binancePositionAmt: null,
+        currentStopLoss: null,
+        initialQuantity: null,
+        timestamp: new Date().toISOString(),
+        closedAt: null
+      };
+    }
+  };
 
   async findExecutions(tradeId: string): Promise<TradeExecution[]> {
-    return this.executionsRepository.find({
+    const executions = await this.executionsRepository.find({
       where: { tradeId },
       order: { executedAt: 'ASC' }
     });
+
+    return executions.map(this.normalizeExecution);
   }
 
+  private normalizeExecution = (execution: TradeExecution) => {
+    try {
+      return {
+        ...execution,
+        price: this.parsePrice(execution.price),
+        quantity: this.parsePrice(execution.quantity),
+        pnl: execution.pnl ? this.parsePrice(execution.pnl) : null,
+        percentOfPosition: execution.percentOfPosition ? this.parsePrice(execution.percentOfPosition) : null,
+        executedAt: execution.executedAt ? new Date(execution.executedAt).toISOString() : new Date().toISOString()
+      };
+    } catch (error) {
+      return {
+        ...execution,
+        price: 0,
+        quantity: 0,
+        pnl: null,
+        percentOfPosition: null,
+        executedAt: new Date().toISOString()
+      };
+    }
+  };
+
   async createExecution(execution: Partial<TradeExecution>): Promise<TradeExecution> {
-    return this.executionsRepository.save(execution);
+    const savedExecution = await this.executionsRepository.save(execution);
+    return this.normalizeExecution(savedExecution);
   }
 }
