@@ -891,6 +891,47 @@ export class BybitClientService {
     }
   }
 
+  async clearTradingStop(
+    apiKey: string,
+    apiSecret: string,
+    isTestnet: boolean,
+    symbol: string,
+    side: 'Buy' | 'Sell',
+    hedgeMode?: boolean
+  ): Promise<boolean> {
+    const baseUrl = this.getBaseUrl(isTestnet);
+    const endpoint = '/v5/position/trading-stop';
+
+    const positionIdx = await this.getPositionIdx(apiKey, apiSecret, isTestnet, symbol, side, hedgeMode);
+
+    const body: Record<string, any> = {
+      category: 'linear',
+      symbol,
+      positionIdx,
+      stopLoss: '',
+      takeProfit: ''
+    };
+
+    const bodyString = JSON.stringify(body);
+    const headers = this.getHeaders(apiKey, apiSecret, bodyString);
+    const axiosConfig = { ...this.getAxiosConfig(), headers };
+
+    try {
+      const response = await axios.post(`${baseUrl}${endpoint}`, body, axiosConfig);
+
+      if (response.data.retCode === 0) {
+        this.logger.log(`[BYBIT] Trading stop cleared for ${symbol}`);
+        return true;
+      }
+
+      this.logger.warn(`[BYBIT] Clear trading stop response: ${response.data.retMsg}`);
+      return false;
+    } catch (error: any) {
+      this.logger.error(`[BYBIT] Failed to clear trading stop: ${error.response?.data?.retMsg || error.message}`);
+      return false;
+    }
+  }
+
   async getOpenOrders(
     apiKey: string,
     apiSecret: string,

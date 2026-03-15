@@ -289,6 +289,27 @@ export class StopLossService {
   ): Promise<void> {
     if (!trade.takeProfitOrderId) return;
 
+    if (trade.takeProfitOrderId.startsWith('BYBIT_TRADING_STOP')) {
+      const bybitSide = trade.side === 'BUY' ? 'Buy' : 'Sell';
+      const strategy = await this.strategiesService.findOne(trade.strategyId);
+      if (strategy) {
+        try {
+          await this.bybitClient.clearTradingStop(
+            apiKey,
+            apiSecret,
+            isTestnet,
+            trade.symbol,
+            bybitSide,
+            strategy.hedgeMode
+          );
+          this.logger.log(`[SL] Cleared Bybit trading stop for ${trade.symbol} after SL execution`);
+        } catch (e: any) {
+          this.logger.warn(`[SL] Failed to clear Bybit trading stop: ${e.message}`);
+        }
+      }
+      return;
+    }
+
     const entries = trade.takeProfitOrderId.split('|');
     for (const entry of entries) {
       const orderId = entry.includes(':') ? entry.split(':')[1] : entry;

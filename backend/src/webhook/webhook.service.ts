@@ -1102,7 +1102,94 @@ export class WebhookService {
         }
       }
 
-      this.logger.warn(`[LIMIT SL/TP] Could not create protection for trade ${tradeId} after ${maxAttempts * delayMs / 1000}s`);
+      this.logger.error(
+        `[BINANCE LIMIT SL/TP] TIMEOUT: Could not create protection for trade ${tradeId} after ${maxAttempts * delayMs / 1000}s\n` +
+        `Checking if position is open and needs emergency closure...`
+      );
+
+      try {
+        const trade = await this.tradesService.findById(tradeId);
+        if (!trade || trade.status !== 'OPEN') {
+          this.logger.log(`[BINANCE LIMIT SL/TP] Trade ${tradeId} is no longer open, no action needed`);
+          return;
+        }
+
+        if (trade.stopLossOrderId || trade.takeProfitOrderId) {
+          this.logger.log(`[BINANCE LIMIT SL/TP] Trade ${tradeId} has some protection, keeping position open`);
+          return;
+        }
+
+        const timestamp = Date.now();
+        const positionParams = new URLSearchParams();
+        positionParams.append('symbol', symbol);
+        positionParams.append('timestamp', timestamp.toString());
+        const positionSig = crypto.createHmac('sha256', decryptedSecret).update(positionParams.toString()).digest('hex');
+
+        const positionResp = await axios.get(
+          `${baseURL}/fapi/v2/positionRisk?${positionParams.toString()}&signature=${positionSig}`,
+          { headers: { 'X-MBX-APIKEY': decryptedKey } }
+        );
+
+        const positionSide = strategy.hedgeMode ? (side === 'BUY' ? 'LONG' : 'SHORT') : 'BOTH';
+        const position = positionResp.data.find((p: any) =>
+          p.symbol === symbol &&
+          p.positionSide === positionSide &&
+          Math.abs(parseFloat(p.positionAmt)) > 0
+        );
+
+        if (position && Math.abs(parseFloat(position.positionAmt)) > 0) {
+          this.logger.error(
+            `[BINANCE LIMIT EMERGENCY] Position is OPEN without protection!\n` +
+            `  Trade ID: ${tradeId}\n` +
+            `  Symbol: ${symbol}\n` +
+            `  Size: ${position.positionAmt}\n` +
+            `  Action: Closing position immediately to prevent unprotected exposure`
+          );
+
+          const closeSide = side === 'BUY' ? 'SELL' : 'BUY';
+          const closeQty = Math.abs(parseFloat(position.positionAmt));
+          const closeParams = new URLSearchParams();
+          closeParams.append('symbol', symbol);
+          closeParams.append('side', closeSide);
+          closeParams.append('type', 'MARKET');
+          closeParams.append('quantity', closeQty.toString());
+
+          if (strategy.hedgeMode) {
+            closeParams.append('positionSide', positionSide);
+          }
+
+          closeParams.append('timestamp', Date.now().toString());
+          const closeSig = crypto.createHmac('sha256', decryptedSecret).update(closeParams.toString()).digest('hex');
+
+          await axios.post(
+            `${baseURL}/fapi/v1/order`,
+            `${closeParams.toString()}&signature=${closeSig}`,
+            {
+              headers: {
+                'X-MBX-APIKEY': decryptedKey,
+                'Content-Type': 'application/x-www-form-urlencoded'
+              }
+            }
+          );
+
+          await this.tradesService.updateTrade(tradeId, {
+            status: 'ERROR',
+            error: 'LIMIT order filled but protection orders failed to create within timeout. Position closed automatically for safety.',
+            stopLossOrderId: 'EMERGENCY_CLOSE',
+            takeProfitOrderId: 'EMERGENCY_CLOSE'
+          });
+
+          this.logger.log(`[BINANCE LIMIT EMERGENCY] Position closed successfully`);
+        } else {
+          this.logger.log(`[BINANCE LIMIT SL/TP] No open position found, marking trade as ERROR`);
+          await this.tradesService.updateTrade(tradeId, {
+            status: 'ERROR',
+            error: 'LIMIT order monitoring timeout - could not verify order status or create protection'
+          });
+        }
+      } catch (emergencyError: any) {
+        this.logger.error(`[BINANCE LIMIT EMERGENCY] Failed to handle unprotected position: ${emergencyError.message}`);
+      }
     };
 
     run().catch(err => this.logger.error(`[LIMIT SL/TP] Critical background error: ${err.message}`));
@@ -1289,7 +1376,70 @@ export class WebhookService {
         }
       }
 
-      this.logger.warn(`[BYBIT LIMIT SL/TP] Could not create protection for trade ${tradeId} after ${maxAttempts * delayMs / 1000}s`);
+      this.logger.error(
+        `[BYBIT LIMIT SL/TP] TIMEOUT: Could not create protection for trade ${tradeId} after ${maxAttempts * delayMs / 1000}s\n` +
+        `Checking if position is open and needs emergency closure...`
+      );
+
+      try {
+        const trade = await this.tradesService.findById(tradeId);
+        if (!trade || trade.status !== 'OPEN') {
+          this.logger.log(`[BYBIT LIMIT SL/TP] Trade ${tradeId} is no longer open, no action needed`);
+          return;
+        }
+
+        if (trade.stopLossOrderId || trade.takeProfitOrderId) {
+          this.logger.log(`[BYBIT LIMIT SL/TP] Trade ${tradeId} has some protection, keeping position open`);
+          return;
+        }
+
+        const positions = await this.bybitClient.getPositions(decryptedKey, decryptedSecret, strategy.isTestnet, symbol);
+        const bybitSide = side === 'BUY' ? 'Buy' : 'Sell';
+        const position = positions.find(p => p.symbol === symbol && p.side === bybitSide);
+
+        if (position && parseFloat(position.size) > 0) {
+          this.logger.error(
+            `[BYBIT LIMIT EMERGENCY] Position is OPEN without protection!\n` +
+            `  Trade ID: ${tradeId}\n` +
+            `  Symbol: ${symbol}\n` +
+            `  Size: ${position.size}\n` +
+            `  Action: Closing position immediately to prevent unprotected exposure`
+          );
+
+          const closeSide = side === 'BUY' ? 'Sell' : 'Buy';
+          await this.bybitClient.createOrder(
+            decryptedKey,
+            decryptedSecret,
+            strategy.isTestnet,
+            {
+              symbol,
+              side: closeSide,
+              orderType: 'Market',
+              qty: position.size,
+              positionIdx: await this.bybitClient.getPositionIdx(decryptedKey, decryptedSecret, strategy.isTestnet, symbol, bybitSide, strategy.hedgeMode),
+              reduceOnly: true,
+              hedgeMode: strategy.hedgeMode
+            }
+          );
+
+          await this.tradesService.updateTrade(tradeId, {
+            status: 'ERROR',
+            error: 'LIMIT order filled but protection orders failed to create within timeout. Position closed automatically for safety.',
+            stopLossOrderId: 'EMERGENCY_CLOSE',
+            takeProfitOrderId: 'EMERGENCY_CLOSE'
+          });
+
+          this.logger.log(`[BYBIT LIMIT EMERGENCY] Position closed successfully`);
+        } else {
+          this.logger.log(`[BYBIT LIMIT SL/TP] No open position found, marking trade as ERROR`);
+          await this.tradesService.updateTrade(tradeId, {
+            status: 'ERROR',
+            error: 'LIMIT order monitoring timeout - could not verify order status or create protection'
+          });
+        }
+      } catch (emergencyError: any) {
+        this.logger.error(`[BYBIT LIMIT EMERGENCY] Failed to handle unprotected position: ${emergencyError.message}`);
+      }
     };
 
     run().catch(err => this.logger.error(`[BYBIT LIMIT SL/TP] Critical background error: ${err.message}`));
@@ -2299,10 +2449,31 @@ export class WebhookService {
           takeProfitOrderId = tpOrderIds.join('|');
         }
 
+        const hasStopLoss = !!stopLossOrderId || (isAveragingTrade && stopLossPrice);
+        const hasTakeProfit = tpOrderIds.length > 0;
+        const requiredMinimumProtection = tpConfigs.length > 0;
+
+        if (requiredMinimumProtection && !hasTakeProfit && !hasStopLoss) {
+          throw new Error(
+            `CRITICAL: No protection orders were created. ` +
+            `Expected ${tpConfigs.length} TPs and 1 SL, but all failed. ` +
+            `Position would be completely unprotected.`
+          );
+        }
+
+        if (requiredMinimumProtection && !hasTakeProfit && tpConfigs.length > 0) {
+          this.logger.error(
+            `[PROTECTION WARNING] All ${tpConfigs.length} TP orders failed to create. ` +
+            `Position only has SL protection (${stopLossOrderId || 'software-monitored'}). ` +
+            `Consider this a partial failure.`
+          );
+        }
+
         this.logger.log(
-          `[PROTECTION] All protection orders created successfully\n` +
-          `  Stop Loss: ${stopLossOrderId || 'N/A'}\n` +
-          `  Take Profits: ${takeProfitOrderId || 'N/A'}`
+          `[PROTECTION] Protection orders created\n` +
+          `  Stop Loss: ${stopLossOrderId || (isAveragingTrade && stopLossPrice ? 'Software-monitored' : 'N/A')}\n` +
+          `  Take Profits: ${takeProfitOrderId || 'N/A'}\n` +
+          `  Status: ${hasTakeProfit ? tpOrderIds.length + '/' + tpConfigs.length + ' TPs created' : 'No TPs'}`
         );
 
       } catch (protectionError: any) {

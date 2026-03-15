@@ -506,11 +506,61 @@ export class PositionSyncService {
     isTestnet: boolean
   ): Promise<void> {
     if (exchange === Exchange.BYBIT) {
-      if (trade.stopLossOrderId && !trade.stopLossOrderId.startsWith('BYBIT_')) {
-        await this.bybitClient.cancelOrder(apiKey, apiSecret, isTestnet, trade.symbol, trade.stopLossOrderId);
+      if (trade.stopLossOrderId) {
+        if (trade.stopLossOrderId.startsWith('BYBIT_TRADING_STOP')) {
+          try {
+            const bybitSide = trade.side === 'BUY' ? 'Buy' : 'Sell';
+            const strategy = await this.strategiesRepository.findOne({ where: { id: trade.strategyId } });
+            await this.bybitClient.clearTradingStop(
+              apiKey,
+              apiSecret,
+              isTestnet,
+              trade.symbol,
+              bybitSide,
+              strategy?.hedgeMode
+            );
+            this.logger.log(`[CANCEL] Cleared Bybit trading stop for ${trade.symbol}`);
+          } catch (error: any) {
+            this.logger.warn(`[CANCEL] Failed to clear Bybit trading stop: ${error.message}`);
+          }
+        } else {
+          try {
+            await this.bybitClient.cancelOrder(apiKey, apiSecret, isTestnet, trade.symbol, trade.stopLossOrderId);
+            this.logger.log(`[CANCEL] Cancelled Bybit SL order ${trade.stopLossOrderId}`);
+          } catch (error: any) {
+            if (error.response?.data?.retCode !== 110001) {
+              this.logger.warn(`[CANCEL] Failed to cancel Bybit SL: ${error.message}`);
+            }
+          }
+        }
       }
-      if (trade.takeProfitOrderId && !trade.takeProfitOrderId.startsWith('BYBIT_')) {
-        await this.bybitClient.cancelOrder(apiKey, apiSecret, isTestnet, trade.symbol, trade.takeProfitOrderId);
+
+      if (trade.takeProfitOrderId) {
+        if (trade.takeProfitOrderId.includes('|')) {
+          const tpEntries = trade.takeProfitOrderId.split('|');
+          for (const entry of tpEntries) {
+            const orderId = entry.includes(':') ? entry.split(':')[1] : entry;
+            if (!orderId || orderId === 'null' || orderId === 'undefined') continue;
+
+            try {
+              await this.bybitClient.cancelOrder(apiKey, apiSecret, isTestnet, trade.symbol, orderId);
+              this.logger.log(`[CANCEL] Cancelled Bybit TP order ${orderId}`);
+            } catch (error: any) {
+              if (error.response?.data?.retCode !== 110001) {
+                this.logger.warn(`[CANCEL] Failed to cancel Bybit TP ${orderId}: ${error.message}`);
+              }
+            }
+          }
+        } else if (!trade.takeProfitOrderId.startsWith('BYBIT_TRADING_STOP')) {
+          try {
+            await this.bybitClient.cancelOrder(apiKey, apiSecret, isTestnet, trade.symbol, trade.takeProfitOrderId);
+            this.logger.log(`[CANCEL] Cancelled Bybit TP order ${trade.takeProfitOrderId}`);
+          } catch (error: any) {
+            if (error.response?.data?.retCode !== 110001) {
+              this.logger.warn(`[CANCEL] Failed to cancel Bybit TP: ${error.message}`);
+            }
+          }
+        }
       }
       return;
     }

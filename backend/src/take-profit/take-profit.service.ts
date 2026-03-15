@@ -219,10 +219,29 @@ export class TakeProfitService {
     apiSecret: string,
     isTestnet: boolean
   ): Promise<void> {
-    if (!trade.stopLossOrderId || trade.stopLossOrderId.startsWith('BYBIT_TRADING_STOP')) return;
+    if (!trade.stopLossOrderId) return;
 
     try {
-      if (exchange === Exchange.BINANCE) {
+      if (exchange === Exchange.BYBIT) {
+        if (trade.stopLossOrderId.startsWith('BYBIT_TRADING_STOP')) {
+          const bybitSide = trade.side === 'BUY' ? 'Buy' : 'Sell';
+          const strategy = await this.strategiesService.findOne(trade.strategyId);
+          if (strategy) {
+            await this.bybitClient.clearTradingStop(
+              apiKey,
+              apiSecret,
+              isTestnet,
+              trade.symbol,
+              bybitSide,
+              strategy.hedgeMode
+            );
+            this.logger.log(`[SL] Cleared Bybit trading stop for ${trade.symbol} after all TPs filled`);
+          }
+        } else {
+          await this.bybitClient.cancelOrder(apiKey, apiSecret, isTestnet, trade.symbol, trade.stopLossOrderId);
+          this.logger.log(`[SL] Cancelled Bybit SL order ${trade.stopLossOrderId} after all TPs filled`);
+        }
+      } else if (exchange === Exchange.BINANCE) {
         await this.cancelBinanceOrderOrAlgo(trade.stopLossOrderId, trade.symbol, apiKey, apiSecret, isTestnet);
         this.logger.log(`[SL] Cancelled SL order ${trade.stopLossOrderId} after all TPs filled`);
       }
