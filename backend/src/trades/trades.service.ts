@@ -248,8 +248,8 @@ export class TradesService {
         ...execution,
         price: this.parsePrice(execution.price),
         quantity: this.parsePrice(execution.quantity),
-        pnl: execution.pnl ? this.parsePrice(execution.pnl) : 0,
-        percentOfPosition: execution.percentOfPosition ? this.parsePrice(execution.percentOfPosition) : 0,
+        pnl: execution.pnl !== null && execution.pnl !== undefined ? this.parsePrice(execution.pnl) : null,
+        percentOfPosition: execution.percentOfPosition !== null && execution.percentOfPosition !== undefined ? this.parsePrice(execution.percentOfPosition) : null,
         executedAt: execution.executedAt
       };
     } catch (error) {
@@ -257,8 +257,8 @@ export class TradesService {
         ...execution,
         price: 0,
         quantity: 0,
-        pnl: 0,
-        percentOfPosition: 0,
+        pnl: null,
+        percentOfPosition: null,
         executedAt: new Date()
       };
     }

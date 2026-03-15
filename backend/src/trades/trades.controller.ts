@@ -6,6 +6,7 @@ import { EncryptionUtil } from '../utils/encryption.util';
 import { Exchange } from '../strategies/strategy.entity';
 import { BybitClientService } from '../exchange/bybit-client.service';
 import { Trade } from '../strategies/trade.entity';
+import { ExecutionType } from './trade-execution.entity';
 import axios from 'axios';
 import * as crypto from 'crypto';
 import Decimal from 'decimal.js';
@@ -286,6 +287,16 @@ export class TradesController {
         exitPrice,
         closeReason: 'MANUAL',
         closedAt: new Date()
+      });
+
+      await this.tradesService.createExecution({
+        tradeId: trade.id,
+        type: ExecutionType.MANUAL_CLOSE,
+        price: exitPrice,
+        quantity: positionSize,
+        pnl: pnl,
+        percentOfPosition: 100,
+        exchangeOrderId: null
       });
 
       this.logger.log(`[CLOSE] Trade ${trade.id} closed successfully with P&L: ${pnl.toFixed(4)}`);

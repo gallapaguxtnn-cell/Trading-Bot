@@ -36,14 +36,14 @@ export class TradeExecution {
   quantity: number;
 
   @Column({ type: 'decimal', precision: 18, scale: 8, nullable: true })
-  pnl: number;
+  pnl: number | null;
 
   @Column({ type: 'decimal', precision: 18, scale: 8, nullable: true })
-  percentOfPosition: number;
+  percentOfPosition: number | null;
 
   @CreateDateColumn()
   executedAt: Date;
 
   @Column({ type: 'text', nullable: true })
-  exchangeOrderId: string;
+  exchangeOrderId: string | null;
 }

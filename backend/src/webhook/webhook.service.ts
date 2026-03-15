@@ -6,6 +6,7 @@ import { StrategiesService } from '../strategies/strategies.service';
 import { TradesService } from '../trades/trades.service';
 import { Trade } from '../strategies/trade.entity';
 import { Exchange, MarginMode, Strategy, TradingMode } from '../strategies/strategy.entity';
+import { ExecutionType } from '../trades/trade-execution.entity';
 import { EncryptionUtil } from '../utils/encryption.util';
 import axios from 'axios';
 import * as crypto from 'crypto';
@@ -1876,6 +1877,17 @@ export class WebhookService {
                        closeReason: 'SIGNAL',
                        closedAt: new Date()
                      });
+
+                     await this.tradesService.createExecution({
+                       tradeId: oppositeActiveTrade.id,
+                       type: ExecutionType.SIGNAL_CLOSE,
+                       price: exitPrice,
+                       quantity: quantity,
+                       pnl: pnl,
+                       percentOfPosition: 100,
+                       exchangeOrderId: null
+                     });
+
                      this.logger.log(`[ONE-WAY] Position closed | Qty: ${this.formatQuantityWithUsdt(quantity, exitPrice)} | P&L: ${pnl > 0 ? '+' : ''}${pnl.toFixed(2)} USDT`);
                      this.logger.log(`[ONE-WAY] Waiting 2s before new entry...`);
                      await new Promise(r => setTimeout(r, 2000));
@@ -2562,6 +2574,18 @@ export class WebhookService {
       });
 
       this.logger.log(`[TRADE] Updated trade ${savedTrade.id} with order details`);
+
+      await this.tradesService.createExecution({
+        tradeId: savedTrade.id,
+        type: ExecutionType.ENTRY,
+        price: finalEntryPrice,
+        quantity: quantity,
+        pnl: null,
+        percentOfPosition: null,
+        exchangeOrderId: tradeData.exchangeOrderId
+      });
+
+      this.logger.log(`[EXECUTION] Registered ENTRY execution for trade ${savedTrade.id}`);
 
       if (isAveragingTrade) {
         this.logger.log(
