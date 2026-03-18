@@ -130,16 +130,24 @@ export class TakeProfitService {
 
       const status = await this.checkOrderStatus(orderId, trade.symbol, exchange, apiKey, apiSecret, strategy.isTestnet);
 
+      this.logger.log(`[TP${level}] Order status for ${orderId}: ${status}`);
+
       if (status === 'FILLED' || status === 'Filled') {
         filledLevels.add(level);
         this.logger.log(`[TP${level}] Exchange order filled for ${trade.symbol} (orderId: ${orderId})`);
       } else if (status === 'NEW' || status === 'New' || status === 'PartiallyFilled') {
         anyActive = true;
         allDone = false;
+        this.logger.log(`[TP${level}] Order is still active`);
       } else if (status === 'CANCELED' || status === 'EXPIRED' || status === 'Cancelled' || status === 'Deactivated') {
         this.logger.warn(`[TP${level}] Exchange order ${orderId} was ${status}`);
+      } else if (status === null) {
+        anyActive = true;
+        allDone = false;
+        this.logger.warn(`[TP${level}] Could not fetch order status, assuming still active`);
       } else {
         allDone = false;
+        this.logger.warn(`[TP${level}] Unknown order status: ${status}`);
       }
     }
 
@@ -176,9 +184,13 @@ export class TakeProfitService {
         this.logger.log(`├─ TP${l} closed: ${this.formatQuantityWithUsdt(closedQty, fillPrice)} | P&L: ${pnl > 0 ? '+' : ''}${pnl.toFixed(2)} USDT`);
       }
 
-      const allConfiguredFilled = entries.every(e => filledLevels.has(parseInt(e.split(':')[0])));
+      const totalConfiguredLevels = entries.length;
+      const allLevelsFilled = filledLevels.size === totalConfiguredLevels;
+      const positionFullyClosed = newQty <= 0.0001;
 
-      if (allConfiguredFilled || newQty <= 0.0001) {
+      this.logger.log(`[TP CHECK] Filled levels: ${Array.from(filledLevels).join(',')}, Total levels: ${totalConfiguredLevels}, Position closed: ${positionFullyClosed}`);
+
+      if (allLevelsFilled || positionFullyClosed) {
         trade.status = 'CLOSED';
         trade.exitPrice = currentPrice as any;
         trade.pnl = accumulatedPnl as any;
@@ -190,6 +202,7 @@ export class TakeProfitService {
         this.logger.log(`└─ Trade fully closed via TP${highestProcessed} | Total P&L: ${accumulatedPnl > 0 ? '+' : ''}${accumulatedPnl.toFixed(2)} USDT`);
 
         await this.cancelTradeStopLoss(trade, exchange, apiKey, apiSecret, strategy.isTestnet);
+        await this.cancelRemainingTpOrders(trade, filledLevels, exchange, apiKey, apiSecret, strategy.isTestnet);
       } else {
         trade.quantity = newQty as any;
         trade.lastTpLevel = highestProcessed;
@@ -201,6 +214,10 @@ export class TakeProfitService {
         if (exchange === Exchange.BINANCE && trade.stopLossOrderId) {
           await this.adjustStopLossForRemainingQty(trade, strategy, exchange, apiKey, apiSecret, newQty);
         }
+
+        if (exchange === Exchange.BYBIT && trade.stopLossOrderId) {
+          this.logger.log(`[BYBIT] SL adjustment not needed - Bybit manages position-level SL automatically`);
+        }
       }
       return;
     }
@@ -209,6 +226,44 @@ export class TakeProfitService {
       this.logger.warn(`[TP] All exchange TP orders inactive for ${trade.symbol}, switching to manual monitoring`);
       trade.takeProfitOrderId = null;
       await this.tradesRepository.save(trade);
+    }
+  }
+
+  private async cancelRemainingTpOrders(
+    trade: Trade,
+    filledLevels: Set<number>,
+    exchange: Exchange,
+    apiKey: string,
+    apiSecret: string,
+    isTestnet: boolean
+  ): Promise<void> {
+    if (!trade.takeProfitOrderId) return;
+
+    const entries = trade.takeProfitOrderId.split('|');
+
+    for (const entry of entries) {
+      const [levelStr, orderId] = entry.split(':');
+      const level = parseInt(levelStr);
+
+      if (filledLevels.has(level)) {
+        this.logger.log(`[TP${level}] Order ${orderId} already filled, skipping cancel`);
+        continue;
+      }
+
+      try {
+        if (exchange === Exchange.BINANCE) {
+          await this.cancelBinanceOrder(orderId, trade.symbol, apiKey, apiSecret, isTestnet);
+          this.logger.log(`[TP${level}] Cancelled unfilled TP order ${orderId}`);
+        } else if (exchange === Exchange.BYBIT) {
+          await this.bybitClient.cancelOrder(apiKey, apiSecret, isTestnet, trade.symbol, orderId);
+          this.logger.log(`[TP${level}] Cancelled unfilled Bybit TP order ${orderId}`);
+        }
+      } catch (e: any) {
+        const isNotFoundError = e.response?.data?.code === -2011 || e.response?.data?.retCode === 110001;
+        if (!isNotFoundError) {
+          this.logger.warn(`[TP${level}] Failed to cancel TP order ${orderId}: ${e.message}`);
+        }
+      }
     }
   }
 
@@ -261,13 +316,23 @@ export class TakeProfitService {
     if (!trade.stopLossOrderId) return;
 
     try {
-      const stopPrice = await this.getBinanceOrderStopPrice(
-        trade.stopLossOrderId, trade.symbol, apiKey, apiSecret, strategy.isTestnet
-      );
+      let stopPrice: number;
 
-      if (!stopPrice) {
-        this.logger.warn(`[SL ADJUST] Could not get stopPrice for SL ${trade.stopLossOrderId}, skipping adjustment`);
-        return;
+      if (trade.currentStopLoss) {
+        stopPrice = parseFloat(trade.currentStopLoss as any);
+        this.logger.log(`[SL ADJUST] Using currentStopLoss: ${stopPrice} (Break Even/Break Again active)`);
+      } else {
+        const fetchedStopPrice = await this.getBinanceOrderStopPrice(
+          trade.stopLossOrderId, trade.symbol, apiKey, apiSecret, strategy.isTestnet
+        );
+
+        if (!fetchedStopPrice) {
+          this.logger.warn(`[SL ADJUST] Could not get stopPrice for SL ${trade.stopLossOrderId}, skipping adjustment`);
+          return;
+        }
+
+        stopPrice = fetchedStopPrice;
+        this.logger.log(`[SL ADJUST] Using original SL price from exchange: ${stopPrice}`);
       }
 
       await this.cancelBinanceOrder(trade.stopLossOrderId, trade.symbol, apiKey, apiSecret, strategy.isTestnet);
@@ -286,7 +351,7 @@ export class TakeProfitService {
       trade.stopLossOrderId = newSlId;
       await this.tradesRepository.save(trade);
 
-      this.logger.log(`[SL ADJUST] Adjusted SL for trade ${trade.id}: new qty=${remainingQty}, orderId=${newSlId}`);
+      this.logger.log(`[SL ADJUST] Adjusted SL for trade ${trade.id}: new qty=${remainingQty}, price=${stopPrice}, orderId=${newSlId}`);
     } catch (e: any) {
       this.logger.warn(`[SL ADJUST] Failed to adjust SL for trade ${trade.id}: ${e.message}`);
     }
