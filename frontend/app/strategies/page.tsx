@@ -14,6 +14,9 @@ const DEFAULT_FORM_DATA = {
   takeProfit1: 1,
   takeProfit2: 2,
   takeProfit3: 3,
+  enableTakeProfit1: true,
+  enableTakeProfit2: true,
+  enableTakeProfit3: true,
   moveSLToBreakeven: true,
   isTestnet: false,
   isRealAccount: false,
@@ -69,6 +72,9 @@ export default function StrategiesPage() {
       takeProfit1: strategy.takeProfitPercentage1 || 1,
       takeProfit2: strategy.takeProfitPercentage2 || 2,
       takeProfit3: strategy.takeProfitPercentage3 || 3,
+      enableTakeProfit1: strategy.enableTakeProfit1 ?? true,
+      enableTakeProfit2: strategy.enableTakeProfit2 ?? true,
+      enableTakeProfit3: strategy.enableTakeProfit3 ?? true,
       moveSLToBreakeven: strategy.moveSLToBreakeven ?? true,
       isTestnet: strategy.isTestnet,
       isRealAccount: strategy.isRealAccount || false,
@@ -743,8 +749,17 @@ export default function StrategiesPage() {
               </div>
 
                 <div className="space-y-1">
-                  <div className="flex justify-between">
-                     <label className="text-sm font-medium text-emerald-400">TP 1 (%)</label>
+                  <div className="flex justify-between items-center">
+                     <div className="flex items-center gap-2">
+                       <input
+                         type="checkbox"
+                         name="enableTakeProfit1"
+                         className="w-4 h-4 accent-emerald-500"
+                         checked={formData.enableTakeProfit1}
+                         onChange={handleChange}
+                       />
+                       <label className="text-sm font-medium text-emerald-400">TP 1 (%)</label>
+                     </div>
                      <label className="text-sm font-medium text-slate-400">Qty (%)</label>
                   </div>
                   <div className="flex gap-2">
@@ -752,7 +767,12 @@ export default function StrategiesPage() {
                         type="number"
                         step="0.1"
                         name="takeProfit1"
-                        className="w-full bg-slate-900 border border-emerald-500/30 rounded-lg p-3 text-white focus:border-emerald-500 outline-none transition"
+                        disabled={!formData.enableTakeProfit1}
+                        className={`w-full bg-slate-900 border rounded-lg p-3 text-white outline-none transition ${
+                          formData.enableTakeProfit1
+                            ? 'border-emerald-500/30 focus:border-emerald-500'
+                            : 'border-slate-700 opacity-50 cursor-not-allowed'
+                        }`}
                         value={formData.takeProfit1}
                         onChange={handleChange}
                      />
@@ -760,7 +780,12 @@ export default function StrategiesPage() {
                         type="number"
                         step="1"
                         name="takeProfitQuantity1"
-                        className="w-1/2 bg-slate-900 border border-slate-600 rounded-lg p-3 text-white focus:border-slate-400 outline-none transition text-center"
+                        disabled={!formData.enableTakeProfit1}
+                        className={`w-1/2 bg-slate-900 border rounded-lg p-3 text-white outline-none transition text-center ${
+                          formData.enableTakeProfit1
+                            ? 'border-slate-600 focus:border-slate-400'
+                            : 'border-slate-700 opacity-50 cursor-not-allowed'
+                        }`}
                         value={formData.takeProfitQuantity1}
                         onChange={handleChange}
                      />
@@ -768,8 +793,17 @@ export default function StrategiesPage() {
                 </div>
 
                 <div className="space-y-1">
-                  <div className="flex justify-between">
-                     <label className="text-sm font-medium text-emerald-400">TP 2 (%)</label>
+                  <div className="flex justify-between items-center">
+                     <div className="flex items-center gap-2">
+                       <input
+                         type="checkbox"
+                         name="enableTakeProfit2"
+                         className="w-4 h-4 accent-emerald-500"
+                         checked={formData.enableTakeProfit2}
+                         onChange={handleChange}
+                       />
+                       <label className="text-sm font-medium text-emerald-400">TP 2 (%)</label>
+                     </div>
                      <label className="text-sm font-medium text-slate-400">Qty (%)</label>
                   </div>
                   <div className="flex gap-2">
@@ -777,7 +811,12 @@ export default function StrategiesPage() {
                         type="number"
                         step="0.1"
                         name="takeProfit2"
-                        className="w-full bg-slate-900 border border-emerald-500/30 rounded-lg p-3 text-white focus:border-emerald-500 outline-none transition"
+                        disabled={!formData.enableTakeProfit2}
+                        className={`w-full bg-slate-900 border rounded-lg p-3 text-white outline-none transition ${
+                          formData.enableTakeProfit2
+                            ? 'border-emerald-500/30 focus:border-emerald-500'
+                            : 'border-slate-700 opacity-50 cursor-not-allowed'
+                        }`}
                         value={formData.takeProfit2}
                         onChange={handleChange}
                      />
@@ -785,7 +824,12 @@ export default function StrategiesPage() {
                         type="number"
                         step="1"
                         name="takeProfitQuantity2"
-                        className="w-1/2 bg-slate-900 border border-slate-600 rounded-lg p-3 text-white focus:border-slate-400 outline-none transition text-center"
+                        disabled={!formData.enableTakeProfit2}
+                        className={`w-1/2 bg-slate-900 border rounded-lg p-3 text-white outline-none transition text-center ${
+                          formData.enableTakeProfit2
+                            ? 'border-slate-600 focus:border-slate-400'
+                            : 'border-slate-700 opacity-50 cursor-not-allowed'
+                        }`}
                         value={formData.takeProfitQuantity2}
                         onChange={handleChange}
                      />
@@ -793,8 +837,17 @@ export default function StrategiesPage() {
                 </div>
 
                 <div className="space-y-1">
-                  <div className="flex justify-between">
-                     <label className="text-sm font-medium text-emerald-400">TP 3 (%)</label>
+                  <div className="flex justify-between items-center">
+                     <div className="flex items-center gap-2">
+                       <input
+                         type="checkbox"
+                         name="enableTakeProfit3"
+                         className="w-4 h-4 accent-emerald-500"
+                         checked={formData.enableTakeProfit3}
+                         onChange={handleChange}
+                       />
+                       <label className="text-sm font-medium text-emerald-400">TP 3 (%)</label>
+                     </div>
                      <label className="text-sm font-medium text-slate-400">Qty (%)</label>
                   </div>
                   <div className="flex gap-2">
@@ -802,7 +855,12 @@ export default function StrategiesPage() {
                         type="number"
                         step="0.1"
                         name="takeProfit3"
-                        className="w-full bg-slate-900 border border-emerald-500/30 rounded-lg p-3 text-white focus:border-emerald-500 outline-none transition"
+                        disabled={!formData.enableTakeProfit3}
+                        className={`w-full bg-slate-900 border rounded-lg p-3 text-white outline-none transition ${
+                          formData.enableTakeProfit3
+                            ? 'border-emerald-500/30 focus:border-emerald-500'
+                            : 'border-slate-700 opacity-50 cursor-not-allowed'
+                        }`}
                         value={formData.takeProfit3}
                         onChange={handleChange}
                      />
@@ -810,7 +868,12 @@ export default function StrategiesPage() {
                         type="number"
                         step="1"
                         name="takeProfitQuantity3"
-                        className="w-1/2 bg-slate-900 border border-slate-600 rounded-lg p-3 text-white focus:border-slate-400 outline-none transition text-center"
+                        disabled={!formData.enableTakeProfit3}
+                        className={`w-1/2 bg-slate-900 border rounded-lg p-3 text-white outline-none transition text-center ${
+                          formData.enableTakeProfit3
+                            ? 'border-slate-600 focus:border-slate-400'
+                            : 'border-slate-700 opacity-50 cursor-not-allowed'
+                        }`}
                         value={formData.takeProfitQuantity3}
                         onChange={handleChange}
                      />

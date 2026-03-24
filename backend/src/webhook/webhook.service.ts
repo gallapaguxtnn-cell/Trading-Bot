@@ -1011,7 +1011,17 @@ export class WebhookService {
 
         try {
           const trade = await this.tradesService.findById(tradeId);
-          if (!trade || trade.status !== 'OPEN' || trade.stopLossOrderId) return;
+          if (!trade || trade.status !== 'OPEN') return;
+
+          // Check if protection orders already exist (both SL and TP)
+          const hasStopLoss = !!trade.stopLossOrderId;
+          const hasTakeProfit = !!trade.takeProfitOrderId;
+
+          // If both are already set, no need to continue
+          if (hasStopLoss && hasTakeProfit) {
+            this.logger.debug(`[LIMIT SL/TP] Protection orders already exist for trade ${tradeId}`);
+            return;
+          }
 
           if (!trade.exchangeOrderId) {
             this.logger.debug(`[LIMIT SL/TP] Attempt ${attempt + 1}/${maxAttempts}: no entry order ID yet`);
@@ -1052,8 +1062,10 @@ export class WebhookService {
 
           this.logger.log(`[LIMIT SL/TP] Order filled: ${symbol} qty=${actualQty} avgPrice=${actualEntryPrice}`);
 
-          let slOrderId: string | null = null;
-          if (strategy.stopLossPercentage && strategy.stopLossPercentage > 0) {
+          let slOrderId: string | null = trade.stopLossOrderId || null;
+
+          // Only create SL if it doesn't already exist
+          if (!hasStopLoss && strategy.stopLossPercentage && strategy.stopLossPercentage > 0) {
             const slPrice = this.calculateStopLossPrice(side, actualEntryPrice, strategy.stopLossPercentage);
             try {
               slOrderId = await this.createBinanceStopLossOrder(
@@ -1063,30 +1075,56 @@ export class WebhookService {
             } catch (e: any) {
               this.logger.warn(`[LIMIT SL/TP] SL creation failed: ${e.message}`);
             }
+          } else if (hasStopLoss) {
+            this.logger.debug(`[LIMIT SL/TP] SL already exists, skipping creation`);
           }
 
           const tpConfigs = [
-            { percent: strategy.takeProfitPercentage1, qtyPercent: strategy.takeProfitQuantity1 || 33, id: 1 },
-            { percent: strategy.takeProfitPercentage2, qtyPercent: strategy.takeProfitQuantity2 || 33, id: 2 },
-            { percent: strategy.takeProfitPercentage3, qtyPercent: strategy.takeProfitQuantity3 || 34, id: 3 },
-          ];
-          const tpOrderIds: string[] = [];
+            {
+              percent: strategy.takeProfitPercentage1,
+              qtyPercent: strategy.takeProfitQuantity1 || 33,
+              id: 1,
+              enabled: strategy.enableTakeProfit1 ?? true
+            },
+            {
+              percent: strategy.takeProfitPercentage2,
+              qtyPercent: strategy.takeProfitQuantity2 || 33,
+              id: 2,
+              enabled: strategy.enableTakeProfit2 ?? true
+            },
+            {
+              percent: strategy.takeProfitPercentage3,
+              qtyPercent: strategy.takeProfitQuantity3 || 34,
+              id: 3,
+              enabled: strategy.enableTakeProfit3 ?? true
+            },
+          ].filter(tp => tp.enabled && tp.percent && tp.percent > 0);
 
-          for (const tp of tpConfigs) {
-            if (tp.percent && tp.percent > 0) {
-              const tpPrice = this.calculateTakeProfitPrice(side, actualEntryPrice, tp.percent);
-              const tpQty = (actualQty * tp.qtyPercent) / 100;
-              if (tpQty <= 0) continue;
-              try {
-                const tpId = await this.createBinanceTakeProfitOrder(
-                  symbol, side, tpQty, tpPrice, decryptedKey, decryptedSecret, strategy.isTestnet, strategy.hedgeMode
-                );
-                tpOrderIds.push(`${tp.id}:${tpId}`);
-                this.logger.log(`[LIMIT TP${tp.id}] Created: ${tpId}`);
-              } catch (e: any) {
-                this.logger.warn(`[LIMIT TP${tp.id}] Failed: ${e.message}`);
+          // Start with existing TP IDs if they exist
+          const tpOrderIds: string[] = hasTakeProfit && trade.takeProfitOrderId
+            ? trade.takeProfitOrderId.split('|')
+            : [];
+
+          // Only create TPs if they don't already exist
+          if (!hasTakeProfit && tpConfigs.length > 0) {
+            for (const tp of tpConfigs) {
+              if (tp.percent && tp.percent > 0) {
+                const tpPrice = this.calculateTakeProfitPrice(side, actualEntryPrice, tp.percent);
+                const tpQty = (actualQty * tp.qtyPercent) / 100;
+                if (tpQty <= 0) continue;
+                try {
+                  const tpId = await this.createBinanceTakeProfitOrder(
+                    symbol, side, tpQty, tpPrice, decryptedKey, decryptedSecret, strategy.isTestnet, strategy.hedgeMode
+                  );
+                  tpOrderIds.push(`${tp.id}:${tpId}`);
+                  this.logger.log(`[LIMIT TP${tp.id}] Created: ${tpId}`);
+                } catch (e: any) {
+                  this.logger.warn(`[LIMIT TP${tp.id}] Failed: ${e.message}`);
+                }
               }
             }
+          } else if (hasTakeProfit) {
+            this.logger.debug(`[LIMIT SL/TP] TPs already exist, skipping creation`);
           }
 
           await this.tradesService.updateTrade(tradeId, {
@@ -1214,7 +1252,17 @@ export class WebhookService {
 
         try {
           const trade = await this.tradesService.findById(tradeId);
-          if (!trade || trade.status !== 'OPEN' || trade.stopLossOrderId) return;
+          if (!trade || trade.status !== 'OPEN') return;
+
+          // Check if protection orders already exist (both SL and TP)
+          const hasStopLoss = !!trade.stopLossOrderId;
+          const hasTakeProfit = !!trade.takeProfitOrderId;
+
+          // If both are already set, no need to continue
+          if (hasStopLoss && hasTakeProfit) {
+            this.logger.debug(`[BYBIT LIMIT SL/TP] Protection orders already exist for trade ${tradeId}`);
+            return;
+          }
 
           if (!trade.exchangeOrderId) {
             this.logger.debug(`[BYBIT LIMIT SL/TP] Attempt ${attempt + 1}/${maxAttempts}: no entry order ID yet`);
@@ -1267,8 +1315,10 @@ export class WebhookService {
             continue;
           }
 
-          let slOrderId: string | null = null;
-          if (strategy.stopLossPercentage && strategy.stopLossPercentage > 0) {
+          let slOrderId: string | null = trade.stopLossOrderId || null;
+
+          // Only create SL if it doesn't already exist
+          if (!hasStopLoss && strategy.stopLossPercentage && strategy.stopLossPercentage > 0) {
             const slPrice = this.calculateStopLossPrice(side, actualEntryPrice, strategy.stopLossPercentage);
             const rules = await this.getSymbolRules(symbol, strategy.isTestnet, Exchange.BYBIT);
             const slPriceRounded = this.roundTick(slPrice, rules.priceTick);
@@ -1284,16 +1334,33 @@ export class WebhookService {
             } catch (e: any) {
               this.logger.warn(`[BYBIT LIMIT SL/TP] SL creation failed: ${e.message}`);
             }
+          } else if (hasStopLoss) {
+            this.logger.debug(`[BYBIT LIMIT SL/TP] SL already exists, skipping creation`);
           }
 
           const rules = await this.getSymbolRules(symbol, strategy.isTestnet, Exchange.BYBIT);
           const minQty = parseFloat(rules.minQty);
 
           const configuredTPs = [
-            { percent: strategy.takeProfitPercentage1, qtyPercent: strategy.takeProfitQuantity1 || 33, id: 1 },
-            { percent: strategy.takeProfitPercentage2, qtyPercent: strategy.takeProfitQuantity2 || 33, id: 2 },
-            { percent: strategy.takeProfitPercentage3, qtyPercent: strategy.takeProfitQuantity3 || 34, id: 3 },
-          ].filter(tp => tp.percent && tp.percent > 0);
+            {
+              percent: strategy.takeProfitPercentage1,
+              qtyPercent: strategy.takeProfitQuantity1 || 33,
+              id: 1,
+              enabled: strategy.enableTakeProfit1 ?? true
+            },
+            {
+              percent: strategy.takeProfitPercentage2,
+              qtyPercent: strategy.takeProfitQuantity2 || 33,
+              id: 2,
+              enabled: strategy.enableTakeProfit2 ?? true
+            },
+            {
+              percent: strategy.takeProfitPercentage3,
+              qtyPercent: strategy.takeProfitQuantity3 || 34,
+              id: 3,
+              enabled: strategy.enableTakeProfit3 ?? true
+            },
+          ].filter(tp => tp.enabled && tp.percent && tp.percent > 0);
 
           let tpConfigs;
           const maxPossibleTPs = Math.floor(actualQty / minQty);
@@ -1329,17 +1396,35 @@ export class WebhookService {
             );
             tpConfigs = [];
           }
-          const tpOrderIds: string[] = [];
+          // Start with existing TP IDs if they exist
+          const tpOrderIds: string[] = hasTakeProfit && trade.takeProfitOrderId
+            ? trade.takeProfitOrderId.split('|')
+            : [];
 
-          const bybitPositionIdx = await this.bybitClient.getPositionIdx(
-            decryptedKey, decryptedSecret, strategy.isTestnet, symbol, bybitSide, strategy.hedgeMode
-          );
+          // Only create TPs if they don't already exist
+          if (!hasTakeProfit && tpConfigs.length > 0) {
+            const bybitPositionIdx = await this.bybitClient.getPositionIdx(
+              decryptedKey, decryptedSecret, strategy.isTestnet, symbol, bybitSide, strategy.hedgeMode
+            );
 
-          for (const tp of tpConfigs) {
+            for (const tp of tpConfigs) {
             if (tp.percent && tp.percent > 0) {
               const tpPrice = this.calculateTakeProfitPrice(side, actualEntryPrice, tp.percent);
-              const tpQty = (actualQty * tp.qtyPercent) / 100;
+              let tpQty = (actualQty * tp.qtyPercent) / 100;
+
+              // Validate quantity is sufficient
               if (tpQty <= 0) continue;
+
+              // Normalize to step size
+              const normalizedQty = this.normalizeQuantity(tpQty, rules.qtyStep, rules.minQty);
+
+              // Skip if normalized quantity is zero (too small for exchange)
+              if (parseFloat(normalizedQty) === 0) {
+                this.logger.warn(
+                  `[BYBIT LIMIT TP${tp.id}] Skipping - quantity ${tpQty.toFixed(4)} is below minimum ${minQty} for ${symbol}`
+                );
+                continue;
+              }
 
               try {
                 const tpOrder = await this.bybitClient.createOrder(
@@ -1348,7 +1433,7 @@ export class WebhookService {
                     symbol,
                     side: side === 'BUY' ? 'Sell' : 'Buy',
                     orderType: 'Limit',
-                    qty: this.normalizeQuantity(tpQty, rules.qtyStep, rules.minQty),
+                    qty: normalizedQty,
                     price: this.roundTick(tpPrice, rules.priceTick),
                     positionIdx: bybitPositionIdx,
                     reduceOnly: true,
@@ -1361,6 +1446,9 @@ export class WebhookService {
                 this.logger.warn(`[BYBIT LIMIT TP${tp.id}] Failed: ${e.message}`);
               }
             }
+            }
+          } else if (hasTakeProfit) {
+            this.logger.debug(`[BYBIT LIMIT SL/TP] TPs already exist, skipping creation`);
           }
 
           await this.tradesService.updateTrade(tradeId, {
@@ -1903,19 +1991,29 @@ export class WebhookService {
     let effectivePrice = signal.price;
 
     // Buffer / Percent Offset Logic (Conservative Entry)
-    if (strategy.bufferEntry && strategy.bufferPercentage && signal.price && signal.orderType !== OrderType.MARKET) {
-      const offset = signal.price * (strategy.bufferPercentage / 100);
-      if (side === 'BUY') {
-        effectivePrice = signal.price - offset;  // BUY: entry BELOW signal price (waits for price to drop)
+    if (strategy.bufferEntry && typeof strategy.bufferPercentage === 'number' && signal.price && signal.orderType !== OrderType.MARKET) {
+      if (strategy.bufferPercentage === 0) {
+        // Buffer 0%: Entry at exact signal price using LIMIT order
+        effectivePrice = signal.price;
+        isLimitOrder = true;
+        signal.price = effectivePrice;
+        signal.orderType = OrderType.LIMIT;
+        this.logger.log(`[BUFFER] Entry at exact signal price ${effectivePrice} (0% buffer - LIMIT order)`);
       } else {
-        effectivePrice = signal.price + offset;  // SELL: entry ABOVE signal price (waits for price to rise)
-      }
-      isLimitOrder = true;
-      // Update signal to reflect the forced limit order so downstream methods use the correct price
-      signal.price = effectivePrice;
-      signal.orderType = OrderType.LIMIT;
+        // Buffer > 0%: Apply offset
+        const offset = signal.price * (strategy.bufferPercentage / 100);
+        if (side === 'BUY') {
+          effectivePrice = signal.price - offset;  // BUY: entry BELOW signal price (waits for price to drop)
+        } else {
+          effectivePrice = signal.price + offset;  // SELL: entry ABOVE signal price (waits for price to rise)
+        }
+        isLimitOrder = true;
+        // Update signal to reflect the forced limit order so downstream methods use the correct price
+        signal.price = effectivePrice;
+        signal.orderType = OrderType.LIMIT;
 
-      this.logger.log(`[BUFFER] Entry adjusted to ${effectivePrice} (${strategy.bufferPercentage}% buffer ${side === 'BUY' ? 'below' : 'above'} signal)`);
+        this.logger.log(`[BUFFER] Entry adjusted to ${effectivePrice} (${strategy.bufferPercentage}% buffer ${side === 'BUY' ? 'below' : 'above'} signal)`);
+      }
     }
 
     this.logger.log(
@@ -2343,10 +2441,25 @@ export class WebhookService {
         const minQty = parseFloat(rules.minQty);
 
         const configuredTPs = [
-          { percent: strategy.takeProfitPercentage1, qtyPercent: strategy.takeProfitQuantity1 || 33, id: 1 },
-          { percent: strategy.takeProfitPercentage2, qtyPercent: strategy.takeProfitQuantity2 || 33, id: 2 },
-          { percent: strategy.takeProfitPercentage3, qtyPercent: strategy.takeProfitQuantity3 || 34, id: 3 },
-        ].filter(tp => tp.percent && tp.percent > 0);
+          {
+            percent: strategy.takeProfitPercentage1,
+            qtyPercent: strategy.takeProfitQuantity1 || 33,
+            id: 1,
+            enabled: strategy.enableTakeProfit1 ?? true
+          },
+          {
+            percent: strategy.takeProfitPercentage2,
+            qtyPercent: strategy.takeProfitQuantity2 || 33,
+            id: 2,
+            enabled: strategy.enableTakeProfit2 ?? true
+          },
+          {
+            percent: strategy.takeProfitPercentage3,
+            qtyPercent: strategy.takeProfitQuantity3 || 34,
+            id: 3,
+            enabled: strategy.enableTakeProfit3 ?? true
+          },
+        ].filter(tp => tp.enabled && tp.percent && tp.percent > 0);
 
         let tpConfigs;
         const maxPossibleTPs = Math.floor(quantityForTPs / minQty);

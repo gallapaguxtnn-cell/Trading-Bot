@@ -83,6 +83,15 @@ export class Strategy {
   @Column({ type: 'float', default: 34 })
   takeProfitQuantity3: number;
 
+  @Column({ default: true })
+  enableTakeProfit1: boolean;
+
+  @Column({ default: true })
+  enableTakeProfit2: boolean;
+
+  @Column({ default: true })
+  enableTakeProfit3: boolean;
+
   @Column({ default: false })
   breakAgain: boolean;
 

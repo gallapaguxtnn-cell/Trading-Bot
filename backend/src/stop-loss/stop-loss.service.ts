@@ -18,6 +18,7 @@ export class StopLossService {
   private readonly logger = new Logger(StopLossService.name);
   private readonly BINANCE_TESTNET_URL = 'https://testnet.binancefuture.com';
   private readonly BINANCE_MAINNET_URL = 'https://fapi.binance.com';
+  private readonly processingTrades = new Set<string>();
 
   constructor(
     @InjectRepository(Trade)
@@ -41,10 +42,18 @@ export class StopLossService {
     if (openTrades.length === 0) return;
 
     for (const trade of openTrades) {
+      // Skip if already being processed
+      if (this.processingTrades.has(trade.id)) {
+        continue;
+      }
+
       try {
+        this.processingTrades.add(trade.id);
         await this.checkStopLoss(trade);
       } catch (error) {
         this.logger.error(`Error checking stop-loss for trade ${trade.id}: ${error.message}`);
+      } finally {
+        this.processingTrades.delete(trade.id);
       }
     }
   }

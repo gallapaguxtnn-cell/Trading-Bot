@@ -235,7 +235,10 @@ export class PositionSyncService {
             strategy.isTestnet
           );
 
-          if (orderStatus === 'NEW' || orderStatus === 'PARTIALLY_FILLED') {
+          // Don't close if order is still pending (Binance: NEW/PARTIALLY_FILLED, Bybit: New/PartiallyFilled)
+          if (orderStatus === 'NEW' || orderStatus === 'New' ||
+              orderStatus === 'PARTIALLY_FILLED' || orderStatus === 'PartiallyFilled') {
+            this.logger.debug(`[SYNC] Trade ${trade.id} has pending LIMIT order (${orderStatus}), keeping open`);
             continue;
           }
 

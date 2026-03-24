@@ -46,6 +46,12 @@ export class WebhookController {
   @UseGuards(ThrottlerGuard)
   @Throttle({ default: { limit: 10, ttl: 60000 } })
   async handleSignal(@Body() payload: WebhookPayload) {
+    // Validate payload exists
+    if (!payload || typeof payload !== 'object') {
+      this.logger.error(`[WEBHOOK] Invalid payload: ${JSON.stringify(payload)}`);
+      throw new BadRequestException('Invalid or missing payload');
+    }
+
     const orderTypeLabel = payload.orderType === 'limit' ? 'LIMIT' : 'MARKET';
     this.logger.log(
       `[WEBHOOK] ${payload.symbol} ${payload.action?.toUpperCase()} @ ${payload.price || 'MARKET'} (${orderTypeLabel})`

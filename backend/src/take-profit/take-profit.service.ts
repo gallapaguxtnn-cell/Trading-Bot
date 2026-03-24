@@ -18,6 +18,7 @@ export class TakeProfitService {
   private readonly logger = new Logger(TakeProfitService.name);
   private readonly BINANCE_TESTNET_URL = 'https://testnet.binancefuture.com';
   private readonly BINANCE_MAINNET_URL = 'https://fapi.binance.com';
+  private readonly processingTrades = new Set<string>();
 
   constructor(
     @InjectRepository(Trade)
@@ -41,10 +42,18 @@ export class TakeProfitService {
     if (openTrades.length === 0) return;
 
     for (const trade of openTrades) {
+      // Skip if already being processed
+      if (this.processingTrades.has(trade.id)) {
+        continue;
+      }
+
       try {
+        this.processingTrades.add(trade.id);
         await this.checkTakeProfit(trade);
       } catch (error) {
         this.logger.error(`Error checking take-profit for trade ${trade.id}: ${error.message}`);
+      } finally {
+        this.processingTrades.delete(trade.id);
       }
     }
   }
@@ -696,9 +705,28 @@ export class TakeProfitService {
       const exchange = strategy.exchange || Exchange.BINANCE;
       const closeSide = trade.side === 'BUY' ? 'SELL' : 'BUY';
       const quantity = parseFloat(trade.quantity as any);
-      const closeQuantity = quantity * closePercent;
+      let closeQuantity = quantity * closePercent;
 
       if (exchange === Exchange.BYBIT) {
+        // Get symbol rules to validate quantity
+        const rules = await this.bybitClient.getSymbolRules(strategy.isTestnet, trade.symbol);
+        const minQty = parseFloat(rules.minQty);
+        const stepSize = parseFloat(rules.qtyStep);
+
+        // Normalize quantity to step size
+        const normalizedQty = Math.floor(closeQuantity / stepSize) * stepSize;
+
+        // If normalized quantity is less than minimum, close entire position
+        if (normalizedQty < minQty) {
+          this.logger.warn(
+            `[BYBIT TP] Calculated quantity ${closeQuantity.toFixed(3)} < minQty ${minQty}. ` +
+            `Closing entire remaining position (${quantity}) instead.`
+          );
+          closeQuantity = quantity;
+        } else {
+          closeQuantity = normalizedQty;
+        }
+
         const originalSide = trade.side === 'BUY' ? 'Buy' : 'Sell';
         const positionIdx = await this.bybitClient.getPositionIdx(
           apiKey, apiSecret, strategy.isTestnet, trade.symbol, originalSide, strategy.hedgeMode
@@ -719,7 +747,7 @@ export class TakeProfitService {
             hedgeMode: strategy.hedgeMode
           }
         );
-        this.logger.log(`[BYBIT] Closed ${(closePercent * 100).toFixed(0)}% of ${trade.symbol} via ${reason}`);
+        this.logger.log(`[BYBIT] Closed ${closeQuantity.toFixed(3)} ${trade.symbol} via ${reason}`);
       } else if (strategy.isTestnet && exchange === Exchange.BINANCE) {
         const baseURL = this.BINANCE_TESTNET_URL;
         const params = new URLSearchParams();
