@@ -31,7 +31,21 @@ interface NormalizedPosition {
   unrealizedPnl: number;
   leverage: number;
   markPrice: number;
-  positionSide: 'LONG' | 'SHORT' | 'BOTH'; // Preserve hedge mode context
+  positionSide: 'LONG' | 'SHORT' | 'BOTH';
+}
+
+function safeParseFloat(value: any, defaultValue: number = 0): number {
+  if (value === null || value === undefined || value === '') {
+    return defaultValue;
+  }
+
+  const parsed = parseFloat(value);
+
+  if (!isFinite(parsed) || isNaN(parsed)) {
+    return defaultValue;
+  }
+
+  return parsed;
 }
 
 @Injectable()
@@ -275,16 +289,16 @@ export class PositionSyncService {
       );
 
       return (response.data as BinancePosition[]).map(pos => {
-        const posAmt = parseFloat(pos.positionAmt);
+        const posAmt = safeParseFloat(pos.positionAmt);
         return {
           symbol: pos.symbol,
           side: posAmt > 0 ? 'BUY' : 'SELL' as 'BUY' | 'SELL',
           size: Math.abs(posAmt),
-          entryPrice: parseFloat(pos.entryPrice),
-          unrealizedPnl: parseFloat(pos.unRealizedProfit),
-          leverage: parseFloat(pos.leverage),
-          markPrice: parseFloat(pos.markPrice),
-          positionSide: pos.positionSide, // Preserve hedge mode context (LONG/SHORT/BOTH)
+          entryPrice: safeParseFloat(pos.entryPrice),
+          unrealizedPnl: safeParseFloat(pos.unRealizedProfit),
+          leverage: safeParseFloat(pos.leverage, 1),
+          markPrice: safeParseFloat(pos.markPrice),
+          positionSide: pos.positionSide,
         };
       });
     } catch (error: any) {
@@ -316,14 +330,14 @@ export class PositionSyncService {
       const positions = await this.bybitClient.getPositions(apiKey, apiSecret, isTestnet);
 
       return positions
-        .filter(pos => pos.side !== 'None' && parseFloat(pos.size) !== 0)
+        .filter(pos => pos.side !== 'None' && safeParseFloat(pos.size) !== 0)
         .map(pos => ({
           symbol: pos.symbol,
           side: pos.side === 'Buy' ? 'BUY' : 'SELL' as 'BUY' | 'SELL',
-          size: parseFloat(pos.size),
-          entryPrice: parseFloat(pos.avgPrice),
-          unrealizedPnl: parseFloat(pos.unrealisedPnl),
-          leverage: parseFloat(pos.leverage),
+          size: safeParseFloat(pos.size),
+          entryPrice: safeParseFloat(pos.avgPrice),
+          unrealizedPnl: safeParseFloat(pos.unrealisedPnl),
+          leverage: safeParseFloat(pos.leverage, 1),
           markPrice: parseFloat(pos.markPrice),
           positionSide: 'BOTH' as const, // Bybit uses one-way mode (positionIdx: 0)
         }));
@@ -813,7 +827,7 @@ export class PositionSyncService {
             this.logger.log(
               `[BREAK] ${triggeredLevel} | ` +
               `Trade ID: ${trade.id.substring(0, 8)} | Symbol: ${trade.symbol} | ` +
-              `Qty: ${parseFloat(trade.quantity as any).toFixed(2)} | ` +
+              `Qty: ${safeParseFloat(trade.quantity as any).toFixed(2)} | ` +
               `Old SL: ${trade.currentStopLoss?.toFixed(4) || 'N/A'} → New SL: ${newStopLoss.toFixed(4)} | ` +
               `Note: Other trades in same position keep their own independent SL`
             );
@@ -848,7 +862,7 @@ export class PositionSyncService {
                         }
 
                         const closeSide = side === 'BUY' ? 'SELL' : 'BUY';
-                        const tradeQuantity = Math.abs(parseFloat(trade.quantity as any));
+                        const tradeQuantity = Math.abs(safeParseFloat(trade.quantity as any));
                         const params = new URLSearchParams();
                         params.append('symbol', trade.symbol);
                         params.append('side', closeSide);

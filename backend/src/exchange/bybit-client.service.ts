@@ -349,15 +349,29 @@ export class BybitClientService {
     hedgeMode?: boolean
   ): Promise<number> {
     if (hedgeMode !== undefined) {
-      return hedgeMode ? (side === 'Buy' ? 1 : 2) : 0;
+      const idx = hedgeMode ? (side === 'Buy' ? 1 : 2) : 0;
+      this.logger.debug(`[BYBIT] Using hedgeMode=${hedgeMode} → positionIdx=${idx} for ${side} ${symbol}`);
+      return idx;
     }
 
     const mode = await this.detectPositionMode(apiKey, apiSecret, isTestnet, symbol);
 
     if (mode === 'HEDGE') {
+      this.logger.debug(`[BYBIT] Detected HEDGE mode → positionIdx=${side === 'Buy' ? 1 : 2}`);
       return side === 'Buy' ? 1 : 2;
     }
 
+    if (mode === 'ONE_WAY') {
+      this.logger.debug(`[BYBIT] Detected ONE_WAY mode → positionIdx=0`);
+      return 0;
+    }
+
+    this.logger.warn(
+      `[BYBIT] Cannot detect position mode for ${symbol} (no positions). ` +
+      `Defaulting to ONE_WAY (positionIdx=0). ` +
+      `If account is in HEDGE mode, this will FAIL with "position idx not match position mode". ` +
+      `SOLUTION: Ensure strategy.hedgeMode is set correctly in database.`
+    );
     return 0;
   }
 

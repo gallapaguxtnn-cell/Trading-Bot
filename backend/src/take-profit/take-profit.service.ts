@@ -718,11 +718,22 @@ export class TakeProfitService {
 
         // If normalized quantity is less than minimum, close entire position
         if (normalizedQty < minQty) {
-          this.logger.warn(
-            `[BYBIT TP] Calculated quantity ${closeQuantity.toFixed(3)} < minQty ${minQty}. ` +
-            `Closing entire remaining position (${quantity}) instead.`
-          );
-          closeQuantity = quantity;
+          // CRITICAL: Normalize the total position quantity too!
+          const normalizedTotalQty = Math.floor(quantity / stepSize) * stepSize;
+
+          if (normalizedTotalQty >= minQty) {
+            this.logger.warn(
+              `[BYBIT TP] Calculated quantity ${closeQuantity.toFixed(3)} < minQty ${minQty}. ` +
+              `Closing entire remaining position (${normalizedTotalQty}) instead.`
+            );
+            closeQuantity = normalizedTotalQty;
+          } else {
+            this.logger.error(
+              `[BYBIT TP] Position quantity ${quantity} too small to close. ` +
+              `Normalized: ${normalizedTotalQty}, MinQty: ${minQty}. Skipping.`
+            );
+            return; // Cannot close - position too small
+          }
         } else {
           closeQuantity = normalizedQty;
         }

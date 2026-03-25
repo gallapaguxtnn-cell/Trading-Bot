@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { Cron } from '@nestjs/schedule';
 import { TradingviewSignalDto, OrderType } from './dto/tradingview-signal.dto';
 import { ExchangeService } from '../exchange/exchange.service';
 import { BybitClientService } from '../exchange/bybit-client.service';
@@ -76,6 +77,8 @@ export class WebhookService {
   private readonly BINANCE_MAINNET_URL = 'https://fapi.binance.com';
 
   private readonly activeSignals = new Set<string>();
+  private readonly activeSignalsTimestamps = new Map<string, number>();
+  private readonly SIGNAL_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 
   constructor(
     private readonly exchangeService: ExchangeService,
@@ -93,8 +96,8 @@ export class WebhookService {
     return symbol;
   }
 
-  // Cache for symbol precision rules: exchange:symbol -> { qtyStep: number, priceTick: number, minQty: number }
-  private symbolRules: Map<string, { qtyStep: string; priceTick: string; minQty: string }> = new Map();
+  private symbolRules: Map<string, { qtyStep: string; priceTick: string; minQty: string; timestamp: number }> = new Map();
+  private readonly SYMBOL_RULES_TTL_MS = 60 * 60 * 1000;
 
   private async getSymbolRules(
     symbol: string,
@@ -103,15 +106,21 @@ export class WebhookService {
   ): Promise<{ qtyStep: string; priceTick: string; minQty: string }> {
     const cacheKey = `${exchange}:${symbol}`;
     const cached = this.symbolRules.get(cacheKey);
+
     if (cached) {
-        return cached;
+        const age = Date.now() - cached.timestamp;
+        if (age < this.SYMBOL_RULES_TTL_MS) {
+            return { qtyStep: cached.qtyStep, priceTick: cached.priceTick, minQty: cached.minQty };
+        }
+        this.logger.debug(`[RULES] Cache expired for ${cacheKey}, refetching...`);
+        this.symbolRules.delete(cacheKey);
     }
 
     // Use Bybit API for Bybit symbols
     if (exchange === Exchange.BYBIT) {
         try {
             const rules = await this.bybitClient.getSymbolRules(isTestnet, symbol);
-            this.symbolRules.set(cacheKey, rules);
+            this.symbolRules.set(cacheKey, { ...rules, timestamp: Date.now() });
             this.logger.log(`[BYBIT] Fetched rules for ${symbol}: Step=${rules.qtyStep}, Tick=${rules.priceTick}`);
             return rules;
         } catch (error) {
@@ -140,7 +149,7 @@ export class WebhookService {
             priceTick: priceFilter ? priceFilter.tickSize : '0.01'
         };
 
-        this.symbolRules.set(cacheKey, rules);
+        this.symbolRules.set(cacheKey, { ...rules, timestamp: Date.now() });
         this.logger.log(`[BINANCE] Fetched rules for ${symbol}: Step=${rules.qtyStep}, Tick=${rules.priceTick}`);
         return rules;
     } catch (error) {
@@ -166,29 +175,29 @@ export class WebhookService {
       throw new Error(`Invalid quantity: ${value}. Quantity must be greater than zero.`);
     }
 
-    // 2. Round down to nearest step
     let rounded = dValue.div(dStep).floor().mul(dStep);
 
-    // 3. Check if rounding resulted in zero
     if (rounded.isZero()) {
-      this.logger.error(
-        `[QUANTITY] ZERO AFTER ROUNDING\n` +
-        `  Original Value: ${value}\n` +
-        `  Step Size: ${step}\n` +
-        `  Min Quantity: ${minQty}\n` +
-        `  Rounded Value: 0\n` +
-        `  The quantity is too small for this symbol's step size!\n` +
-        `  Attempting to use minimum quantity instead...`
+      this.logger.warn(
+        `[QUANTITY] Rounded to zero - quantity too small\n` +
+        `  Original: ${value} | Step: ${step} | MinQty: ${minQty}\n` +
+        `  Returning '0' - caller should decide whether to skip or use minQty`
       );
-      rounded = dMinQty;
+      return '0';
     }
 
-    // 4. Ensure it meets minimum quantity
     if (rounded.lessThan(dMinQty)) {
+      if (dValue.lessThan(dMinQty)) {
+        this.logger.warn(
+          `[QUANTITY] Original value ${value} < minQty ${minQty}\n` +
+          `  Returning '0' - caller should decide whether to skip or use minQty`
+        );
+        return '0';
+      }
+
       this.logger.warn(
-        `[QUANTITY] Below minimum - Adjusting\n` +
-        `  Calculated: ${rounded.toFixed()}\n` +
-        `  Minimum: ${minQty}\n` +
+        `[QUANTITY] Rounded below minimum but original was valid\n` +
+        `  Original: ${value} | Rounded: ${rounded.toFixed()} | MinQty: ${minQty}\n` +
         `  Using minimum quantity`
       );
       return dMinQty.toFixed();
@@ -1520,10 +1529,27 @@ export class WebhookService {
 
           this.logger.log(`[BYBIT LIMIT EMERGENCY] Position closed successfully`);
         } else {
-          this.logger.log(`[BYBIT LIMIT SL/TP] No open position found, marking trade as ERROR`);
+          this.logger.log(`[BYBIT LIMIT SL/TP] No open position found. Cancelling pending LIMIT order...`);
+
+          // CRITICAL FIX: Cancel the LIMIT order to prevent orphan positions
+          if (trade.exchangeOrderId) {
+            try {
+              await this.bybitClient.cancelOrder(
+                decryptedKey,
+                decryptedSecret,
+                strategy.isTestnet,
+                symbol,
+                trade.exchangeOrderId
+              );
+              this.logger.log(`[BYBIT LIMIT SL/TP] Cancelled pending order ${trade.exchangeOrderId}`);
+            } catch (cancelError: any) {
+              this.logger.warn(`[BYBIT LIMIT SL/TP] Failed to cancel order ${trade.exchangeOrderId}: ${cancelError.message}`);
+            }
+          }
+
           await this.tradesService.updateTrade(tradeId, {
             status: 'ERROR',
-            error: 'LIMIT order monitoring timeout - could not verify order status or create protection'
+            error: 'LIMIT order monitoring timeout - order cancelled to prevent orphan positions'
           });
         }
       } catch (emergencyError: any) {
@@ -1763,6 +1789,31 @@ export class WebhookService {
     }
   }
 
+  @Cron('*/60 * * * * *')
+  private cleanupStaleSignals() {
+    const now = Date.now();
+    const staleSignals: string[] = [];
+
+    for (const [signalKey, timestamp] of this.activeSignalsTimestamps.entries()) {
+      const age = now - timestamp;
+      if (age > this.SIGNAL_TIMEOUT_MS) {
+        staleSignals.push(signalKey);
+      }
+    }
+
+    if (staleSignals.length > 0) {
+      this.logger.warn(
+        `[MUTEX CLEANUP] Found ${staleSignals.length} stale signals (>${this.SIGNAL_TIMEOUT_MS/1000}s), cleaning up...`
+      );
+
+      for (const signalKey of staleSignals) {
+        this.activeSignals.delete(signalKey);
+        this.activeSignalsTimestamps.delete(signalKey);
+        this.logger.warn(`[MUTEX CLEANUP] Removed stale signal: ${signalKey}`);
+      }
+    }
+  }
+
   async processSignal(signal: TradingviewSignalDto) {
     this.logger.log(`Processing signal: ${signal.action} ${signal.symbol} for Strategy ${signal.strategyId}`);
 
@@ -1780,6 +1831,7 @@ export class WebhookService {
       return { status: 'skipped', message: 'Signal already being processed' };
     }
     this.activeSignals.add(signalKey);
+    this.activeSignalsTimestamps.set(signalKey, Date.now());
     this.logger.log(`[MUTEX] Request ${requestId} | Acquired lock for ${signalKey}`);
 
     try {
@@ -1788,6 +1840,7 @@ export class WebhookService {
       return result;
     } finally {
       this.activeSignals.delete(signalKey);
+      this.activeSignalsTimestamps.delete(signalKey);
       this.logger.log(`[MUTEX] Request ${requestId} | Lock released for ${signalKey}`);
     }
   }
