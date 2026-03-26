@@ -177,6 +177,19 @@ export class PositionSyncService {
       });
 
       if (existingTrades.length === 0) {
+        if (exchange === Exchange.BYBIT) {
+          const rules = await this.bybitClient.getSymbolRules(strategy.isTestnet, position.symbol);
+          const minQty = parseFloat(rules.minQty);
+
+          if (position.size < minQty) {
+            this.logger.warn(
+              `[SYNC] Orphan position detected but quantity ${position.size} < minQty ${minQty}. ` +
+              `This is dust from closed position. Ignoring.`
+            );
+            continue;
+          }
+        }
+
         this.logger.warn(`[SYNC] Orphan position detected: ${position.symbol} (${position.side}) - importing...`);
         await this.importOrphanPosition(strategy, position);
         imported++;

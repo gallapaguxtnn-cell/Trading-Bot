@@ -1460,11 +1460,19 @@ export class WebhookService {
             this.logger.debug(`[BYBIT LIMIT SL/TP] TPs already exist, skipping creation`);
           }
 
+          const actualSlPrice = slOrderId && strategy.stopLossPercentage
+            ? parseFloat(this.roundTick(
+                this.calculateStopLossPrice(side, actualEntryPrice, strategy.stopLossPercentage),
+                rules.priceTick
+              ))
+            : undefined;
+
           await this.tradesService.updateTrade(tradeId, {
             entryPrice: actualEntryPrice as any,
             quantity: actualQty as any,
             stopLossOrderId: slOrderId || undefined,
             takeProfitOrderId: tpOrderIds.length > 0 ? tpOrderIds.join('|') : undefined,
+            currentStopLoss: actualSlPrice as any,
           });
 
           this.logger.log(`[BYBIT LIMIT SL/TP] All protection orders created for trade ${tradeId}`);

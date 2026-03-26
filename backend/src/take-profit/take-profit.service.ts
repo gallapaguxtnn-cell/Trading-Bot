@@ -730,9 +730,20 @@ export class TakeProfitService {
           } else {
             this.logger.error(
               `[BYBIT TP] Position quantity ${quantity} too small to close. ` +
-              `Normalized: ${normalizedTotalQty}, MinQty: ${minQty}. Skipping.`
+              `Normalized: ${normalizedTotalQty}, MinQty: ${minQty}. Marking trade as closed.`
             );
-            return; // Cannot close - position too small
+
+            await this.tradesRepository.save({
+              ...trade,
+              status: 'CLOSED',
+              exitPrice: exitPrice as any,
+              closeReason: 'DUST_AMOUNT' as any,
+              closedAt: new Date(),
+              quantity: 0 as any,
+            });
+
+            this.logger.log(`[BYBIT TP] Trade ${trade.id.substring(0, 8)} closed due to dust amount (< minQty)`);
+            return;
           }
         } else {
           closeQuantity = normalizedQty;
