@@ -7,6 +7,7 @@ import { TradeExecution } from '../trades/trade-execution.entity';
 import { StrategiesModule } from '../strategies/strategies.module';
 import { ExchangeModule } from '../exchange/exchange.module';
 import { TradesModule } from '../trades/trades.module';
+import { PositionSyncModule } from '../position-sync/position-sync.module';
 
 @Module({
   imports: [
@@ -14,7 +15,8 @@ import { TradesModule } from '../trades/trades.module';
     ScheduleModule.forRoot(),
     StrategiesModule,
     ExchangeModule,
-    forwardRef(() => TradesModule)
+    forwardRef(() => TradesModule),
+    forwardRef(() => PositionSyncModule)
   ],
   providers: [TakeProfitService],
   exports: [TakeProfitService],
