@@ -10,6 +10,7 @@ import { ExchangeService } from '../exchange/exchange.service';
 import { BybitClientService } from '../exchange/bybit-client.service';
 import { Exchange } from '../strategies/strategy.entity';
 import { EncryptionUtil } from '../utils/encryption.util';
+import { PositionSyncService } from '../position-sync/position-sync.service';
 import axios from 'axios';
 import * as crypto from 'crypto';
 
@@ -28,6 +29,8 @@ export class TakeProfitService {
     private strategiesService: StrategiesService,
     private exchangeService: ExchangeService,
     private bybitClient: BybitClientService,
+    @Inject(forwardRef(() => PositionSyncService))
+    private positionSyncService: PositionSyncService,
   ) {}
 
   private formatQuantityWithUsdt(quantity: number, price: number): string {
@@ -219,6 +222,11 @@ export class TakeProfitService {
         trade.binancePositionAmt = newQty as any;
         await this.tradesRepository.save(trade);
         this.logger.log(`├─ Remaining: ${this.formatQuantityWithUsdt(newQty, currentPrice)}`);
+
+        // Check if breakeven or break again should be triggered
+        if (strategy.moveSLToBreakeven || strategy.breakAgain) {
+          await this.positionSyncService.checkBreakAgain(trade, undefined, strategy, apiKey, apiSecret);
+        }
 
         if (exchange === Exchange.BINANCE && trade.stopLossOrderId) {
           await this.adjustStopLossForRemainingQty(trade, strategy, exchange, apiKey, apiSecret, newQty);

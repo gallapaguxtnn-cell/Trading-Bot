@@ -752,9 +752,9 @@ export class PositionSyncService {
     return savedTrade;
   }
 
-  private async checkBreakAgain(
+  public async checkBreakAgain(
     trade: Trade,
-    position: NormalizedPosition,
+    position: NormalizedPosition | undefined,
     strategy: Strategy,
     apiKey: string,
     apiSecret: string
