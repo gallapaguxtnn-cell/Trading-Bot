@@ -760,12 +760,13 @@ export class PositionSyncService {
     apiSecret: string
   ): Promise<void> {
     try {
-        const entryPrice = trade.entryPrice as number;
+        const entryPrice = safeParseFloat(trade.entryPrice as any);
+        const currentStopLoss = safeParseFloat(trade.currentStopLoss as any);
         const side = trade.side;
         const lastTpLevel = trade.lastTpLevel || 0;
 
-        if (!entryPrice || !trade.currentStopLoss) {
-          this.logger.debug(`[BREAK] Skipping: entryPrice=${entryPrice}, currentStopLoss=${trade.currentStopLoss}`);
+        if (!entryPrice || !currentStopLoss) {
+          this.logger.debug(`[BREAK] Skipping: entryPrice=${entryPrice}, currentStopLoss=${currentStopLoss}`);
           return;
         }
 
@@ -787,72 +788,73 @@ export class PositionSyncService {
 
         if (side === 'BUY') {
             if (lastTpLevel >= 3 && tp3Price && tp2Price && strategy.breakAgain) {
-                if (trade.currentStopLoss < tp2Price) {
+                if (currentStopLoss < tp2Price) {
                     newStopLoss = tp2Price;
                     triggeredLevel = 'TP3 filled -> SL to TP2';
-                    this.logger.log(`[BREAK AGAIN] ${triggeredLevel}: Last TP level=${lastTpLevel}, moving SL from ${trade.currentStopLoss.toFixed(4)} to ${tp2Price.toFixed(4)}`);
+                    this.logger.log(`[BREAK AGAIN] ${triggeredLevel}: Last TP level=${lastTpLevel}, moving SL from ${currentStopLoss.toFixed(4)} to ${tp2Price.toFixed(4)}`);
                 }
             }
             else if (lastTpLevel >= 2 && tp2Price && tp1Price) {
-                if (strategy.moveSLToBreakeven && trade.currentStopLoss < entryPrice) {
+                if (strategy.moveSLToBreakeven && currentStopLoss < entryPrice) {
                     newStopLoss = entryPrice;
                     triggeredLevel = 'TP2 filled -> SL to Breakeven';
-                    this.logger.log(`[BREAK EVEN] ${triggeredLevel}: Last TP level=${lastTpLevel}, moving SL from ${trade.currentStopLoss.toFixed(4)} to ${entryPrice.toFixed(4)}`);
-                } else if (strategy.breakAgain && trade.currentStopLoss < tp1Price) {
+                    this.logger.log(`[BREAK EVEN] ${triggeredLevel}: Last TP level=${lastTpLevel}, moving SL from ${currentStopLoss.toFixed(4)} to ${entryPrice.toFixed(4)}`);
+                } else if (strategy.breakAgain && currentStopLoss < tp1Price) {
                     newStopLoss = tp1Price;
                     triggeredLevel = 'TP2 filled -> SL to TP1';
-                    this.logger.log(`[BREAK AGAIN] ${triggeredLevel}: Last TP level=${lastTpLevel}, moving SL from ${trade.currentStopLoss.toFixed(4)} to ${tp1Price.toFixed(4)}`);
+                    this.logger.log(`[BREAK AGAIN] ${triggeredLevel}: Last TP level=${lastTpLevel}, moving SL from ${currentStopLoss.toFixed(4)} to ${tp1Price.toFixed(4)}`);
                 }
             }
             else if (lastTpLevel >= 1 && tp1Price) {
-                if (strategy.moveSLToBreakeven && trade.currentStopLoss < entryPrice) {
+                if (strategy.moveSLToBreakeven && currentStopLoss < entryPrice) {
                     newStopLoss = entryPrice;
                     triggeredLevel = 'TP1 filled -> SL to Breakeven';
-                    this.logger.log(`[BREAK EVEN] ${triggeredLevel}: Last TP level=${lastTpLevel}, moving SL from ${trade.currentStopLoss.toFixed(4)} to ${entryPrice.toFixed(4)}`);
-                } else if (strategy.breakAgain && trade.currentStopLoss < entryPrice) {
+                    this.logger.log(`[BREAK EVEN] ${triggeredLevel}: Last TP level=${lastTpLevel}, moving SL from ${currentStopLoss.toFixed(4)} to ${entryPrice.toFixed(4)}`);
+                } else if (strategy.breakAgain && currentStopLoss < entryPrice) {
                     newStopLoss = entryPrice;
                     triggeredLevel = 'TP1 filled -> SL to Entry';
-                    this.logger.log(`[BREAK AGAIN] ${triggeredLevel}: Last TP level=${lastTpLevel}, moving SL from ${trade.currentStopLoss.toFixed(4)} to ${entryPrice.toFixed(4)}`);
+                    this.logger.log(`[BREAK AGAIN] ${triggeredLevel}: Last TP level=${lastTpLevel}, moving SL from ${currentStopLoss.toFixed(4)} to ${entryPrice.toFixed(4)}`);
                 }
             }
         } else {
             if (lastTpLevel >= 3 && tp3Price && tp2Price && strategy.breakAgain) {
-                if (trade.currentStopLoss > tp2Price) {
+                if (currentStopLoss > tp2Price) {
                     newStopLoss = tp2Price;
                     triggeredLevel = 'TP3 filled -> SL to TP2';
-                    this.logger.log(`[BREAK AGAIN] ${triggeredLevel}: Last TP level=${lastTpLevel}, moving SL from ${trade.currentStopLoss.toFixed(4)} to ${tp2Price.toFixed(4)}`);
+                    this.logger.log(`[BREAK AGAIN] ${triggeredLevel}: Last TP level=${lastTpLevel}, moving SL from ${currentStopLoss.toFixed(4)} to ${tp2Price.toFixed(4)}`);
                 }
             }
             else if (lastTpLevel >= 2 && tp2Price && tp1Price) {
-                if (strategy.moveSLToBreakeven && trade.currentStopLoss > entryPrice) {
+                if (strategy.moveSLToBreakeven && currentStopLoss > entryPrice) {
                     newStopLoss = entryPrice;
                     triggeredLevel = 'TP2 filled -> SL to Breakeven';
-                    this.logger.log(`[BREAK EVEN] ${triggeredLevel}: Last TP level=${lastTpLevel}, moving SL from ${trade.currentStopLoss.toFixed(4)} to ${entryPrice.toFixed(4)}`);
-                } else if (strategy.breakAgain && trade.currentStopLoss > tp1Price) {
+                    this.logger.log(`[BREAK EVEN] ${triggeredLevel}: Last TP level=${lastTpLevel}, moving SL from ${currentStopLoss.toFixed(4)} to ${entryPrice.toFixed(4)}`);
+                } else if (strategy.breakAgain && currentStopLoss > tp1Price) {
                     newStopLoss = tp1Price;
                     triggeredLevel = 'TP2 filled -> SL to TP1';
-                    this.logger.log(`[BREAK AGAIN] ${triggeredLevel}: Last TP level=${lastTpLevel}, moving SL from ${trade.currentStopLoss.toFixed(4)} to ${tp1Price.toFixed(4)}`);
+                    this.logger.log(`[BREAK AGAIN] ${triggeredLevel}: Last TP level=${lastTpLevel}, moving SL from ${currentStopLoss.toFixed(4)} to ${tp1Price.toFixed(4)}`);
                 }
             }
             else if (lastTpLevel >= 1 && tp1Price) {
-                if (strategy.moveSLToBreakeven && trade.currentStopLoss > entryPrice) {
+                if (strategy.moveSLToBreakeven && currentStopLoss > entryPrice) {
                     newStopLoss = entryPrice;
                     triggeredLevel = 'TP1 filled -> SL to Breakeven';
-                    this.logger.log(`[BREAK EVEN] ${triggeredLevel}: Last TP level=${lastTpLevel}, moving SL from ${trade.currentStopLoss.toFixed(4)} to ${entryPrice.toFixed(4)}`);
-                } else if (strategy.breakAgain && trade.currentStopLoss > entryPrice) {
+                    this.logger.log(`[BREAK EVEN] ${triggeredLevel}: Last TP level=${lastTpLevel}, moving SL from ${currentStopLoss.toFixed(4)} to ${entryPrice.toFixed(4)}`);
+                } else if (strategy.breakAgain && currentStopLoss > entryPrice) {
                     newStopLoss = entryPrice;
                     triggeredLevel = 'TP1 filled -> SL to Entry';
-                    this.logger.log(`[BREAK AGAIN] ${triggeredLevel}: Last TP level=${lastTpLevel}, moving SL from ${trade.currentStopLoss.toFixed(4)} to ${entryPrice.toFixed(4)}`);
+                    this.logger.log(`[BREAK AGAIN] ${triggeredLevel}: Last TP level=${lastTpLevel}, moving SL from ${currentStopLoss.toFixed(4)} to ${entryPrice.toFixed(4)}`);
                 }
             }
         }
 
         if (newStopLoss) {
+            const currentSlFormatted = currentStopLoss ? currentStopLoss.toFixed(4) : 'N/A';
             this.logger.log(
               `[BREAK] ${triggeredLevel} | ` +
               `Trade ID: ${trade.id.substring(0, 8)} | Symbol: ${trade.symbol} | ` +
               `Qty: ${safeParseFloat(trade.quantity as any).toFixed(2)} | ` +
-              `Old SL: ${trade.currentStopLoss?.toFixed(4) || 'N/A'} → New SL: ${newStopLoss.toFixed(4)} | ` +
+              `Old SL: ${currentSlFormatted} → New SL: ${newStopLoss.toFixed(4)} | ` +
               `Note: Other trades in same position keep their own independent SL`
             );
 
