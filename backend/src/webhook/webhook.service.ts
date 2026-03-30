@@ -9,6 +9,7 @@ import { Trade } from '../strategies/trade.entity';
 import { Exchange, MarginMode, Strategy, TradingMode } from '../strategies/strategy.entity';
 import { ExecutionType } from '../trades/trade-execution.entity';
 import { EncryptionUtil } from '../utils/encryption.util';
+import { RateLimiterUtil } from '../utils/rate-limiter.util';
 import axios from 'axios';
 import * as crypto from 'crypto';
 import Decimal from 'decimal.js';
@@ -78,7 +79,8 @@ export class WebhookService {
 
   private readonly activeSignals = new Set<string>();
   private readonly activeSignalsTimestamps = new Map<string, number>();
-  private readonly SIGNAL_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+  private readonly SIGNAL_TIMEOUT_MS = 5 * 60 * 1000;
+  private readonly rateLimiter = RateLimiterUtil.getInstance(); // 5 minutes
 
   constructor(
     private readonly exchangeService: ExchangeService,
@@ -104,23 +106,18 @@ export class WebhookService {
     isTestnet: boolean,
     exchange: Exchange = Exchange.BINANCE
   ): Promise<{ qtyStep: string; priceTick: string; minQty: string }> {
-    const cacheKey = `${exchange}:${symbol}`;
-    const cached = this.symbolRules.get(cacheKey);
+    const cacheKey = `rules:${exchange}:${symbol}`;
 
+    const cached = this.rateLimiter.getCached<{ qtyStep: string; priceTick: string; minQty: string }>(cacheKey);
     if (cached) {
-        const age = Date.now() - cached.timestamp;
-        if (age < this.SYMBOL_RULES_TTL_MS) {
-            return { qtyStep: cached.qtyStep, priceTick: cached.priceTick, minQty: cached.minQty };
-        }
-        this.logger.debug(`[RULES] Cache expired for ${cacheKey}, refetching...`);
-        this.symbolRules.delete(cacheKey);
+      return cached;
     }
 
-    // Use Bybit API for Bybit symbols
     if (exchange === Exchange.BYBIT) {
         try {
+            await this.rateLimiter.throttle(`symbolRules:${symbol}`, 'bybit');
             const rules = await this.bybitClient.getSymbolRules(isTestnet, symbol);
-            this.symbolRules.set(cacheKey, { ...rules, timestamp: Date.now() });
+            this.rateLimiter.setCached(cacheKey, rules, 300000);
             this.logger.log(`[BYBIT] Fetched rules for ${symbol}: Step=${rules.qtyStep}, Tick=${rules.priceTick}`);
             return rules;
         } catch (error) {
@@ -129,8 +126,8 @@ export class WebhookService {
         }
     }
 
-    // Default: Binance
     try {
+        await this.rateLimiter.throttle(`exchangeInfo`, 'binance');
         const baseURL = isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
         const response = await axios.get(`${baseURL}/fapi/v1/exchangeInfo`);
         const symbolInfo = response.data.symbols.find((s: any) => s.symbol === symbol);
@@ -149,7 +146,7 @@ export class WebhookService {
             priceTick: priceFilter ? priceFilter.tickSize : '0.01'
         };
 
-        this.symbolRules.set(cacheKey, { ...rules, timestamp: Date.now() });
+        this.rateLimiter.setCached(cacheKey, rules, 300000);
         this.logger.log(`[BINANCE] Fetched rules for ${symbol}: Step=${rules.qtyStep}, Tick=${rules.priceTick}`);
         return rules;
     } catch (error) {

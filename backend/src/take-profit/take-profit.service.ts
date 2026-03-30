@@ -38,7 +38,7 @@ export class TakeProfitService {
     return `${quantity.toFixed(4)} (~${usdt.toFixed(2)} USDT)`;
   }
 
-  @Cron(CronExpression.EVERY_5_SECONDS)
+  @Cron(CronExpression.EVERY_10_SECONDS)
   async monitorTakeProfit() {
     const openTrades = await this.tradesRepository.find({ where: { status: 'OPEN' } });
 
