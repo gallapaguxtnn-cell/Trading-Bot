@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { ThrottlerModule } from '@nestjs/throttler';
+import { EventEmitterModule } from '@nestjs/event-emitter';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { WebhookModule } from './webhook/webhook.module';
@@ -12,10 +13,12 @@ import { PositionSyncModule } from './position-sync/position-sync.module';
 import { StopLossModule } from './stop-loss/stop-loss.module';
 import { TakeProfitModule } from './take-profit/take-profit.module';
 import { WebSocketModule } from './websocket/websocket.module';
+import { BinanceWebSocketModule } from './binance-ws/binance-ws.module';
 
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
+    EventEmitterModule.forRoot(),
     ThrottlerModule.forRoot([{
       ttl: 60000,
       limit: 20,
@@ -50,6 +53,7 @@ import { WebSocketModule } from './websocket/websocket.module';
       },
       inject: [ConfigService],
     }),
+    BinanceWebSocketModule,
     WebhookModule,
     ExchangeModule,
     StrategiesModule,

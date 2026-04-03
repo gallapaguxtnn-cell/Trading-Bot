@@ -7,6 +7,7 @@ import { TradeExecution } from '../trades/trade-execution.entity';
 import { StrategiesModule } from '../strategies/strategies.module';
 import { ExchangeModule } from '../exchange/exchange.module';
 import { TradesModule } from '../trades/trades.module';
+import { BinanceWebSocketModule } from '../binance-ws/binance-ws.module';
 
 @Module({
   imports: [
@@ -14,6 +15,7 @@ import { TradesModule } from '../trades/trades.module';
     ScheduleModule.forRoot(),
     StrategiesModule,
     ExchangeModule,
+    BinanceWebSocketModule,
     forwardRef(() => TradesModule)
   ],
   providers: [StopLossService],

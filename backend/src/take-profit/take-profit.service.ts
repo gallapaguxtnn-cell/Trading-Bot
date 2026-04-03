@@ -1,5 +1,6 @@
-import { Injectable, Logger, Inject, forwardRef } from '@nestjs/common';
+import { Injectable, Logger, Inject, forwardRef, OnModuleInit } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
+import { OnEvent } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Trade, CloseReason } from '../strategies/trade.entity';
@@ -11,15 +12,18 @@ import { BybitClientService } from '../exchange/bybit-client.service';
 import { Exchange } from '../strategies/strategy.entity';
 import { EncryptionUtil } from '../utils/encryption.util';
 import { PositionSyncService } from '../position-sync/position-sync.service';
+import { BinanceWebSocketService } from '../binance-ws/binance-ws.service';
+import { OrderUpdateEvent } from '../binance-ws/dto/binance-ws-events.dto';
 import axios from 'axios';
 import * as crypto from 'crypto';
 
 @Injectable()
-export class TakeProfitService {
+export class TakeProfitService implements OnModuleInit {
   private readonly logger = new Logger(TakeProfitService.name);
   private readonly BINANCE_TESTNET_URL = 'https://testnet.binancefuture.com';
   private readonly BINANCE_MAINNET_URL = 'https://fapi.binance.com';
   private readonly processingTrades = new Set<string>();
+  private readonly fallbackEnabled: boolean;
 
   constructor(
     @InjectRepository(Trade)
@@ -29,23 +33,61 @@ export class TakeProfitService {
     private strategiesService: StrategiesService,
     private exchangeService: ExchangeService,
     private bybitClient: BybitClientService,
+    private binanceWs: BinanceWebSocketService,
     @Inject(forwardRef(() => PositionSyncService))
     private positionSyncService: PositionSyncService,
-  ) {}
+  ) {
+    this.fallbackEnabled = process.env.BINANCE_WS_FALLBACK_ENABLED !== 'false';
+  }
+
+  onModuleInit() {
+    if (this.binanceWs.isEnabled()) {
+      this.logger.log('[WS] Take Profit WebSocket listeners registered');
+    }
+  }
 
   private formatQuantityWithUsdt(quantity: number, price: number): string {
     const usdt = quantity * price;
     return `${quantity.toFixed(4)} (~${usdt.toFixed(2)} USDT)`;
   }
 
-  @Cron(CronExpression.EVERY_10_SECONDS)
+  @OnEvent('binance.order.update')
+  async handleOrderUpdate(event: OrderUpdateEvent) {
+    if (event.orderType !== 'TAKE_PROFIT_MARKET' && event.orderType !== 'LIMIT') {
+      return;
+    }
+
+    if (event.status !== 'FILLED') {
+      return;
+    }
+
+    const trade = await this.tradesRepository.findOne({
+      where: { status: 'OPEN' }
+    });
+
+    if (!trade || !trade.takeProfitOrderId) return;
+
+    const tpOrderIds = trade.takeProfitOrderId.split('|');
+    const matchingEntry = tpOrderIds.find(entry => entry.includes(event.orderId));
+
+    if (!matchingEntry) return;
+
+    this.logger.log(`[WS] Take Profit filled: ${event.symbol} - ${event.orderId}`);
+
+    await this.checkTakeProfit(trade);
+  }
+
+  @Cron(CronExpression.EVERY_30_SECONDS)
   async monitorTakeProfit() {
+    if (!this.fallbackEnabled && this.binanceWs.isEnabled()) {
+      return;
+    }
+
     const openTrades = await this.tradesRepository.find({ where: { status: 'OPEN' } });
 
     if (openTrades.length === 0) return;
 
     for (const trade of openTrades) {
-      // Skip if already being processed
       if (this.processingTrades.has(trade.id)) {
         continue;
       }

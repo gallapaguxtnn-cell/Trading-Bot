@@ -1,5 +1,6 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
+import { OnEvent } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Trade } from '../strategies/trade.entity';
@@ -9,6 +10,8 @@ import { ExchangeService } from '../exchange/exchange.service';
 import { BybitClientService, BybitPosition } from '../exchange/bybit-client.service';
 import { TradesService } from '../trades/trades.service';
 import { EncryptionUtil } from '../utils/encryption.util';
+import { BinanceWebSocketService } from '../binance-ws/binance-ws.service';
+import { AccountUpdateEvent } from '../binance-ws/dto/binance-ws-events.dto';
 import axios from 'axios';
 import * as crypto from 'crypto';
 
@@ -49,12 +52,13 @@ function safeParseFloat(value: any, defaultValue: number = 0): number {
 }
 
 @Injectable()
-export class PositionSyncService {
+export class PositionSyncService implements OnModuleInit {
   private readonly logger = new Logger(PositionSyncService.name);
   private readonly BINANCE_TESTNET_URL = 'https://testnet.binancefuture.com';
   private readonly BINANCE_MAINNET_URL = 'https://fapi.binance.com';
   private lastSyncTime: Date | null = null;
   private syncInProgress = false;
+  private readonly fallbackEnabled: boolean;
 
   /**
    * Format price with appropriate decimal places based on the price magnitude
@@ -81,13 +85,27 @@ export class PositionSyncService {
     private readonly exchangeService: ExchangeService,
     private readonly bybitClient: BybitClientService,
     private readonly tradesService: TradesService,
-  ) {}
+    private readonly binanceWs: BinanceWebSocketService,
+  ) {
+    this.fallbackEnabled = process.env.BINANCE_WS_FALLBACK_ENABLED !== 'false';
+  }
+
+  onModuleInit() {
+    if (this.binanceWs.isEnabled()) {
+      this.logger.log('[WS] Position Sync WebSocket listeners registered');
+    }
+  }
+
+  @OnEvent('binance.account.update')
+  async handleAccountUpdate(event: AccountUpdateEvent) {
+    this.logger.log(`[WS] Account update received with ${event.positions.length} positions`);
+  }
 
   getLastSyncTime(): Date | null {
     return this.lastSyncTime;
   }
 
-  @Cron(CronExpression.EVERY_30_SECONDS)
+  @Cron('*/5 * * * *')
   async syncPositions(): Promise<void> {
     if (this.syncInProgress) {
       return;
@@ -787,60 +805,56 @@ export class PositionSyncService {
         const tp3Price = tp3Percent ? getPriceAtPercent(tp3Percent) : null;
 
         if (side === 'BUY') {
-            if (lastTpLevel >= 3 && tp3Price && tp2Price && strategy.breakAgain && currentStopLoss < tp2Price) {
+            if (strategy.moveSLToBreakeven && lastTpLevel >= 2 && currentStopLoss < entryPrice) {
+                newStopLoss = entryPrice;
+                triggeredLevel = 'TP2+ filled -> SL to Breakeven';
+                this.logger.log(`[BREAK EVEN] ${triggeredLevel}: Last TP level=${lastTpLevel}, moving SL from ${currentStopLoss.toFixed(4)} to ${entryPrice.toFixed(4)}`);
+            }
+            else if (strategy.moveSLToBreakeven && lastTpLevel >= 1 && currentStopLoss < entryPrice) {
+                newStopLoss = entryPrice;
+                triggeredLevel = 'TP1 filled -> SL to Breakeven';
+                this.logger.log(`[BREAK EVEN] ${triggeredLevel}: Last TP level=${lastTpLevel}, moving SL from ${currentStopLoss.toFixed(4)} to ${entryPrice.toFixed(4)}`);
+            }
+            else if (strategy.breakAgain && lastTpLevel >= 3 && tp2Price && currentStopLoss < tp2Price) {
                 newStopLoss = tp2Price;
                 triggeredLevel = 'TP3 filled -> SL to TP2';
                 this.logger.log(`[BREAK AGAIN] ${triggeredLevel}: Last TP level=${lastTpLevel}, moving SL from ${currentStopLoss.toFixed(4)} to ${tp2Price.toFixed(4)}`);
             }
-            else if (lastTpLevel === 2 && tp2Price && tp1Price) {
-                if (strategy.moveSLToBreakeven && currentStopLoss < entryPrice) {
-                    newStopLoss = entryPrice;
-                    triggeredLevel = 'TP2 filled -> SL to Breakeven';
-                    this.logger.log(`[BREAK EVEN] ${triggeredLevel}: Last TP level=${lastTpLevel}, moving SL from ${currentStopLoss.toFixed(4)} to ${entryPrice.toFixed(4)}`);
-                } else if (strategy.breakAgain && !strategy.moveSLToBreakeven && currentStopLoss < tp1Price) {
-                    newStopLoss = tp1Price;
-                    triggeredLevel = 'TP2 filled -> SL to TP1';
-                    this.logger.log(`[BREAK AGAIN] ${triggeredLevel}: Last TP level=${lastTpLevel}, moving SL from ${currentStopLoss.toFixed(4)} to ${tp1Price.toFixed(4)}`);
-                }
+            else if (strategy.breakAgain && lastTpLevel >= 2 && tp1Price && currentStopLoss < tp1Price) {
+                newStopLoss = tp1Price;
+                triggeredLevel = 'TP2 filled -> SL to TP1';
+                this.logger.log(`[BREAK AGAIN] ${triggeredLevel}: Last TP level=${lastTpLevel}, moving SL from ${currentStopLoss.toFixed(4)} to ${tp1Price.toFixed(4)}`);
             }
-            else if (lastTpLevel === 1 && tp1Price) {
-                if (strategy.moveSLToBreakeven && currentStopLoss < entryPrice) {
-                    newStopLoss = entryPrice;
-                    triggeredLevel = 'TP1 filled -> SL to Breakeven';
-                    this.logger.log(`[BREAK EVEN] ${triggeredLevel}: Last TP level=${lastTpLevel}, moving SL from ${currentStopLoss.toFixed(4)} to ${entryPrice.toFixed(4)}`);
-                } else if (strategy.breakAgain && !strategy.moveSLToBreakeven && currentStopLoss < entryPrice) {
-                    newStopLoss = entryPrice;
-                    triggeredLevel = 'TP1 filled -> SL to Entry';
-                    this.logger.log(`[BREAK AGAIN] ${triggeredLevel}: Last TP level=${lastTpLevel}, moving SL from ${currentStopLoss.toFixed(4)} to ${entryPrice.toFixed(4)}`);
-                }
+            else if (strategy.breakAgain && lastTpLevel >= 1 && currentStopLoss < entryPrice) {
+                newStopLoss = entryPrice;
+                triggeredLevel = 'TP1 filled -> SL to Entry';
+                this.logger.log(`[BREAK AGAIN] ${triggeredLevel}: Last TP level=${lastTpLevel}, moving SL from ${currentStopLoss.toFixed(4)} to ${entryPrice.toFixed(4)}`);
             }
         } else {
-            if (lastTpLevel >= 3 && tp3Price && tp2Price && strategy.breakAgain && currentStopLoss > tp2Price) {
+            if (strategy.moveSLToBreakeven && lastTpLevel >= 2 && currentStopLoss > entryPrice) {
+                newStopLoss = entryPrice;
+                triggeredLevel = 'TP2+ filled -> SL to Breakeven';
+                this.logger.log(`[BREAK EVEN] ${triggeredLevel}: Last TP level=${lastTpLevel}, moving SL from ${currentStopLoss.toFixed(4)} to ${entryPrice.toFixed(4)}`);
+            }
+            else if (strategy.moveSLToBreakeven && lastTpLevel >= 1 && currentStopLoss > entryPrice) {
+                newStopLoss = entryPrice;
+                triggeredLevel = 'TP1 filled -> SL to Breakeven';
+                this.logger.log(`[BREAK EVEN] ${triggeredLevel}: Last TP level=${lastTpLevel}, moving SL from ${currentStopLoss.toFixed(4)} to ${entryPrice.toFixed(4)}`);
+            }
+            else if (strategy.breakAgain && lastTpLevel >= 3 && tp2Price && currentStopLoss > tp2Price) {
                 newStopLoss = tp2Price;
                 triggeredLevel = 'TP3 filled -> SL to TP2';
                 this.logger.log(`[BREAK AGAIN] ${triggeredLevel}: Last TP level=${lastTpLevel}, moving SL from ${currentStopLoss.toFixed(4)} to ${tp2Price.toFixed(4)}`);
             }
-            else if (lastTpLevel === 2 && tp2Price && tp1Price) {
-                if (strategy.moveSLToBreakeven && currentStopLoss > entryPrice) {
-                    newStopLoss = entryPrice;
-                    triggeredLevel = 'TP2 filled -> SL to Breakeven';
-                    this.logger.log(`[BREAK EVEN] ${triggeredLevel}: Last TP level=${lastTpLevel}, moving SL from ${currentStopLoss.toFixed(4)} to ${entryPrice.toFixed(4)}`);
-                } else if (strategy.breakAgain && !strategy.moveSLToBreakeven && currentStopLoss > tp1Price) {
-                    newStopLoss = tp1Price;
-                    triggeredLevel = 'TP2 filled -> SL to TP1';
-                    this.logger.log(`[BREAK AGAIN] ${triggeredLevel}: Last TP level=${lastTpLevel}, moving SL from ${currentStopLoss.toFixed(4)} to ${tp1Price.toFixed(4)}`);
-                }
+            else if (strategy.breakAgain && lastTpLevel >= 2 && tp1Price && currentStopLoss > tp1Price) {
+                newStopLoss = tp1Price;
+                triggeredLevel = 'TP2 filled -> SL to TP1';
+                this.logger.log(`[BREAK AGAIN] ${triggeredLevel}: Last TP level=${lastTpLevel}, moving SL from ${currentStopLoss.toFixed(4)} to ${tp1Price.toFixed(4)}`);
             }
-            else if (lastTpLevel === 1 && tp1Price) {
-                if (strategy.moveSLToBreakeven && currentStopLoss > entryPrice) {
-                    newStopLoss = entryPrice;
-                    triggeredLevel = 'TP1 filled -> SL to Breakeven';
-                    this.logger.log(`[BREAK EVEN] ${triggeredLevel}: Last TP level=${lastTpLevel}, moving SL from ${currentStopLoss.toFixed(4)} to ${entryPrice.toFixed(4)}`);
-                } else if (strategy.breakAgain && !strategy.moveSLToBreakeven && currentStopLoss > entryPrice) {
-                    newStopLoss = entryPrice;
-                    triggeredLevel = 'TP1 filled -> SL to Entry';
-                    this.logger.log(`[BREAK AGAIN] ${triggeredLevel}: Last TP level=${lastTpLevel}, moving SL from ${currentStopLoss.toFixed(4)} to ${entryPrice.toFixed(4)}`);
-                }
+            else if (strategy.breakAgain && lastTpLevel >= 1 && currentStopLoss > entryPrice) {
+                newStopLoss = entryPrice;
+                triggeredLevel = 'TP1 filled -> SL to Entry';
+                this.logger.log(`[BREAK AGAIN] ${triggeredLevel}: Last TP level=${lastTpLevel}, moving SL from ${currentStopLoss.toFixed(4)} to ${entryPrice.toFixed(4)}`);
             }
         }
 

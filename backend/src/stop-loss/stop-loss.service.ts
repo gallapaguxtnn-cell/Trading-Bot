@@ -1,5 +1,6 @@
-import { Injectable, Logger, Inject, forwardRef } from '@nestjs/common';
+import { Injectable, Logger, Inject, forwardRef, OnModuleInit } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
+import { OnEvent } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Trade, CloseReason } from '../strategies/trade.entity';
@@ -10,15 +11,18 @@ import { ExchangeService } from '../exchange/exchange.service';
 import { BybitClientService } from '../exchange/bybit-client.service';
 import { Exchange } from '../strategies/strategy.entity';
 import { EncryptionUtil } from '../utils/encryption.util';
+import { BinanceWebSocketService } from '../binance-ws/binance-ws.service';
+import { OrderUpdateEvent } from '../binance-ws/dto/binance-ws-events.dto';
 import axios from 'axios';
 import * as crypto from 'crypto';
 
 @Injectable()
-export class StopLossService {
+export class StopLossService implements OnModuleInit {
   private readonly logger = new Logger(StopLossService.name);
   private readonly BINANCE_TESTNET_URL = 'https://testnet.binancefuture.com';
   private readonly BINANCE_MAINNET_URL = 'https://fapi.binance.com';
   private readonly processingTrades = new Set<string>();
+  private readonly fallbackEnabled: boolean;
 
   constructor(
     @InjectRepository(Trade)
@@ -28,21 +32,61 @@ export class StopLossService {
     private strategiesService: StrategiesService,
     private exchangeService: ExchangeService,
     private bybitClient: BybitClientService,
-  ) {}
+    private binanceWs: BinanceWebSocketService,
+  ) {
+    this.fallbackEnabled = process.env.BINANCE_WS_FALLBACK_ENABLED !== 'false';
+  }
+
+  onModuleInit() {
+    if (this.binanceWs.isEnabled()) {
+      this.logger.log('[WS] Stop Loss WebSocket listeners registered');
+    }
+  }
 
   private formatQuantityWithUsdt(quantity: number, price: number): string {
     const usdt = quantity * price;
     return `${quantity.toFixed(4)} (~${usdt.toFixed(2)} USDT)`;
   }
 
-  @Cron('*/1 * * * * *')
+  @OnEvent('binance.order.update')
+  async handleOrderUpdate(event: OrderUpdateEvent) {
+    if (event.orderType !== 'STOP_MARKET' && event.orderType !== 'STOP') {
+      return;
+    }
+
+    if (event.status !== 'FILLED') {
+      return;
+    }
+
+    const trade = await this.tradesRepository.findOne({
+      where: { stopLossOrderId: event.orderId }
+    });
+
+    if (!trade) return;
+
+    this.logger.log(`[WS] Stop Loss filled: ${event.symbol} - ${event.orderId}`);
+
+    const strategy = await this.strategiesService.findOne(trade.strategyId);
+    if (!strategy) return;
+
+    const exchange = strategy.exchange || Exchange.BINANCE;
+    const apiKey = (await EncryptionUtil.decrypt(strategy.apiKey)).trim();
+    const apiSecret = (await EncryptionUtil.decrypt(strategy.apiSecret)).trim();
+
+    await this.markTradeAsClosed(trade, 'STOP_LOSS', exchange, apiKey, apiSecret, strategy.isTestnet);
+  }
+
+  @Cron('*/10 * * * * *')
   async monitorStopLoss() {
+    if (!this.fallbackEnabled && this.binanceWs.isEnabled()) {
+      return;
+    }
+
     const openTrades = await this.tradesRepository.find({ where: { status: 'OPEN' } });
 
     if (openTrades.length === 0) return;
 
     for (const trade of openTrades) {
-      // Skip if already being processed
       if (this.processingTrades.has(trade.id)) {
         continue;
       }
@@ -425,6 +469,13 @@ export class StopLossService {
 
       if (exchange === Exchange.BYBIT) {
         return await this.bybitClient.getCurrentPrice(strategy.isTestnet, trade.symbol);
+      }
+
+      if (exchange === Exchange.BINANCE && this.binanceWs.isEnabled()) {
+        const cachedPrice = this.binanceWs.getCachedPrice(trade.symbol);
+        if (cachedPrice) {
+          return cachedPrice;
+        }
       }
 
       if (strategy.isTestnet && exchange === Exchange.BINANCE) {

@@ -8,6 +8,7 @@ import { StrategiesModule } from '../strategies/strategies.module';
 import { ExchangeModule } from '../exchange/exchange.module';
 import { TradesModule } from '../trades/trades.module';
 import { PositionSyncModule } from '../position-sync/position-sync.module';
+import { BinanceWebSocketModule } from '../binance-ws/binance-ws.module';
 
 @Module({
   imports: [
@@ -15,6 +16,7 @@ import { PositionSyncModule } from '../position-sync/position-sync.module';
     ScheduleModule.forRoot(),
     StrategiesModule,
     ExchangeModule,
+    BinanceWebSocketModule,
     forwardRef(() => TradesModule),
     forwardRef(() => PositionSyncModule)
   ],

@@ -10,6 +10,7 @@ import { Exchange, MarginMode, Strategy, TradingMode } from '../strategies/strat
 import { ExecutionType } from '../trades/trade-execution.entity';
 import { EncryptionUtil } from '../utils/encryption.util';
 import { RateLimiterUtil } from '../utils/rate-limiter.util';
+import { BinanceWebSocketService } from '../binance-ws/binance-ws.service';
 import axios from 'axios';
 import * as crypto from 'crypto';
 import Decimal from 'decimal.js';
@@ -86,7 +87,8 @@ export class WebhookService {
     private readonly exchangeService: ExchangeService,
     private readonly bybitClient: BybitClientService,
     private readonly strategiesService: StrategiesService,
-    private readonly tradesService: TradesService
+    private readonly tradesService: TradesService,
+    private readonly binanceWs: BinanceWebSocketService
   ) {}
 
   private normalizeSymbol(symbol: string, exchange: Exchange): string {
@@ -2280,6 +2282,12 @@ export class WebhookService {
       }
 
       this.logger.log(`[DB] Trade created successfully: ID=${savedTrade.id}, Status=${savedTrade.status}`);
+
+      if (exchange === Exchange.BINANCE && this.binanceWs.isEnabled()) {
+        await this.binanceWs.subscribeMarketData(normalizedSymbol, strategy.isTestnet).catch(err => {
+          this.logger.warn(`[WS] Failed to subscribe to market data: ${err.message}`);
+        });
+      }
 
       let tradeDetails: any;
       let stopLossOrderId: string | null = null;
