@@ -10,6 +10,7 @@ import { Exchange, MarginMode, Strategy, TradingMode } from '../strategies/strat
 import { ExecutionType } from '../trades/trade-execution.entity';
 import { EncryptionUtil } from '../utils/encryption.util';
 import { RateLimiterUtil } from '../utils/rate-limiter.util';
+import { ExchangeCacheUtil } from '../utils/exchange-cache.util';
 import { BinanceWebSocketService } from '../binance-ws/binance-ws.service';
 import axios from 'axios';
 import * as crypto from 'crypto';
