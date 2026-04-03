@@ -120,7 +120,7 @@ export class WebhookService {
         try {
             await this.rateLimiter.throttle(`symbolRules:${symbol}`, 'bybit');
             const rules = await this.bybitClient.getSymbolRules(isTestnet, symbol);
-            this.rateLimiter.setCached(cacheKey, rules, 300000);
+            this.rateLimiter.setCached(cacheKey, rules, 3600000);
             this.logger.log(`[BYBIT] Fetched rules for ${symbol}: Step=${rules.qtyStep}, Tick=${rules.priceTick}`);
             return rules;
         } catch (error) {
@@ -149,7 +149,7 @@ export class WebhookService {
             priceTick: priceFilter ? priceFilter.tickSize : '0.01'
         };
 
-        this.rateLimiter.setCached(cacheKey, rules, 300000);
+        this.rateLimiter.setCached(cacheKey, rules, 3600000);
         this.logger.log(`[BINANCE] Fetched rules for ${symbol}: Step=${rules.qtyStep}, Tick=${rules.priceTick}`);
         return rules;
     } catch (error) {
@@ -223,9 +223,17 @@ export class WebhookService {
       const decryptedSecret = (await EncryptionUtil.decrypt(strategy.apiSecret)).trim();
 
       const exchange = strategy.exchange || Exchange.BINANCE;
+      const cacheKey = `balance:${exchange}:${strategy.id}:${strategy.isTestnet}`;
+
+      const cached = this.rateLimiter.getCached<number>(cacheKey);
+      if (cached !== null) {
+        this.logger.debug(`[BALANCE] Using cached value: ${cached.toFixed(2)} USDT`);
+        return cached;
+      }
 
       if (exchange === Exchange.BYBIT) {
         const balance = await this.bybitClient.getWalletBalance(decryptedKey, decryptedSecret, strategy.isTestnet);
+        this.rateLimiter.setCached(cacheKey, balance, 10000);
         this.logger.log(`[BALANCE] Bybit ${strategy.isTestnet ? 'Testnet' : 'Mainnet'}: ${balance.toFixed(2)} USDT`);
         return balance;
       }
@@ -288,9 +296,11 @@ export class WebhookService {
           );
         }
 
+        this.rateLimiter.setCached(cacheKey, balance, 10000);
         return balance;
       } else {
         const balance = await this.bybitClient.getWalletBalance(decryptedKey, decryptedSecret, strategy.isTestnet);
+        this.rateLimiter.setCached(cacheKey, balance, 10000);
         this.logger.log(`[BALANCE] Bybit ${strategy.isTestnet ? 'Testnet' : 'Mainnet'}: ${balance.toFixed(2)} USDT`);
 
         if (balance === 0) {
@@ -393,6 +403,14 @@ export class WebhookService {
     apiSecret: string,
     isTestnet: boolean
   ): Promise<boolean> {
+    const cacheKey = `posmode:${apiKey.substring(0, 8)}:${isTestnet}`;
+
+    const cached = this.rateLimiter.getCached<boolean>(cacheKey);
+    if (cached !== null) {
+      this.logger.debug(`[POSITION MODE] Using cached value: ${cached ? 'Hedge' : 'One-Way'}`);
+      return cached;
+    }
+
     const baseURL = isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
     const timestamp = Date.now();
     const queryString = `timestamp=${timestamp}`;
@@ -403,10 +421,12 @@ export class WebhookService {
         `${baseURL}/fapi/v1/positionSide/dual?${queryString}&signature=${signature}`,
         { headers: { 'X-MBX-APIKEY': apiKey } }
       );
-      return response.data.dualSidePosition === true;
+      const mode = response.data.dualSidePosition === true;
+      this.rateLimiter.setCached(cacheKey, mode, 1800000);
+      return mode;
     } catch (error: any) {
       this.logger.warn(`[POSITION MODE] Failed to get current mode: ${error.message}`);
-      return false; // Assume one-way mode on error
+      return false;
     }
   }
 
@@ -493,48 +513,65 @@ export class WebhookService {
     }
     } // Close else block
 
-    try {
-      const marginTimestamp = Date.now();
-      const marginQueryString = `symbol=${symbol}&marginType=${marginMode}&timestamp=${marginTimestamp}`;
-      const marginSignature = crypto.createHmac('sha256', apiSecret).update(marginQueryString).digest('hex');
+    const marginCacheKey = `margin:${apiKey.substring(0, 8)}:${symbol}:${marginMode}:${isTestnet}`;
+    const marginCached = this.rateLimiter.getCached<boolean>(marginCacheKey);
 
-      await axios.post(
-        `${baseURL}/fapi/v1/marginType`,
-        `${marginQueryString}&signature=${marginSignature}`,
-        {
-          headers: {
-            'X-MBX-APIKEY': apiKey,
-            'Content-Type': 'application/x-www-form-urlencoded'
+    if (!marginCached) {
+      try {
+        const marginTimestamp = Date.now();
+        const marginQueryString = `symbol=${symbol}&marginType=${marginMode}&timestamp=${marginTimestamp}`;
+        const marginSignature = crypto.createHmac('sha256', apiSecret).update(marginQueryString).digest('hex');
+
+        await axios.post(
+          `${baseURL}/fapi/v1/marginType`,
+          `${marginQueryString}&signature=${marginSignature}`,
+          {
+            headers: {
+              'X-MBX-APIKEY': apiKey,
+              'Content-Type': 'application/x-www-form-urlencoded'
+            }
           }
+        );
+        this.rateLimiter.setCached(marginCacheKey, true, 1800000);
+        this.logger.log(`[BINANCE] Margin mode set to ${marginMode} for ${symbol}`);
+      } catch (error: any) {
+        if (error.response?.data?.code === -4046) {
+          this.rateLimiter.setCached(marginCacheKey, true, 1800000);
+          this.logger.debug(`[BINANCE] Margin mode already set to ${marginMode} for ${symbol}`);
+        } else {
+          this.logger.warn(`[BINANCE] Failed to set margin mode: ${error.response?.data?.msg || error.message}`);
         }
-      );
-      this.logger.log(`[BINANCE] Margin mode set to ${marginMode} for ${symbol}`);
-    } catch (error: any) {
-      if (error.response?.data?.code === -4046) {
-        this.logger.debug(`[BINANCE] Margin mode already set to ${marginMode} for ${symbol}`);
-      } else {
-        this.logger.warn(`[BINANCE] Failed to set margin mode: ${error.response?.data?.msg || error.message}`);
       }
+    } else {
+      this.logger.debug(`[BINANCE] Margin mode cached: ${marginMode} for ${symbol}`);
     }
 
-    try {
-      const leverageTimestamp = Date.now();
-      const leverageQueryString = `symbol=${symbol}&leverage=${leverage}&timestamp=${leverageTimestamp}`;
-      const leverageSignature = crypto.createHmac('sha256', apiSecret).update(leverageQueryString).digest('hex');
+    const leverageCacheKey = `leverage:${apiKey.substring(0, 8)}:${symbol}:${leverage}:${isTestnet}`;
+    const leverageCached = this.rateLimiter.getCached<boolean>(leverageCacheKey);
 
-      await axios.post(
-        `${baseURL}/fapi/v1/leverage`,
-        `${leverageQueryString}&signature=${leverageSignature}`,
-        {
-          headers: {
-            'X-MBX-APIKEY': apiKey,
-            'Content-Type': 'application/x-www-form-urlencoded'
+    if (!leverageCached) {
+      try {
+        const leverageTimestamp = Date.now();
+        const leverageQueryString = `symbol=${symbol}&leverage=${leverage}&timestamp=${leverageTimestamp}`;
+        const leverageSignature = crypto.createHmac('sha256', apiSecret).update(leverageQueryString).digest('hex');
+
+        await axios.post(
+          `${baseURL}/fapi/v1/leverage`,
+          `${leverageQueryString}&signature=${leverageSignature}`,
+          {
+            headers: {
+              'X-MBX-APIKEY': apiKey,
+              'Content-Type': 'application/x-www-form-urlencoded'
+            }
           }
-        }
-      );
-      this.logger.log(`[BINANCE] Leverage set to ${leverage}x for ${symbol}`);
-    } catch (error: any) {
-      this.logger.warn(`[BINANCE] Failed to set leverage: ${error.response?.data?.msg || error.message}`);
+        );
+        this.rateLimiter.setCached(leverageCacheKey, true, 1800000);
+        this.logger.log(`[BINANCE] Leverage set to ${leverage}x for ${symbol}`);
+      } catch (error: any) {
+        this.logger.warn(`[BINANCE] Failed to set leverage: ${error.response?.data?.msg || error.message}`);
+      }
+    } else {
+      this.logger.debug(`[BINANCE] Leverage cached: ${leverage}x for ${symbol}`);
     }
 
     // Verify that hedge mode was actually set correctly
