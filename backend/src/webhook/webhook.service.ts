@@ -439,6 +439,11 @@ export class WebhookService {
     isTestnet: boolean,
     hedgeMode: boolean = false
   ): Promise<void> {
+    if (process.env.BINANCE_SKIP_POSITION_CONFIG === 'true') {
+      this.logger.debug(`[CONFIG] Skipping position settings - assuming already configured`);
+      return;
+    }
+
     const baseURL = isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
 
     // First, check current position mode to avoid unnecessary API calls
