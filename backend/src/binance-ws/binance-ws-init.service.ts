@@ -35,19 +35,35 @@ export class BinanceWebSocketInitService implements OnModuleInit {
 
       for (const strategy of strategies) {
         try {
+          this.logger.debug(
+            `[WS-INIT] Checking strategy ${strategy.name} (ID: ${strategy.id})`
+          );
+          this.logger.debug(
+            `[WS-INIT]   - Has apiKey field: ${!!strategy.apiKey} (length: ${strategy.apiKey?.length || 0})`
+          );
+          this.logger.debug(
+            `[WS-INIT]   - Has apiSecret field: ${!!strategy.apiSecret} (length: ${strategy.apiSecret?.length || 0})`
+          );
+
           if (!strategy.apiKey || !strategy.apiSecret) {
             this.logger.warn(
-              `[WS-INIT] Strategy ${strategy.name} has no API credentials - skipping`
+              `[WS-INIT] Strategy ${strategy.name} has no API credentials in database - skipping`
             );
             continue;
           }
 
+          this.logger.debug(`[WS-INIT]   - Attempting to decrypt credentials...`);
+
           const apiKey = await EncryptionUtil.decrypt(strategy.apiKey);
           const apiSecret = await EncryptionUtil.decrypt(strategy.apiSecret);
 
+          this.logger.debug(
+            `[WS-INIT]   - Decryption result: apiKey=${!!apiKey}, apiSecret=${!!apiSecret}`
+          );
+
           if (!apiKey || !apiSecret) {
             this.logger.warn(
-              `[WS-INIT] Strategy ${strategy.name} has invalid API credentials - skipping`
+              `[WS-INIT] Strategy ${strategy.name} has invalid/corrupted API credentials - skipping`
             );
             continue;
           }
