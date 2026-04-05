@@ -11,6 +11,7 @@ import {
 import { ThrottlerGuard, Throttle } from '@nestjs/throttler';
 import { WebhookService } from './webhook.service';
 import { ConfigService } from '@nestjs/config';
+import axios from 'axios';
 
 interface WebhookPayload {
   secret: string;
@@ -40,6 +41,24 @@ export class WebhookController {
       status: 'ok',
       timestamp: new Date().toISOString()
     };
+  }
+
+  @Get('check-ip')
+  async checkIP() {
+    try {
+      const response = await axios.get('https://api.ipify.org?format=json');
+      return {
+        currentIP: response.data.ip,
+        message: 'This is the IP that Binance/Bybit sees when making requests',
+        timestamp: new Date().toISOString()
+      };
+    } catch (error) {
+      return {
+        error: 'Failed to check IP',
+        details: error.message,
+        timestamp: new Date().toISOString()
+      };
+    }
   }
 
   @Post()
