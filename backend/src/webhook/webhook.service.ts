@@ -92,6 +92,10 @@ export class WebhookService {
     private readonly binanceWs: BinanceWebSocketService
   ) {}
 
+  private sleep(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
   private normalizeSymbol(symbol: string, exchange: Exchange): string {
     if (exchange === Exchange.BINANCE) {
       return symbol.replace('/', '').replace('-', '');
@@ -131,6 +135,8 @@ export class WebhookService {
 
     try {
         await this.rateLimiter.throttle(`exchangeInfo`, 'binance');
+        await this.sleep(2000);
+
         const baseURL = isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
         const response = await axios.get(`${baseURL}/fapi/v1/exchangeInfo`);
         const symbolInfo = response.data.symbols.find((s: any) => s.symbol === symbol);
@@ -239,6 +245,8 @@ export class WebhookService {
       }
 
       if (exchange === Exchange.BINANCE) {
+        await this.sleep(2000);
+
         const baseURL = strategy.isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
         const timestamp = Date.now();
         const queryString = `timestamp=${timestamp}`;
