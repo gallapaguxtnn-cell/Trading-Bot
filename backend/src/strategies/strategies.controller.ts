@@ -13,7 +13,7 @@ export class StrategiesController {
 
   @Get('debug/credentials')
   async debugCredentials() {
-    const strategies = await this.strategiesService.findAll();
+    const strategies = await this.strategiesService.findAllWithCredentials();
     return strategies.map(s => ({
       id: s.id,
       name: s.name,

@@ -24,12 +24,12 @@ export class BinanceWebSocketInitService implements OnModuleInit {
     this.logger.log('[WS-INIT] Initializing WebSocket connections for active strategies');
 
     try {
-      const strategies = await this.strategiesRepository.find({
-        where: {
-          exchange: Exchange.BINANCE,
-          isActive: true,
-        },
-      });
+      const strategies = await this.strategiesRepository
+        .createQueryBuilder('strategy')
+        .where('strategy.exchange = :exchange', { exchange: Exchange.BINANCE })
+        .andWhere('strategy.isActive = :isActive', { isActive: true })
+        .addSelect(['strategy.apiKey', 'strategy.apiSecret'])
+        .getMany();
 
       this.logger.log(`[WS-INIT] Found ${strategies.length} active Binance strategies`);
 

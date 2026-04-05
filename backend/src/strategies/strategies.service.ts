@@ -23,6 +23,13 @@ export class StrategiesService {
     return this.strategiesRepository.find();
   }
 
+  findAllWithCredentials(): Promise<Strategy[]> {
+    return this.strategiesRepository
+      .createQueryBuilder('strategy')
+      .addSelect(['strategy.apiKey', 'strategy.apiSecret'])
+      .getMany();
+  }
+
   findOne(id: string): Promise<Strategy | null> {
     return this.strategiesRepository.findOne({
       where: { id },
