@@ -11,6 +11,21 @@ export class StrategiesController {
     return this.strategiesService.findAll();
   }
 
+  @Get('debug/credentials')
+  async debugCredentials() {
+    const strategies = await this.strategiesService.findAll();
+    return strategies.map(s => ({
+      id: s.id,
+      name: s.name,
+      exchange: s.exchange,
+      isActive: s.isActive,
+      hasApiKey: !!s.apiKey && s.apiKey.length > 0,
+      hasApiSecret: !!s.apiSecret && s.apiSecret.length > 0,
+      apiKeyLength: s.apiKey?.length || 0,
+      apiSecretLength: s.apiSecret?.length || 0,
+    }));
+  }
+
   @Get(':id')
   findOne(@Param('id') id: string) {
     return this.strategiesService.findOnePublic(id);
