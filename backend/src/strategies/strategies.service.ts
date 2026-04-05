@@ -139,6 +139,28 @@ export class StrategiesService {
     await this.strategiesRepository.delete(id);
   }
 
+  async updateCredentials(id: string, apiKey: string, apiSecret: string): Promise<{ success: boolean; message: string }> {
+    const strategy = await this.strategiesRepository.findOneBy({ id });
+    if (!strategy) {
+      return { success: false, message: 'Strategy not found' };
+    }
+
+    const encryptedKey = await EncryptionUtil.encrypt(apiKey);
+    const encryptedSecret = await EncryptionUtil.encrypt(apiSecret);
+
+    await this.strategiesRepository.update(id, {
+      apiKey: encryptedKey,
+      apiSecret: encryptedSecret,
+    });
+
+    this.logger.log(`[CREDENTIALS] Updated credentials for strategy ${strategy.name} (${id})`);
+
+    return {
+      success: true,
+      message: `Credentials updated for ${strategy.name}. Restart backend to activate WebSocket.`,
+    };
+  }
+
   async getOpenOrders(id: string): Promise<any> {
     const strategy = await this.findOne(id);
     if (!strategy) {

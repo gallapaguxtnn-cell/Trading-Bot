@@ -26,6 +26,14 @@ export class StrategiesController {
     }));
   }
 
+  @Post(':id/set-credentials')
+  async setCredentials(
+    @Param('id') id: string,
+    @Body() body: { apiKey: string; apiSecret: string }
+  ) {
+    return this.strategiesService.updateCredentials(id, body.apiKey, body.apiSecret);
+  }
+
   @Get(':id')
   findOne(@Param('id') id: string) {
     return this.strategiesService.findOnePublic(id);
