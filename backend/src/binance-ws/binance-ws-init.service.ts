@@ -35,8 +35,22 @@ export class BinanceWebSocketInitService implements OnModuleInit {
 
       for (const strategy of strategies) {
         try {
+          if (!strategy.apiKey || !strategy.apiSecret) {
+            this.logger.warn(
+              `[WS-INIT] Strategy ${strategy.name} has no API credentials - skipping`
+            );
+            continue;
+          }
+
           const apiKey = await EncryptionUtil.decrypt(strategy.apiKey);
           const apiSecret = await EncryptionUtil.decrypt(strategy.apiSecret);
+
+          if (!apiKey || !apiSecret) {
+            this.logger.warn(
+              `[WS-INIT] Strategy ${strategy.name} has invalid API credentials - skipping`
+            );
+            continue;
+          }
 
           await this.binanceWs.subscribeUserDataStream(
             strategy.id,
@@ -46,7 +60,7 @@ export class BinanceWebSocketInitService implements OnModuleInit {
           );
 
           this.logger.log(
-            `[WS-INIT] Connected User Data Stream for strategy ${strategy.name} (${strategy.isTestnet ? 'testnet' : 'mainnet'})`
+            `[WS-INIT] ✅ Connected User Data Stream for strategy ${strategy.name} (${strategy.isTestnet ? 'testnet' : 'mainnet'})`
           );
         } catch (error) {
           this.logger.error(
