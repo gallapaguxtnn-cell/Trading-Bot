@@ -121,6 +121,11 @@ export class PositionSyncService implements OnModuleInit {
 
       for (const strategy of activeStrategies) {
         try {
+          if (strategy.exchange === Exchange.BINANCE && this.binanceWs.isEnabled() && !this.fallbackEnabled) {
+            this.logger.debug(`[WS] Skipping position sync for ${strategy.name} - WebSocket active`);
+            continue;
+          }
+
           await this.syncStrategyPositions(strategy);
         } catch (error) {
           this.logger.error(`Failed to sync strategy ${strategy.name}: ${error.message}`);
