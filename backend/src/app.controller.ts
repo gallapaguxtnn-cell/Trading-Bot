@@ -53,7 +53,8 @@ export class AppController {
   async testBinanceBan(@Query('strategyId') strategyId?: string) {
     try {
       const strategy = await this.strategiesRepository.findOne({
-        where: { id: strategyId || '7059e1cb-20ea-450b-afb2-73871e010701' }
+        where: { id: strategyId || '7059e1cb-20ea-450b-afb2-73871e010701' },
+        select: ['id', 'name', 'apiKey', 'apiSecret', 'isTestnet']
       });
 
       if (!strategy || !strategy.apiKey || !strategy.apiSecret) {
