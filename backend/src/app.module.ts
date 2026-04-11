@@ -5,6 +5,7 @@ import { ThrottlerModule } from '@nestjs/throttler';
 import { EventEmitterModule } from '@nestjs/event-emitter';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
+import { Strategy } from './strategies/strategy.entity';
 import { WebhookModule } from './webhook/webhook.module';
 import { ExchangeModule } from './exchange/exchange.module';
 import { StrategiesModule } from './strategies/strategies.module';
@@ -53,6 +54,7 @@ import { BinanceWebSocketModule } from './binance-ws/binance-ws.module';
       },
       inject: [ConfigService],
     }),
+    TypeOrmModule.forFeature([Strategy]),
     BinanceWebSocketModule,
     WebhookModule,
     ExchangeModule,
