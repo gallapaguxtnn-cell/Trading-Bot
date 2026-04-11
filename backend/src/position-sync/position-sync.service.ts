@@ -132,8 +132,8 @@ export class PositionSyncService implements OnModuleInit {
               continue;
             }
 
-            if (this.binanceWs.isEnabled() && !this.fallbackEnabled) {
-              this.logger.warn(`[WS] WebSocket enabled but not connected for ${strategy.name} - skipping to avoid ban`);
+            if (this.binanceWs.isEnabled()) {
+              this.logger.warn(`[WS] WebSocket enabled but not connected for ${strategy.name} - skipping to avoid IP ban`);
               continue;
             }
           }
