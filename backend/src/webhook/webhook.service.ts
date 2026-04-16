@@ -12,6 +12,7 @@ import { EncryptionUtil } from '../utils/encryption.util';
 import { RateLimiterUtil } from '../utils/rate-limiter.util';
 import { ExchangeCacheUtil } from '../utils/exchange-cache.util';
 import { BinanceWebSocketService } from '../binance-ws/binance-ws.service';
+import { BinanceRequestUtil } from '../utils/binance-request.util';
 import axios from 'axios';
 import * as crypto from 'crypto';
 import Decimal from 'decimal.js';
@@ -138,7 +139,7 @@ export class WebhookService {
         await this.sleep(2000);
 
         const baseURL = isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
-        const response = await axios.get(`${baseURL}/fapi/v1/exchangeInfo`);
+        const response = await BinanceRequestUtil.get(`${baseURL}/fapi/v1/exchangeInfo`);
         const symbolInfo = response.data.symbols.find((s: any) => s.symbol === symbol);
 
         if (!symbolInfo) {
@@ -255,7 +256,7 @@ export class WebhookService {
         this.logger.log(`[BALANCE] Fetching from: ${baseURL}/fapi/v2/balance`);
         this.logger.debug(`[BALANCE] API Key: ${decryptedKey.substring(0, 8)}...`);
 
-        const response = await axios.get(`${baseURL}/fapi/v2/balance?${queryString}&signature=${signature}`, {
+        const response = await BinanceRequestUtil.get(`${baseURL}/fapi/v2/balance?${queryString}&signature=${signature}`, {
           headers: { 'X-MBX-APIKEY': decryptedKey }
         });
 
@@ -381,7 +382,7 @@ export class WebhookService {
             const queryString = `symbol=${symbol}&timestamp=${timestamp}`;
             const signature = crypto.createHmac('sha256', apiSecret).update(queryString).digest('hex');
 
-            const response = await axios.get(`${baseURL}${endpoint}?${queryString}&signature=${signature}`, {
+            const response = await BinanceRequestUtil.get(`${baseURL}${endpoint}?${queryString}&signature=${signature}`, {
                  headers: { 'X-MBX-APIKEY': apiKey }
             });
             
@@ -425,7 +426,7 @@ export class WebhookService {
     const signature = crypto.createHmac('sha256', apiSecret).update(queryString).digest('hex');
 
     try {
-      const response = await axios.get(
+      const response = await BinanceRequestUtil.get(
         `${baseURL}/fapi/v1/positionSide/dual?${queryString}&signature=${signature}`,
         { headers: { 'X-MBX-APIKEY': apiKey } }
       );
@@ -470,7 +471,7 @@ export class WebhookService {
         this.logger.log(`[POSITION MODE] Changing from ${currentMode ? 'Hedge' : 'One-Way'} to ${hedgeMode ? 'Hedge' : 'One-Way'}`);
         this.logger.debug(`[POSITION MODE] Request params: ${dualQueryString}`);
 
-      await axios.post(
+      await BinanceRequestUtil.post(
         `${baseURL}/fapi/v1/positionSide/dual`,
         `${dualQueryString}&signature=${dualSignature}`,
         { headers: { 'X-MBX-APIKEY': apiKey, 'Content-Type': 'application/x-www-form-urlencoded' } }
@@ -535,7 +536,7 @@ export class WebhookService {
         const marginQueryString = `symbol=${symbol}&marginType=${marginMode}&timestamp=${marginTimestamp}`;
         const marginSignature = crypto.createHmac('sha256', apiSecret).update(marginQueryString).digest('hex');
 
-        await axios.post(
+        await BinanceRequestUtil.post(
           `${baseURL}/fapi/v1/marginType`,
           `${marginQueryString}&signature=${marginSignature}`,
           {
@@ -568,7 +569,7 @@ export class WebhookService {
         const leverageQueryString = `symbol=${symbol}&leverage=${leverage}&timestamp=${leverageTimestamp}`;
         const leverageSignature = crypto.createHmac('sha256', apiSecret).update(leverageQueryString).digest('hex');
 
-        await axios.post(
+        await BinanceRequestUtil.post(
           `${baseURL}/fapi/v1/leverage`,
           `${leverageQueryString}&signature=${leverageSignature}`,
           {
@@ -607,7 +608,7 @@ export class WebhookService {
     const queryString = params.toString();
     const signature = crypto.createHmac('sha256', apiSecret).update(queryString).digest('hex');
 
-    await axios.delete(`${baseURL}/fapi/v1/order?${queryString}&signature=${signature}`, {
+    await BinanceRequestUtil.delete(`${baseURL}/fapi/v1/order?${queryString}&signature=${signature}`, {
       headers: { 'X-MBX-APIKEY': apiKey }
     });
   }
@@ -627,7 +628,7 @@ export class WebhookService {
     const queryString = params.toString();
     const signature = crypto.createHmac('sha256', apiSecret).update(queryString).digest('hex');
 
-    await axios.delete(`${baseURL}/fapi/v1/algoOrder?${queryString}&signature=${signature}`, {
+    await BinanceRequestUtil.delete(`${baseURL}/fapi/v1/algoOrder?${queryString}&signature=${signature}`, {
       headers: { 'X-MBX-APIKEY': apiKey }
     });
   }
@@ -680,7 +681,7 @@ export class WebhookService {
     const signature = crypto.createHmac('sha256', apiSecret).update(queryString).digest('hex');
 
     try {
-      await axios.delete(`${baseURL}/fapi/v1/allOpenOrders?${queryString}&signature=${signature}`, {
+      await BinanceRequestUtil.delete(`${baseURL}/fapi/v1/allOpenOrders?${queryString}&signature=${signature}`, {
         headers: { 'X-MBX-APIKEY': apiKey }
       });
       this.logger.log(`[BINANCE] Cancelled all open orders for ${symbol}`);
@@ -696,7 +697,7 @@ export class WebhookService {
       const algoQuery = algoParams.toString();
       const algoSig = crypto.createHmac('sha256', apiSecret).update(algoQuery).digest('hex');
 
-      const algoOrdersResponse = await axios.get(
+      const algoOrdersResponse = await BinanceRequestUtil.get(
         `${baseURL}/fapi/v1/openAlgoOrders?${algoQuery}&signature=${algoSig}`,
         { headers: { 'X-MBX-APIKEY': apiKey } }
       );
@@ -709,7 +710,7 @@ export class WebhookService {
           const cancelAlgoQuery = cancelAlgoParams.toString();
           const cancelAlgoSig = crypto.createHmac('sha256', apiSecret).update(cancelAlgoQuery).digest('hex');
 
-          await axios.delete(`${baseURL}/fapi/v1/algoOrder?${cancelAlgoQuery}&signature=${cancelAlgoSig}`, {
+          await BinanceRequestUtil.delete(`${baseURL}/fapi/v1/algoOrder?${cancelAlgoQuery}&signature=${cancelAlgoSig}`, {
             headers: { 'X-MBX-APIKEY': apiKey }
           });
           this.logger.log(`[BINANCE] Cancelled algo order ${algoOrder.algoId} for ${symbol}`);
@@ -748,7 +749,7 @@ export class WebhookService {
     const signature = crypto.createHmac('sha256', apiSecret).update(queryString).digest('hex');
     const body = `${queryString}&signature=${signature}`;
 
-    const response = await axios.post(`${baseURL}${endpoint}`, body, {
+    const response = await BinanceRequestUtil.post(`${baseURL}${endpoint}`, body, {
       headers: {
         'X-MBX-APIKEY': apiKey,
         'Content-Type': 'application/x-www-form-urlencoded'
@@ -774,7 +775,7 @@ export class WebhookService {
     const signature = crypto.createHmac('sha256', apiSecret).update(queryString).digest('hex');
     const body = `${queryString}&signature=${signature}`;
 
-    const response = await axios.post(`${baseURL}${endpoint}`, body, {
+    const response = await BinanceRequestUtil.post(`${baseURL}${endpoint}`, body, {
       headers: {
         'X-MBX-APIKEY': apiKey,
         'Content-Type': 'application/x-www-form-urlencoded'
@@ -974,7 +975,7 @@ export class WebhookService {
           (expectedMinQty ? ` (expecting >= ${expectedMinQty})` : '')
         );
 
-        const response = await axios.get(
+        const response = await BinanceRequestUtil.get(
           `${baseURL}${endpoint}?${queryString}&signature=${signature}`,
           { headers: { 'X-MBX-APIKEY': apiKey } }
         );
@@ -1093,7 +1094,7 @@ export class WebhookService {
           orderParams.append('timestamp', Date.now().toString());
           const orderSig = crypto.createHmac('sha256', decryptedSecret).update(orderParams.toString()).digest('hex');
 
-          const orderResp = await axios.get(
+          const orderResp = await BinanceRequestUtil.get(
             `${baseURL}/fapi/v1/order?${orderParams.toString()}&signature=${orderSig}`,
             { headers: { 'X-MBX-APIKEY': decryptedKey } }
           );
@@ -1223,7 +1224,7 @@ export class WebhookService {
         positionParams.append('timestamp', timestamp.toString());
         const positionSig = crypto.createHmac('sha256', decryptedSecret).update(positionParams.toString()).digest('hex');
 
-        const positionResp = await axios.get(
+        const positionResp = await BinanceRequestUtil.get(
           `${baseURL}/fapi/v2/positionRisk?${positionParams.toString()}&signature=${positionSig}`,
           { headers: { 'X-MBX-APIKEY': decryptedKey } }
         );
@@ -1259,7 +1260,7 @@ export class WebhookService {
           closeParams.append('timestamp', Date.now().toString());
           const closeSig = crypto.createHmac('sha256', decryptedSecret).update(closeParams.toString()).digest('hex');
 
-          await axios.post(
+          await BinanceRequestUtil.post(
             `${baseURL}/fapi/v1/order`,
             `${closeParams.toString()}&signature=${closeSig}`,
             {
@@ -1640,7 +1641,7 @@ export class WebhookService {
 
       this.logger.debug(`[HEDGE MODE VERIFY] Checking position mode setting...`);
 
-      const response = await axios.get(
+      const response = await BinanceRequestUtil.get(
         `${baseURL}${endpoint}?${queryString}&signature=${signature}`,
         { headers: { 'X-MBX-APIKEY': apiKey } }
       );
@@ -1839,7 +1840,7 @@ export class WebhookService {
 
     const baseURL = isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
     try {
-      const response = await axios.get(`${baseURL}/fapi/v1/ticker/price?symbol=${symbol}`);
+      const response = await BinanceRequestUtil.get(`${baseURL}/fapi/v1/ticker/price?symbol=${symbol}`);
       return parseFloat(response.data.price);
     } catch (error) {
       this.logger.error(`Failed to get current price for ${symbol}: ${error.message}`);

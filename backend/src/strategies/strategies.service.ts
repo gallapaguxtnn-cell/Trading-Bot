@@ -3,6 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Strategy, Exchange } from './strategy.entity';
 import { EncryptionUtil } from '../utils/encryption.util';
+import { BinanceRequestUtil } from '../utils/binance-request.util';
 import { BybitClientService } from '../exchange/bybit-client.service';
 import axios from 'axios';
 import * as crypto from 'crypto';
@@ -228,7 +229,7 @@ export class StrategiesService {
         const ordersQuery = `timestamp=${ordersTimestamp}`;
         const ordersSignature = crypto.createHmac('sha256', apiSecret).update(ordersQuery).digest('hex');
 
-        const ordersResponse = await axios.get(
+        const ordersResponse = await BinanceRequestUtil.get(
           `${baseUrl}/fapi/v1/openOrders?${ordersQuery}&signature=${ordersSignature}`,
           { headers: { 'X-MBX-APIKEY': apiKey } }
         );
@@ -247,7 +248,7 @@ export class StrategiesService {
         const positionsQuery = `timestamp=${positionsTimestamp}`;
         const positionsSignature = crypto.createHmac('sha256', apiSecret).update(positionsQuery).digest('hex');
 
-        const positionsResponse = await axios.get(
+        const positionsResponse = await BinanceRequestUtil.get(
           `${baseUrl}/fapi/v2/positionRisk?${positionsQuery}&signature=${positionsSignature}`,
           { headers: { 'X-MBX-APIKEY': apiKey } }
         );

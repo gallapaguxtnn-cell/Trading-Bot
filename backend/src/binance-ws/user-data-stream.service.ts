@@ -5,6 +5,7 @@ import WebSocket from 'ws';
 import * as crypto from 'crypto';
 import { ConnectionMetadata, ListenKeyResponse } from './interfaces/binance-ws.interface';
 import { OrderUpdateEvent, AccountUpdateEvent } from './dto/binance-ws-events.dto';
+import { BinanceRequestUtil } from '../utils/binance-request.util';
 
 @Injectable()
 export class UserDataStreamService {
@@ -84,7 +85,7 @@ export class UserDataStreamService {
       ? 'https://testnet.binancefuture.com'
       : 'https://fapi.binance.com';
 
-    const response = await axios.post<ListenKeyResponse>(
+    const response = await BinanceRequestUtil.post<ListenKeyResponse>(
       `${baseUrl}/fapi/v1/listenKey`,
       null,
       { headers: { 'X-MBX-APIKEY': apiKey } }
@@ -102,7 +103,7 @@ export class UserDataStreamService {
         ? 'https://testnet.binancefuture.com'
         : 'https://fapi.binance.com';
 
-      await axios.put(
+      await BinanceRequestUtil.put(
         `${baseUrl}/fapi/v1/listenKey`,
         null,
         { headers: { 'X-MBX-APIKEY': conn.strategy.apiKey } }
@@ -120,7 +121,7 @@ export class UserDataStreamService {
       ? 'https://testnet.binancefuture.com'
       : 'https://fapi.binance.com';
 
-    await axios.delete(`${baseUrl}/fapi/v1/listenKey`, {
+    await BinanceRequestUtil.delete(`${baseUrl}/fapi/v1/listenKey`, {
       headers: { 'X-MBX-APIKEY': apiKey }
     });
   }

@@ -11,6 +11,7 @@ import { ExchangeService } from '../exchange/exchange.service';
 import { BybitClientService } from '../exchange/bybit-client.service';
 import { Exchange } from '../strategies/strategy.entity';
 import { EncryptionUtil } from '../utils/encryption.util';
+import { BinanceRequestUtil } from '../utils/binance-request.util';
 import { PositionSyncService } from '../position-sync/position-sync.service';
 import { BinanceWebSocketService } from '../binance-ws/binance-ws.service';
 import { OrderUpdateEvent } from '../binance-ws/dto/binance-ws-events.dto';
@@ -428,7 +429,7 @@ export class TakeProfitService implements OnModuleInit {
     const queryString = `symbol=${symbol}&orderId=${orderId}&timestamp=${timestamp}`;
     const signature = crypto.createHmac('sha256', apiSecret).update(queryString).digest('hex');
 
-    await axios.delete(`${baseUrl}/fapi/v1/order?${queryString}&signature=${signature}`, {
+    await BinanceRequestUtil.delete(`${baseUrl}/fapi/v1/order?${queryString}&signature=${signature}`, {
       headers: { 'X-MBX-APIKEY': apiKey }
     });
   }
@@ -448,7 +449,7 @@ export class TakeProfitService implements OnModuleInit {
     const queryString = params.toString();
     const signature = crypto.createHmac('sha256', apiSecret).update(queryString).digest('hex');
 
-    await axios.delete(`${baseUrl}/fapi/v1/algoOrder?${queryString}&signature=${signature}`, {
+    await BinanceRequestUtil.delete(`${baseUrl}/fapi/v1/algoOrder?${queryString}&signature=${signature}`, {
       headers: { 'X-MBX-APIKEY': apiKey }
     });
   }
@@ -497,7 +498,7 @@ export class TakeProfitService implements OnModuleInit {
       const queryString = `symbol=${symbol}&orderId=${orderId}&timestamp=${timestamp}`;
       const signature = crypto.createHmac('sha256', apiSecret).update(queryString).digest('hex');
 
-      const response = await axios.get(`${baseUrl}/fapi/v1/order?${queryString}&signature=${signature}`, {
+      const response = await BinanceRequestUtil.get(`${baseUrl}/fapi/v1/order?${queryString}&signature=${signature}`, {
         headers: { 'X-MBX-APIKEY': apiKey }
       });
 
@@ -543,7 +544,7 @@ export class TakeProfitService implements OnModuleInit {
     const signature = crypto.createHmac('sha256', apiSecret).update(queryString).digest('hex');
 
     // NEW ALGO ORDER API (mandatory since 2025-12-09)
-    const response = await axios.post(
+    const response = await BinanceRequestUtil.post(
       `${baseUrl}/fapi/v1/algoOrder`,
       `${queryString}&signature=${signature}`,
       { headers: { 'X-MBX-APIKEY': apiKey, 'Content-Type': 'application/x-www-form-urlencoded' } }
@@ -603,7 +604,7 @@ export class TakeProfitService implements OnModuleInit {
       const queryString = `symbol=${symbol}&orderId=${orderId}&timestamp=${timestamp}`;
       const signature = crypto.createHmac('sha256', apiSecret).update(queryString).digest('hex');
 
-      const response = await axios.get(
+      const response = await BinanceRequestUtil.get(
         `${baseUrl}/fapi/v1/order?${queryString}&signature=${signature}`,
         { headers: { 'X-MBX-APIKEY': apiKey } }
       );
@@ -658,7 +659,7 @@ export class TakeProfitService implements OnModuleInit {
       const queryString = `symbol=${symbol}&limit=1&timestamp=${timestamp}`;
       const signature = crypto.createHmac('sha256', apiSecret).update(queryString).digest('hex');
 
-      const response = await axios.get(
+      const response = await BinanceRequestUtil.get(
         `${baseUrl}/fapi/v1/userTrades?${queryString}&signature=${signature}`,
         { headers: { 'X-MBX-APIKEY': apiKey } }
       );
@@ -718,7 +719,7 @@ export class TakeProfitService implements OnModuleInit {
       }
 
       if (strategy.isTestnet && exchange === Exchange.BINANCE) {
-        const response = await axios.get(
+        const response = await BinanceRequestUtil.get(
           `${this.BINANCE_TESTNET_URL}/fapi/v1/ticker/price?symbol=${trade.symbol}`
         );
         return parseFloat(response.data.price);
@@ -839,7 +840,7 @@ export class TakeProfitService implements OnModuleInit {
         const signature = crypto.createHmac('sha256', apiSecret).update(queryString).digest('hex');
         const body = `${queryString}&signature=${signature}`;
 
-        await axios.post(`${baseURL}/fapi/v1/order`, body, {
+        await BinanceRequestUtil.post(`${baseURL}/fapi/v1/order`, body, {
           headers: {
             'X-MBX-APIKEY': apiKey,
             'Content-Type': 'application/x-www-form-urlencoded'

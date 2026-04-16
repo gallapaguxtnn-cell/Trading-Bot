@@ -3,6 +3,7 @@ import { TradesService } from './trades.service';
 import { PositionSyncService } from '../position-sync/position-sync.service';
 import { StrategiesService } from '../strategies/strategies.service';
 import { EncryptionUtil } from '../utils/encryption.util';
+import { BinanceRequestUtil } from '../utils/binance-request.util';
 import { Exchange } from '../strategies/strategy.entity';
 import { BybitClientService } from '../exchange/bybit-client.service';
 import { Trade } from '../strategies/trade.entity';
@@ -340,7 +341,7 @@ export class TradesController {
           const getQuery = getParams.toString();
           const getSig = crypto.createHmac('sha256', apiSecret).update(getQuery).digest('hex');
 
-          const ordersResponse = await axios.get(
+          const ordersResponse = await BinanceRequestUtil.get(
             `${baseURL}/fapi/v1/openOrders?${getQuery}&signature=${getSig}`,
             { headers: { 'X-MBX-APIKEY': apiKey } }
           );
@@ -362,7 +363,7 @@ export class TradesController {
               const cancelQuery = cancelParams.toString();
               const cancelSig = crypto.createHmac('sha256', apiSecret).update(cancelQuery).digest('hex');
 
-              await axios.delete(`${baseURL}/fapi/v1/order?${cancelQuery}&signature=${cancelSig}`, {
+              await BinanceRequestUtil.delete(`${baseURL}/fapi/v1/order?${cancelQuery}&signature=${cancelSig}`, {
                 headers: { 'X-MBX-APIKEY': apiKey }
               });
               this.logger.log(`[CLOSE] Cancelled order ${order.orderId}`);
@@ -379,7 +380,7 @@ export class TradesController {
             const algoQuery = algoParams.toString();
             const algoSig = crypto.createHmac('sha256', apiSecret).update(algoQuery).digest('hex');
 
-            const algoOrdersResponse = await axios.get(
+            const algoOrdersResponse = await BinanceRequestUtil.get(
               `${baseURL}/fapi/v1/openAlgoOrders?${algoQuery}&signature=${algoSig}`,
               { headers: { 'X-MBX-APIKEY': apiKey } }
             );
@@ -398,7 +399,7 @@ export class TradesController {
                 const cancelAlgoQuery = cancelAlgoParams.toString();
                 const cancelAlgoSig = crypto.createHmac('sha256', apiSecret).update(cancelAlgoQuery).digest('hex');
 
-                await axios.delete(`${baseURL}/fapi/v1/algoOrder?${cancelAlgoQuery}&signature=${cancelAlgoSig}`, {
+                await BinanceRequestUtil.delete(`${baseURL}/fapi/v1/algoOrder?${cancelAlgoQuery}&signature=${cancelAlgoSig}`, {
                   headers: { 'X-MBX-APIKEY': apiKey }
                 });
                 this.logger.log(`[CLOSE] Cancelled algo order ${algoOrder.algoId}`);
@@ -419,7 +420,7 @@ export class TradesController {
           const signature = crypto.createHmac('sha256', apiSecret).update(queryString).digest('hex');
 
           // Cancel all regular orders
-          await axios.delete(`${baseURL}/fapi/v1/allOpenOrders?${queryString}&signature=${signature}`, {
+          await BinanceRequestUtil.delete(`${baseURL}/fapi/v1/allOpenOrders?${queryString}&signature=${signature}`, {
             headers: { 'X-MBX-APIKEY': apiKey }
           });
 
@@ -431,7 +432,7 @@ export class TradesController {
             const algoQuery = algoParams.toString();
             const algoSig = crypto.createHmac('sha256', apiSecret).update(algoQuery).digest('hex');
 
-            const algoOrdersResponse = await axios.get(
+            const algoOrdersResponse = await BinanceRequestUtil.get(
               `${baseURL}/fapi/v1/openAlgoOrders?${algoQuery}&signature=${algoSig}`,
               { headers: { 'X-MBX-APIKEY': apiKey } }
             );
@@ -444,7 +445,7 @@ export class TradesController {
                 const cancelAlgoQuery = cancelAlgoParams.toString();
                 const cancelAlgoSig = crypto.createHmac('sha256', apiSecret).update(cancelAlgoQuery).digest('hex');
 
-                await axios.delete(`${baseURL}/fapi/v1/algoOrder?${cancelAlgoQuery}&signature=${cancelAlgoSig}`, {
+                await BinanceRequestUtil.delete(`${baseURL}/fapi/v1/algoOrder?${cancelAlgoQuery}&signature=${cancelAlgoSig}`, {
                   headers: { 'X-MBX-APIKEY': apiKey }
                 });
                 this.logger.log(`[CLOSE] Cancelled algo order ${algoOrder.algoId}`);
@@ -486,7 +487,7 @@ export class TradesController {
         const queryString = params.toString();
         const signature = crypto.createHmac('sha256', apiSecret).update(queryString).digest('hex');
 
-        const response = await axios.get(
+        const response = await BinanceRequestUtil.get(
           `${baseURL}/fapi/v2/positionRisk?${queryString}&signature=${signature}`,
           { headers: { 'X-MBX-APIKEY': apiKey } }
         );
@@ -524,7 +525,7 @@ export class TradesController {
       }
 
       const baseURL = isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
-      const response = await axios.get(`${baseURL}/fapi/v1/exchangeInfo`);
+      const response = await BinanceRequestUtil.get(`${baseURL}/fapi/v1/exchangeInfo`);
       const symbolInfo = response.data.symbols.find((s: any) => s.symbol === symbol);
 
       if (!symbolInfo) return defaultRules;
@@ -588,7 +589,7 @@ export class TradesController {
 
     this.logger.log(`[BINANCE] Closing position: ${symbol} ${side} ${quantity} (hedgeMode: ${hedgeMode})`);
 
-    const response = await axios.post(
+    const response = await BinanceRequestUtil.post(
       `${baseURL}/fapi/v1/order`,
       `${queryString}&signature=${signature}`,
       {
@@ -613,7 +614,7 @@ export class TradesController {
       }
 
       const baseURL = isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
-      const response = await axios.get(`${baseURL}/fapi/v1/ticker/price?symbol=${symbol}`);
+      const response = await BinanceRequestUtil.get(`${baseURL}/fapi/v1/ticker/price?symbol=${symbol}`);
       return parseFloat(response.data.price);
     } catch (error) {
       this.logger.error(`Failed to get price for ${symbol}`);
