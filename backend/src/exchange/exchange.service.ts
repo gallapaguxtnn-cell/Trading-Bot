@@ -2,6 +2,7 @@ import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import * as ccxt from 'ccxt';
 import { ConfigService } from '@nestjs/config';
 import * as crypto from 'crypto';
+import { ProxyUtil } from '../utils/proxy.util';
 
 @Injectable()
 export class ExchangeService implements OnModuleInit {
@@ -47,11 +48,20 @@ export class ExchangeService implements OnModuleInit {
     const isDebugMode = this.configService.get<string>('NODE_ENV') === 'development' ||
                         this.configService.get<boolean>('CCXT_VERBOSE') === true;
 
+    // Get proxy agent if proxy is enabled
+    const httpsAgent = ProxyUtil.getHttpsAgent();
+    const proxyEnabled = ProxyUtil.isEnabled();
+
+    if (proxyEnabled) {
+      this.logger.log(`[PROXY] Using proxy for ${exchangeId} CCXT instance`);
+    }
+
     const exchange = new exchangeClass({
       apiKey,
       secret: apiSecret,
       enableRateLimit: true,
       verbose: isDebugMode,
+      agent: httpsAgent, // Use proxy agent if available
       options: {
         defaultType: 'future', // Default to futures
       },
