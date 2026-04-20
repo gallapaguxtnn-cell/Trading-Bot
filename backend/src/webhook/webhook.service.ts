@@ -416,11 +416,12 @@ export class WebhookService {
 
     const cached = this.rateLimiter.getCached<boolean>(cacheKey);
     if (cached !== null) {
-      this.logger.debug(`[POSITION MODE] Using cached value: ${cached ? 'Hedge' : 'One-Way'}`);
+      this.logger.log(`[POSITION MODE DETECT] Using cached: ${cached ? 'HEDGE' : 'ONE-WAY'}`);
       return cached;
     }
 
     const baseURL = isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
+    this.logger.log(`[POSITION MODE DETECT] Querying ${baseURL}/fapi/v1/positionSide/dual...`);
     const timestamp = Date.now();
     const queryString = `timestamp=${timestamp}`;
     const signature = crypto.createHmac('sha256', apiSecret).update(queryString).digest('hex');
@@ -431,10 +432,14 @@ export class WebhookService {
         { headers: { 'X-MBX-APIKEY': apiKey } }
       );
       const mode = response.data.dualSidePosition === true;
+      this.logger.log(`[POSITION MODE DETECT] API Response: dualSidePosition=${response.data.dualSidePosition}, mode=${mode ? 'HEDGE' : 'ONE-WAY'}`);
       this.rateLimiter.setCached(cacheKey, mode, 1800000);
       return mode;
     } catch (error: any) {
-      this.logger.warn(`[POSITION MODE] Failed to get current mode: ${error.message}`);
+      const errorMsg = error.response?.data?.msg || error.message;
+      const errorCode = error.response?.data?.code;
+      this.logger.error(`[POSITION MODE DETECT] FAILED - Code: ${errorCode}, Message: ${errorMsg}`);
+      this.logger.warn(`[POSITION MODE DETECT] Defaulting to ONE-WAY mode (false) due to error`);
       return false;
     }
   }
@@ -3026,18 +3031,22 @@ export class WebhookService {
     apiKey: string,
     apiSecret: string
   ): Promise<any> {
+    this.logger.log(`[executeBinanceOrder] START - isTestnet=${strategy.isTestnet}, isRealAccount=${strategy.isRealAccount}, hedgeMode(DB)=${strategy.hedgeMode}`);
+
     if (strategy.isTestnet) {
-      this.logger.log('[BINANCE TESTNET] Using Direct Axios Execution');
+      this.logger.log('[BINANCE TESTNET] Using Direct API path (not CCXT)');
 
       const params = new URLSearchParams();
       params.append('symbol', symbol);
       params.append('side', side);
 
-      // CRITICAL FIX: Add positionSide for Hedge Mode
+      this.logger.log(`[ENTRY ORDER] strategy.hedgeMode from DB: ${strategy.hedgeMode}`);
       if (strategy.hedgeMode) {
         const positionSide = side === 'BUY' ? 'LONG' : 'SHORT';
         params.append('positionSide', positionSide);
-        this.logger.log(`[ENTRY ORDER] Hedge Mode - Position Side: ${positionSide}`);
+        this.logger.log(`[ENTRY ORDER] Adding positionSide=${positionSide} (from DB config)`);
+      } else {
+        this.logger.log(`[ENTRY ORDER] Not adding positionSide (DB config says One-Way Mode)`);
       }
 
       const rules = await this.getSymbolRules(symbol, strategy.isTestnet);
@@ -3068,6 +3077,8 @@ export class WebhookService {
         status: response.status
       };
     } else {
+      this.logger.log(`[ENTRY ORDER] Using CCXT path for MAINNET`);
+
       const exchangeInstance = await this.exchangeService.getExchange(
         Exchange.BINANCE,
         apiKey,
@@ -3075,19 +3086,20 @@ export class WebhookService {
         strategy.isTestnet
       );
 
-      // AUTO-DETECT position mode from exchange instead of using database value
+      this.logger.log(`[ENTRY ORDER] Calling getBinancePositionMode...`);
       const actualHedgeMode = await this.getBinancePositionMode(apiKey, apiSecret, strategy.isTestnet);
-      this.logger.log(`[ENTRY ORDER] Detected Position Mode: ${actualHedgeMode ? 'Hedge Mode (LONG/SHORT)' : 'One-Way Mode (BOTH)'}`);
+      this.logger.log(`[ENTRY ORDER] Detection complete. Result: ${actualHedgeMode} (${actualHedgeMode ? 'Hedge Mode' : 'One-Way Mode'})`);
 
-      // CRITICAL FIX: Add positionSide for Hedge Mode in CCXT
       const ccxtParams: any = {};
       if (actualHedgeMode) {
         const positionSide = side === 'BUY' ? 'LONG' : 'SHORT';
         ccxtParams.positionSide = positionSide;
-        this.logger.log(`[ENTRY ORDER] Hedge Mode (CCXT) - Position Side: ${positionSide}`);
+        this.logger.log(`[ENTRY ORDER] Hedge Mode - Adding positionSide=${positionSide} to ccxtParams`);
+        this.logger.log(`[ENTRY ORDER] Full ccxtParams: ${JSON.stringify(ccxtParams)}`);
       } else {
-        this.logger.log(`[ENTRY ORDER] One-Way Mode (CCXT) - No positionSide parameter`);
+        this.logger.log(`[ENTRY ORDER] One-Way Mode - No positionSide`);
       }
+      this.logger.log(`[ENTRY ORDER] Final params before CCXT: ${JSON.stringify(ccxtParams)}`);
 
       if (isLimitOrder) {
         const rules = await this.getSymbolRules(symbol, strategy.isTestnet);
