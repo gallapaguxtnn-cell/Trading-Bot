@@ -3096,15 +3096,21 @@ export class WebhookService {
           this.logger.log(`[BINANCE] Limit Order Placed via CCXT: ${order.id}`);
           return order;
         } catch (firstError: any) {
-          // Check for error -4061 in multiple possible formats (CCXT wraps errors differently)
-          const errorString = JSON.stringify(firstError);
-          const errorCode = errorString.includes('-4061') ||
-                           errorString.includes('4061') ||
-                           firstError.message?.includes('-4061') ||
-                           firstError.message?.includes('position side') ||
-                           firstError.toString().includes('-4061');
+          // CCXT wraps errors in multiple ways, check all possible locations
+          const errorLocations = [
+            JSON.stringify(firstError),
+            JSON.stringify(firstError.response?.data),
+            JSON.stringify(firstError.data),
+            JSON.stringify(firstError.body),
+            firstError.message,
+            firstError.toString()
+          ].filter(Boolean).join(' ');
 
-          this.logger.debug(`[ENTRY ORDER] Error detected: ${errorString.substring(0, 200)}`);
+          const errorCode = errorLocations.includes('-4061') ||
+                           errorLocations.includes('4061') ||
+                           errorLocations.includes('position side');
+
+          this.logger.debug(`[ENTRY ORDER] Error detected: ${errorLocations.substring(0, 300)}`);
 
           // If error -4061 and we used positionSide, retry without it (One-Way Mode)
           if (errorCode && ccxtParams.positionSide) {
@@ -3135,15 +3141,21 @@ export class WebhookService {
           this.logger.log(`[BINANCE] Market Order Placed via CCXT: ${order.id}`);
           return order;
         } catch (firstError: any) {
-          // Check for error -4061 in multiple possible formats (CCXT wraps errors differently)
-          const errorString = JSON.stringify(firstError);
-          const errorCode = errorString.includes('-4061') ||
-                           errorString.includes('4061') ||
-                           firstError.message?.includes('-4061') ||
-                           firstError.message?.includes('position side') ||
-                           firstError.toString().includes('-4061');
+          // CCXT wraps errors in multiple ways, check all possible locations
+          const errorLocations = [
+            JSON.stringify(firstError),
+            JSON.stringify(firstError.response?.data),
+            JSON.stringify(firstError.data),
+            JSON.stringify(firstError.body),
+            firstError.message,
+            firstError.toString()
+          ].filter(Boolean).join(' ');
 
-          this.logger.debug(`[ENTRY ORDER] Error detected: ${errorString.substring(0, 200)}`);
+          const errorCode = errorLocations.includes('-4061') ||
+                           errorLocations.includes('4061') ||
+                           errorLocations.includes('position side');
+
+          this.logger.debug(`[ENTRY ORDER] Error detected: ${errorLocations.substring(0, 300)}`);
 
           // If error -4061 and we used positionSide, retry without it (One-Way Mode)
           if (errorCode && ccxtParams.positionSide) {
