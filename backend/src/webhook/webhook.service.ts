@@ -816,8 +816,11 @@ export class WebhookService {
 
       // Use detected position mode if provided, otherwise calculate from hedgeMode
       const usePositionSide = actualPositionSide || (hedgeMode ? (side === 'BUY' ? 'LONG' : 'SHORT') : null);
+      const isOneWayMode = actualPositionSide === 'BOTH';
 
-      if (usePositionSide) {
+      // CRITICAL: In One-Way Mode (BOTH), use reduceOnly instead of positionSide
+      // Algo API does not accept positionSide=BOTH, only LONG/SHORT or reduceOnly
+      if (usePositionSide && !isOneWayMode) {
         const positionSide = usePositionSide;
         params.append('positionSide', positionSide);
 

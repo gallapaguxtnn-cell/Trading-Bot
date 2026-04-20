@@ -346,12 +346,12 @@ export class TradesController {
             { headers: { 'X-MBX-APIKEY': apiKey } }
           );
 
-          // Cancel only orders for this position side
+          // Cancel orders for this position side, including BOTH for One-Way Mode
           const ordersToCancel = ordersResponse.data.filter(
-            (order: any) => order.positionSide === positionSide
+            (order: any) => order.positionSide === positionSide || order.positionSide === 'BOTH'
           );
 
-          this.logger.log(`[CLOSE] Hedge mode: Found ${ordersToCancel.length} orders to cancel for ${positionSide}`);
+          this.logger.log(`[CLOSE] Found ${ordersToCancel.length} orders to cancel (${positionSide} or BOTH)`);
 
           // Cancel regular orders (LIMIT, etc)
           for (const order of ordersToCancel) {
@@ -385,11 +385,12 @@ export class TradesController {
               { headers: { 'X-MBX-APIKEY': apiKey } }
             );
 
+            // Filter by positionSide, including BOTH for One-Way Mode
             const algoOrdersToCancel = algoOrdersResponse.data.filter(
-              (order: any) => order.positionSide === positionSide
+              (order: any) => order.positionSide === positionSide || order.positionSide === 'BOTH'
             );
 
-            this.logger.log(`[CLOSE] Hedge mode: Found ${algoOrdersToCancel.length} algo orders to cancel for ${positionSide}`);
+            this.logger.log(`[CLOSE] Found ${algoOrdersToCancel.length} algo orders to cancel (${positionSide} or BOTH)`);
 
             for (const algoOrder of algoOrdersToCancel) {
               try {
