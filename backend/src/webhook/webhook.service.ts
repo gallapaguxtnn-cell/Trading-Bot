@@ -994,13 +994,24 @@ export class WebhookService {
           }
         });
 
-        const targetPosition = positions.find((pos: any) =>
+        // Try to find position with expected positionSide first
+        let targetPosition = positions.find((pos: any) =>
           pos.symbol === symbol && pos.positionSide === positionSide
         );
 
+        // If not found and in Hedge Mode, try BOTH (One-Way Mode fallback)
+        if (!targetPosition && positionSide !== 'BOTH') {
+          this.logger.debug(
+            `[POSITION VERIFY] Position not found with ${positionSide}, trying BOTH (One-Way Mode)`
+          );
+          targetPosition = positions.find((pos: any) =>
+            pos.symbol === symbol && pos.positionSide === 'BOTH'
+          );
+        }
+
         if (!targetPosition) {
           this.logger.warn(
-            `[POSITION VERIFY] Position not found - Looking for: symbol="${symbol}" positionSide="${positionSide}"`
+            `[POSITION VERIFY] Position not found - Looking for: symbol="${symbol}" positionSide="${positionSide}" or "BOTH"`
           );
 
           if (attempt < maxRetries) {
@@ -1014,6 +1025,24 @@ export class WebhookService {
         }
 
         const positionAmt = Math.abs(parseFloat(targetPosition.positionAmt));
+        const rawPositionAmt = parseFloat(targetPosition.positionAmt);
+
+        // For One-Way Mode (BOTH), validate position direction
+        if (targetPosition.positionSide === 'BOTH') {
+          const expectedDirection = side === 'BUY' ? 'positive' : 'negative';
+          const actualDirection = rawPositionAmt > 0 ? 'positive' : 'negative';
+
+          if (expectedDirection !== actualDirection) {
+            this.logger.warn(
+              `[POSITION VERIFY] One-Way Mode position direction mismatch - ` +
+              `Expected ${side} (${expectedDirection}), got ${actualDirection} (${rawPositionAmt})`
+            );
+          } else {
+            this.logger.log(
+              `[POSITION VERIFY] One-Way Mode detected - Position: ${symbol} BOTH, Qty=${rawPositionAmt} (${side})`
+            );
+          }
+        }
 
         const isInsufficient = positionAmt === 0 || (expectedMinQty !== undefined && positionAmt < expectedMinQty * 0.9);
 
