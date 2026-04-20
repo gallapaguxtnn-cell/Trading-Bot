@@ -492,13 +492,27 @@ export class TradesController {
           { headers: { 'X-MBX-APIKEY': apiKey } }
         );
 
-        // In hedge mode, filter by positionSide to get the correct position
+        // Try hedge mode first if configured
         if (hedgeMode && tradeSide) {
           const positionSide = tradeSide === 'BUY' ? 'LONG' : 'SHORT';
-          const position = response.data.find(
+          let position = response.data.find(
             (p: any) => p.symbol === symbol && p.positionSide === positionSide
           );
-          this.logger.log(`[CLOSE] Hedge mode: Looking for ${positionSide} position, found: ${position ? Math.abs(parseFloat(position.positionAmt)) : 0}`);
+
+          // If not found, try One-Way Mode (BOTH) as fallback
+          if (!position) {
+            this.logger.log(`[CLOSE] Position not found with ${positionSide}, trying One-Way Mode (BOTH)`);
+            position = response.data.find(
+              (p: any) => p.symbol === symbol && p.positionSide === 'BOTH' && parseFloat(p.positionAmt) !== 0
+            );
+          }
+
+          if (position) {
+            this.logger.log(`[CLOSE] Position found: ${position.positionSide}, size: ${Math.abs(parseFloat(position.positionAmt))}`);
+          } else {
+            this.logger.log(`[CLOSE] No position found for ${symbol}`);
+          }
+
           return position ? Math.abs(parseFloat(position.positionAmt)) : 0;
         } else {
           // One-way mode: just find any position for the symbol
@@ -589,18 +603,50 @@ export class TradesController {
 
     this.logger.log(`[BINANCE] Closing position: ${symbol} ${side} ${quantity} (hedgeMode: ${hedgeMode})`);
 
-    const response = await BinanceRequestUtil.post(
-      `${baseURL}/fapi/v1/order`,
-      `${queryString}&signature=${signature}`,
-      {
-        headers: {
-          'X-MBX-APIKEY': apiKey,
-          'Content-Type': 'application/x-www-form-urlencoded'
+    try {
+      const response = await BinanceRequestUtil.post(
+        `${baseURL}/fapi/v1/order`,
+        `${queryString}&signature=${signature}`,
+        {
+          headers: {
+            'X-MBX-APIKEY': apiKey,
+            'Content-Type': 'application/x-www-form-urlencoded'
+          }
         }
-      }
-    );
+      );
 
-    this.logger.log(`[BINANCE] Close order response: ${JSON.stringify(response.data)}`);
+      this.logger.log(`[BINANCE] Close order response: ${JSON.stringify(response.data)}`);
+    } catch (firstError: any) {
+      const errorCode = firstError.response?.data?.code;
+
+      // If error -4061 (position side mismatch) and we used positionSide, retry with reduceOnly
+      if (errorCode === -4061 && hedgeMode && tradeSide) {
+        this.logger.warn(`[BINANCE] Error -4061 detected - Retrying with One-Way Mode (reduceOnly)`);
+
+        // Remove positionSide and add reduceOnly
+        params.delete('positionSide');
+        params.set('reduceOnly', 'true');
+        params.set('timestamp', Date.now().toString());
+
+        const retryQueryString = params.toString();
+        const retrySignature = crypto.createHmac('sha256', apiSecret).update(retryQueryString).digest('hex');
+
+        const retryResponse = await BinanceRequestUtil.post(
+          `${baseURL}/fapi/v1/order`,
+          `${retryQueryString}&signature=${retrySignature}`,
+          {
+            headers: {
+              'X-MBX-APIKEY': apiKey,
+              'Content-Type': 'application/x-www-form-urlencoded'
+            }
+          }
+        );
+
+        this.logger.log(`[BINANCE] Close order response (One-Way Mode fallback): ${JSON.stringify(retryResponse.data)}`);
+      } else {
+        throw firstError;
+      }
+    }
   }
 
   private async getCurrentPrice(
