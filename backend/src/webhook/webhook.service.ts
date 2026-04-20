@@ -1003,7 +1003,7 @@ export class WebhookService {
     isTestnet: boolean,
     hedgeMode: boolean = false,
     expectedMinQty?: number
-  ): Promise<{ entryPrice: number }> {
+  ): Promise<{ entryPrice: number; actualPositionSide: string }> {
     const baseURL = isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
     const endpoint = '/fapi/v2/positionRisk';
     const positionSide = hedgeMode ? (side === 'BUY' ? 'LONG' : 'SHORT') : 'BOTH';
