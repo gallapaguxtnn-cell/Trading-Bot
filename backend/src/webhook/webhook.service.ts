@@ -3031,40 +3031,39 @@ export class WebhookService {
     apiKey: string,
     apiSecret: string
   ): Promise<any> {
-    this.logger.log(`[executeBinanceOrder] START - isTestnet=${strategy.isTestnet}, isRealAccount=${strategy.isRealAccount}, hedgeMode(DB)=${strategy.hedgeMode}`);
+    this.logger.log(`[executeBinanceOrder] Using Direct API for all Binance accounts (CCXT has issues with positionSide)`);
 
-    if (strategy.isTestnet) {
-      this.logger.log('[BINANCE TESTNET] Using Direct API path (not CCXT)');
+    const actualHedgeMode = await this.getBinancePositionMode(apiKey, apiSecret, strategy.isTestnet);
+    this.logger.log(`[ENTRY ORDER] Detected mode: ${actualHedgeMode ? 'HEDGE' : 'ONE-WAY'}`);
 
-      const params = new URLSearchParams();
-      params.append('symbol', symbol);
-      params.append('side', side);
+    const params = new URLSearchParams();
+    params.append('symbol', symbol);
+    params.append('side', side);
 
-      this.logger.log(`[ENTRY ORDER] strategy.hedgeMode from DB: ${strategy.hedgeMode}`);
-      if (strategy.hedgeMode) {
-        const positionSide = side === 'BUY' ? 'LONG' : 'SHORT';
-        params.append('positionSide', positionSide);
-        this.logger.log(`[ENTRY ORDER] Adding positionSide=${positionSide} (from DB config)`);
-      } else {
-        this.logger.log(`[ENTRY ORDER] Not adding positionSide (DB config says One-Way Mode)`);
-      }
+    if (actualHedgeMode) {
+      const positionSide = side === 'BUY' ? 'LONG' : 'SHORT';
+      params.append('positionSide', positionSide);
+      this.logger.log(`[ENTRY ORDER] Adding positionSide=${positionSide} for Hedge Mode`);
+    } else {
+      this.logger.log(`[ENTRY ORDER] No positionSide for One-Way Mode`);
+    }
 
-      const rules = await this.getSymbolRules(symbol, strategy.isTestnet);
+    const rules = await this.getSymbolRules(symbol, strategy.isTestnet);
 
-      if (isLimitOrder) {
-        params.append('type', 'LIMIT');
-        params.append('price', this.roundTick(signal.price!, rules.priceTick));
-        params.append('timeInForce', 'GTC');
-        this.logger.log(`[BINANCE] Creating LIMIT order at price ${signal.price}`);
-      } else {
-        params.append('type', 'MARKET');
-        this.logger.log(`[BINANCE] Creating MARKET order`);
-      }
+    if (isLimitOrder) {
+      params.append('type', 'LIMIT');
+      params.append('price', this.roundTick(signal.price!, rules.priceTick));
+      params.append('timeInForce', 'GTC');
+      this.logger.log(`[BINANCE] Creating LIMIT order at price ${signal.price}`);
+    } else {
+      params.append('type', 'MARKET');
+      this.logger.log(`[BINANCE] Creating MARKET order`);
+    }
 
-      params.append('quantity', this.normalizeQuantity(quantity, rules.qtyStep, rules.minQty));
+    params.append('quantity', this.normalizeQuantity(quantity, rules.qtyStep, rules.minQty));
 
+    try {
       const response = await this.createBinanceOrder(params, apiKey, apiSecret, strategy.isTestnet);
-
       this.logger.log(`[BINANCE] Order Placed! Order ID: ${response.orderId}`);
 
       const filledPrice = parseFloat(response.avgPrice || response.price || '0');
@@ -3076,138 +3075,38 @@ export class WebhookService {
         average: finalPrice,
         status: response.status
       };
-    } else {
-      this.logger.log(`[ENTRY ORDER] Using CCXT path for MAINNET`);
+    } catch (firstError: any) {
+      const errorCode = firstError.response?.data?.code;
+      const errorMsg = firstError.response?.data?.msg;
 
-      const exchangeInstance = await this.exchangeService.getExchange(
-        Exchange.BINANCE,
-        apiKey,
-        apiSecret,
-        strategy.isTestnet
-      );
+      if (errorCode === -4061) {
+        this.logger.warn(`[ENTRY ORDER] Error -4061 detected. Toggling positionSide and retrying...`);
 
-      this.logger.log(`[ENTRY ORDER] Calling getBinancePositionMode...`);
-      const actualHedgeMode = await this.getBinancePositionMode(apiKey, apiSecret, strategy.isTestnet);
-      this.logger.log(`[ENTRY ORDER] Detection complete. Result: ${actualHedgeMode} (${actualHedgeMode ? 'Hedge Mode' : 'One-Way Mode'})`);
-
-      const ccxtParams: any = {};
-      if (actualHedgeMode) {
-        const positionSide = side === 'BUY' ? 'LONG' : 'SHORT';
-        ccxtParams.positionSide = positionSide;
-        this.logger.log(`[ENTRY ORDER] Hedge Mode - Adding positionSide=${positionSide} to ccxtParams`);
-        this.logger.log(`[ENTRY ORDER] Full ccxtParams: ${JSON.stringify(ccxtParams)}`);
-      } else {
-        this.logger.log(`[ENTRY ORDER] One-Way Mode - No positionSide`);
-      }
-      this.logger.log(`[ENTRY ORDER] Final params before CCXT: ${JSON.stringify(ccxtParams)}`);
-
-      if (isLimitOrder) {
-        const rules = await this.getSymbolRules(symbol, strategy.isTestnet);
-        try {
-          const order = await exchangeInstance.createLimitOrder(
-            symbol,
-            signal.action,
-            this.normalizeQuantity(quantity, rules.qtyStep, rules.minQty),
-            this.roundTick(signal.price || 0, rules.priceTick),
-            ccxtParams
-          );
-          this.logger.log(`[BINANCE] Limit Order Placed via CCXT: ${order.id}`);
-          return order;
-        } catch (firstError: any) {
-          // CCXT wraps errors in multiple ways, check all possible locations
-          const errorLocations = [
-            JSON.stringify(firstError),
-            JSON.stringify(firstError.response?.data),
-            JSON.stringify(firstError.data),
-            JSON.stringify(firstError.body),
-            firstError.message,
-            firstError.toString()
-          ].filter(Boolean).join(' ');
-
-          const errorCode = errorLocations.includes('-4061') ||
-                           errorLocations.includes('4061') ||
-                           errorLocations.includes('position side');
-
-          this.logger.debug(`[ENTRY ORDER] Error detected: ${errorLocations.substring(0, 300)}`);
-
-          // If error -4061, try toggling positionSide parameter
-          if (errorCode) {
-            if (ccxtParams.positionSide) {
-              // Had positionSide → Account is One-Way Mode, remove it
-              this.logger.warn(`[ENTRY ORDER] Error -4061 with positionSide - Retrying without it (One-Way Mode)`);
-              delete ccxtParams.positionSide;
-            } else {
-              // No positionSide → Account is Hedge Mode, add it
-              const positionSide = side === 'BUY' ? 'LONG' : 'SHORT';
-              this.logger.warn(`[ENTRY ORDER] Error -4061 without positionSide - Retrying with ${positionSide} (Hedge Mode)`);
-              ccxtParams.positionSide = positionSide;
-            }
-
-            const retryOrder = await exchangeInstance.createLimitOrder(
-              symbol,
-              signal.action,
-              this.normalizeQuantity(quantity, rules.qtyStep, rules.minQty),
-              this.roundTick(signal.price || 0, rules.priceTick),
-              ccxtParams
-            );
-            this.logger.log(`[BINANCE] Limit Order Placed via CCXT (retry successful): ${retryOrder.id}`);
-            return retryOrder;
-          }
-          throw firstError;
+        if (params.has('positionSide')) {
+          this.logger.log(`[ENTRY ORDER] Removing positionSide and retrying (One-Way Mode)`);
+          params.delete('positionSide');
+        } else {
+          const positionSide = side === 'BUY' ? 'LONG' : 'SHORT';
+          this.logger.log(`[ENTRY ORDER] Adding positionSide=${positionSide} and retrying (Hedge Mode)`);
+          params.set('positionSide', positionSide);
         }
-      } else {
-        const rules = await this.getSymbolRules(symbol, strategy.isTestnet);
-        try {
-          const order = await exchangeInstance.createMarketOrder(
-            symbol,
-            signal.action,
-            this.normalizeQuantity(quantity, rules.qtyStep, rules.minQty),
-            ccxtParams
-          );
-          this.logger.log(`[BINANCE] Market Order Placed via CCXT: ${order.id}`);
-          return order;
-        } catch (firstError: any) {
-          // CCXT wraps errors in multiple ways, check all possible locations
-          const errorLocations = [
-            JSON.stringify(firstError),
-            JSON.stringify(firstError.response?.data),
-            JSON.stringify(firstError.data),
-            JSON.stringify(firstError.body),
-            firstError.message,
-            firstError.toString()
-          ].filter(Boolean).join(' ');
 
-          const errorCode = errorLocations.includes('-4061') ||
-                           errorLocations.includes('4061') ||
-                           errorLocations.includes('position side');
+        const retryResponse = await this.createBinanceOrder(params, apiKey, apiSecret, strategy.isTestnet);
+        this.logger.log(`[BINANCE] Order Placed after retry! Order ID: ${retryResponse.orderId}`);
 
-          this.logger.debug(`[ENTRY ORDER] Error detected: ${errorLocations.substring(0, 300)}`);
+        const retryFilledPrice = parseFloat(retryResponse.avgPrice || retryResponse.price || '0');
+        const retryFinalPrice = retryFilledPrice > 0 ? retryFilledPrice : signal.price;
 
-          // If error -4061, try toggling positionSide parameter
-          if (errorCode) {
-            if (ccxtParams.positionSide) {
-              // Had positionSide → Account is One-Way Mode, remove it
-              this.logger.warn(`[ENTRY ORDER] Error -4061 with positionSide - Retrying without it (One-Way Mode)`);
-              delete ccxtParams.positionSide;
-            } else {
-              // No positionSide → Account is Hedge Mode, add it
-              const positionSide = side === 'BUY' ? 'LONG' : 'SHORT';
-              this.logger.warn(`[ENTRY ORDER] Error -4061 without positionSide - Retrying with ${positionSide} (Hedge Mode)`);
-              ccxtParams.positionSide = positionSide;
-            }
-
-            const retryOrder = await exchangeInstance.createMarketOrder(
-              symbol,
-              signal.action,
-              this.normalizeQuantity(quantity, rules.qtyStep, rules.minQty),
-              ccxtParams
-            );
-            this.logger.log(`[BINANCE] Market Order Placed via CCXT (retry successful): ${retryOrder.id}`);
-            return retryOrder;
-          }
-          throw firstError;
-        }
+        return {
+          id: retryResponse.orderId.toString(),
+          price: retryFinalPrice,
+          average: retryFinalPrice,
+          status: retryResponse.status
+        };
       }
+
+      throw firstError;
     }
   }
+
 }
