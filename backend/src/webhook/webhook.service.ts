@@ -3085,25 +3085,66 @@ export class WebhookService {
 
       if (isLimitOrder) {
         const rules = await this.getSymbolRules(symbol, strategy.isTestnet);
-        const order = await exchangeInstance.createLimitOrder(
-          symbol,
-          signal.action,
-          this.normalizeQuantity(quantity, rules.qtyStep, rules.minQty),
-          this.roundTick(signal.price || 0, rules.priceTick),
-          ccxtParams
-        );
-        this.logger.log(`[BINANCE] Limit Order Placed via CCXT: ${order.id}`);
-        return order;
+        try {
+          const order = await exchangeInstance.createLimitOrder(
+            symbol,
+            signal.action,
+            this.normalizeQuantity(quantity, rules.qtyStep, rules.minQty),
+            this.roundTick(signal.price || 0, rules.priceTick),
+            ccxtParams
+          );
+          this.logger.log(`[BINANCE] Limit Order Placed via CCXT: ${order.id}`);
+          return order;
+        } catch (firstError: any) {
+          const errorCode = firstError.message?.includes('-4061') || firstError.toString().includes('-4061');
+
+          // If error -4061 and we used positionSide, retry without it (One-Way Mode)
+          if (errorCode && ccxtParams.positionSide) {
+            this.logger.warn(`[ENTRY ORDER] Error -4061 detected - Retrying without positionSide (One-Way Mode)`);
+            delete ccxtParams.positionSide;
+
+            const retryOrder = await exchangeInstance.createLimitOrder(
+              symbol,
+              signal.action,
+              this.normalizeQuantity(quantity, rules.qtyStep, rules.minQty),
+              this.roundTick(signal.price || 0, rules.priceTick),
+              ccxtParams
+            );
+            this.logger.log(`[BINANCE] Limit Order Placed via CCXT (One-Way Mode fallback): ${retryOrder.id}`);
+            return retryOrder;
+          }
+          throw firstError;
+        }
       } else {
         const rules = await this.getSymbolRules(symbol, strategy.isTestnet);
-        const order = await exchangeInstance.createMarketOrder(
-          symbol,
-          signal.action,
-          this.normalizeQuantity(quantity, rules.qtyStep, rules.minQty),
-          ccxtParams
-        );
-        this.logger.log(`[BINANCE] Market Order Placed via CCXT: ${order.id}`);
-        return order;
+        try {
+          const order = await exchangeInstance.createMarketOrder(
+            symbol,
+            signal.action,
+            this.normalizeQuantity(quantity, rules.qtyStep, rules.minQty),
+            ccxtParams
+          );
+          this.logger.log(`[BINANCE] Market Order Placed via CCXT: ${order.id}`);
+          return order;
+        } catch (firstError: any) {
+          const errorCode = firstError.message?.includes('-4061') || firstError.toString().includes('-4061');
+
+          // If error -4061 and we used positionSide, retry without it (One-Way Mode)
+          if (errorCode && ccxtParams.positionSide) {
+            this.logger.warn(`[ENTRY ORDER] Error -4061 detected - Retrying without positionSide (One-Way Mode)`);
+            delete ccxtParams.positionSide;
+
+            const retryOrder = await exchangeInstance.createMarketOrder(
+              symbol,
+              signal.action,
+              this.normalizeQuantity(quantity, rules.qtyStep, rules.minQty),
+              ccxtParams
+            );
+            this.logger.log(`[BINANCE] Market Order Placed via CCXT (One-Way Mode fallback): ${retryOrder.id}`);
+            return retryOrder;
+          }
+          throw firstError;
+        }
       }
     }
   }
