@@ -3075,12 +3075,18 @@ export class WebhookService {
         strategy.isTestnet
       );
 
+      // AUTO-DETECT position mode from exchange instead of using database value
+      const actualHedgeMode = await this.getBinancePositionMode(apiKey, apiSecret, strategy.isTestnet);
+      this.logger.log(`[ENTRY ORDER] Detected Position Mode: ${actualHedgeMode ? 'Hedge Mode (LONG/SHORT)' : 'One-Way Mode (BOTH)'}`);
+
       // CRITICAL FIX: Add positionSide for Hedge Mode in CCXT
       const ccxtParams: any = {};
-      if (strategy.hedgeMode) {
+      if (actualHedgeMode) {
         const positionSide = side === 'BUY' ? 'LONG' : 'SHORT';
         ccxtParams.positionSide = positionSide;
         this.logger.log(`[ENTRY ORDER] Hedge Mode (CCXT) - Position Side: ${positionSide}`);
+      } else {
+        this.logger.log(`[ENTRY ORDER] One-Way Mode (CCXT) - No positionSide parameter`);
       }
 
       if (isLimitOrder) {
@@ -3112,10 +3118,18 @@ export class WebhookService {
 
           this.logger.debug(`[ENTRY ORDER] Error detected: ${errorLocations.substring(0, 300)}`);
 
-          // If error -4061 and we used positionSide, retry without it (One-Way Mode)
-          if (errorCode && ccxtParams.positionSide) {
-            this.logger.warn(`[ENTRY ORDER] Error -4061 detected - Retrying without positionSide (One-Way Mode)`);
-            delete ccxtParams.positionSide;
+          // If error -4061, try toggling positionSide parameter
+          if (errorCode) {
+            if (ccxtParams.positionSide) {
+              // Had positionSide → Account is One-Way Mode, remove it
+              this.logger.warn(`[ENTRY ORDER] Error -4061 with positionSide - Retrying without it (One-Way Mode)`);
+              delete ccxtParams.positionSide;
+            } else {
+              // No positionSide → Account is Hedge Mode, add it
+              const positionSide = side === 'BUY' ? 'LONG' : 'SHORT';
+              this.logger.warn(`[ENTRY ORDER] Error -4061 without positionSide - Retrying with ${positionSide} (Hedge Mode)`);
+              ccxtParams.positionSide = positionSide;
+            }
 
             const retryOrder = await exchangeInstance.createLimitOrder(
               symbol,
@@ -3124,7 +3138,7 @@ export class WebhookService {
               this.roundTick(signal.price || 0, rules.priceTick),
               ccxtParams
             );
-            this.logger.log(`[BINANCE] Limit Order Placed via CCXT (One-Way Mode fallback): ${retryOrder.id}`);
+            this.logger.log(`[BINANCE] Limit Order Placed via CCXT (retry successful): ${retryOrder.id}`);
             return retryOrder;
           }
           throw firstError;
@@ -3157,10 +3171,18 @@ export class WebhookService {
 
           this.logger.debug(`[ENTRY ORDER] Error detected: ${errorLocations.substring(0, 300)}`);
 
-          // If error -4061 and we used positionSide, retry without it (One-Way Mode)
-          if (errorCode && ccxtParams.positionSide) {
-            this.logger.warn(`[ENTRY ORDER] Error -4061 detected - Retrying without positionSide (One-Way Mode)`);
-            delete ccxtParams.positionSide;
+          // If error -4061, try toggling positionSide parameter
+          if (errorCode) {
+            if (ccxtParams.positionSide) {
+              // Had positionSide → Account is One-Way Mode, remove it
+              this.logger.warn(`[ENTRY ORDER] Error -4061 with positionSide - Retrying without it (One-Way Mode)`);
+              delete ccxtParams.positionSide;
+            } else {
+              // No positionSide → Account is Hedge Mode, add it
+              const positionSide = side === 'BUY' ? 'LONG' : 'SHORT';
+              this.logger.warn(`[ENTRY ORDER] Error -4061 without positionSide - Retrying with ${positionSide} (Hedge Mode)`);
+              ccxtParams.positionSide = positionSide;
+            }
 
             const retryOrder = await exchangeInstance.createMarketOrder(
               symbol,
@@ -3168,7 +3190,7 @@ export class WebhookService {
               this.normalizeQuantity(quantity, rules.qtyStep, rules.minQty),
               ccxtParams
             );
-            this.logger.log(`[BINANCE] Market Order Placed via CCXT (One-Way Mode fallback): ${retryOrder.id}`);
+            this.logger.log(`[BINANCE] Market Order Placed via CCXT (retry successful): ${retryOrder.id}`);
             return retryOrder;
           }
           throw firstError;
