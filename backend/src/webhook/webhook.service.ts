@@ -981,13 +981,26 @@ export class WebhookService {
         );
 
         const positions = response.data;
+
+        // Log all positions for debugging
+        this.logger.debug(
+          `[POSITION VERIFY] Received ${positions.length} positions from Binance`
+        );
+        positions.forEach((pos: any) => {
+          if (parseFloat(pos.positionAmt) !== 0) {
+            this.logger.debug(
+              `[POSITION VERIFY] Position: ${pos.symbol} ${pos.positionSide} Qty=${pos.positionAmt} Entry=${pos.entryPrice}`
+            );
+          }
+        });
+
         const targetPosition = positions.find((pos: any) =>
           pos.symbol === symbol && pos.positionSide === positionSide
         );
 
         if (!targetPosition) {
           this.logger.warn(
-            `[POSITION VERIFY] Position not found - Symbol: ${symbol}, Side: ${positionSide}`
+            `[POSITION VERIFY] Position not found - Looking for: symbol="${symbol}" positionSide="${positionSide}"`
           );
 
           if (attempt < maxRetries) {
