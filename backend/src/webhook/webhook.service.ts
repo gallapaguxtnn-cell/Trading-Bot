@@ -793,7 +793,8 @@ export class WebhookService {
     apiKey: string,
     apiSecret: string,
     isTestnet: boolean,
-    hedgeMode: boolean = false
+    hedgeMode: boolean = false,
+    actualPositionSide?: string // Override detected position mode (BOTH, LONG, SHORT)
   ): Promise<string> {
     try {
       const closeSide = side === 'BUY' ? 'SELL' : 'BUY';
@@ -813,8 +814,11 @@ export class WebhookService {
       params.append('triggerPrice', normalizedStopPrice);  // ALGO API uses triggerPrice, not stopPrice
       params.append('workingType', 'MARK_PRICE');
 
-      if (hedgeMode) {
-        const positionSide = side === 'BUY' ? 'LONG' : 'SHORT';
+      // Use detected position mode if provided, otherwise calculate from hedgeMode
+      const usePositionSide = actualPositionSide || (hedgeMode ? (side === 'BUY' ? 'LONG' : 'SHORT') : null);
+
+      if (usePositionSide) {
+        const positionSide = usePositionSide;
         params.append('positionSide', positionSide);
 
         this.logger.log(
@@ -841,10 +845,30 @@ export class WebhookService {
 
       this.logger.debug(`[SL CREATE] Full request params: ${params.toString()}`);
 
-      const response = await this.createBinanceAlgoOrder(params, apiKey, apiSecret, isTestnet);
+      try {
+        const response = await this.createBinanceAlgoOrder(params, apiKey, apiSecret, isTestnet);
+        this.logger.log(`[SL CREATE] SUCCESS - Algo Order ID: ${response.algoId}`);
+        return response.algoId.toString();
+      } catch (firstError: any) {
+        const errorCode = firstError.response?.data?.code;
 
-      this.logger.log(`[SL CREATE] SUCCESS - Algo Order ID: ${response.algoId}`);
-      return response.algoId.toString();
+        // If error -4061 (position side mismatch) and we used positionSide, retry with reduceOnly
+        if (errorCode === -4061 && usePositionSide && usePositionSide !== 'BOTH') {
+          this.logger.warn(
+            `[SL CREATE] Error -4061 detected - Retrying with One-Way Mode (reduceOnly) instead of positionSide=${usePositionSide}`
+          );
+
+          // Remove positionSide and add reduceOnly
+          params.delete('positionSide');
+          params.set('reduceOnly', 'true');
+
+          const retryResponse = await this.createBinanceAlgoOrder(params, apiKey, apiSecret, isTestnet);
+          this.logger.log(`[SL CREATE] SUCCESS (One-Way Mode fallback) - Algo Order ID: ${retryResponse.algoId}`);
+          return retryResponse.algoId.toString();
+        }
+
+        throw firstError;
+      }
     } catch (error: any) {
       const errorCode = error.response?.data?.code;
       const errorMsg = error.response?.data?.msg;
@@ -873,7 +897,8 @@ export class WebhookService {
     apiKey: string,
     apiSecret: string,
     isTestnet: boolean,
-    hedgeMode: boolean = false
+    hedgeMode: boolean = false,
+    actualPositionSide?: string // Override detected position mode (BOTH, LONG, SHORT)
   ): Promise<string> {
     try {
       const closeSide = side === 'BUY' ? 'SELL' : 'BUY';
@@ -889,8 +914,12 @@ export class WebhookService {
       params.append('price', normalizedStopPrice);
       params.append('timeInForce', 'GTC');
 
-      if (hedgeMode) {
-        const positionSide = side === 'BUY' ? 'LONG' : 'SHORT';
+      // Use detected position mode if provided
+      const isOneWayMode = actualPositionSide === 'BOTH';
+      const useHedgeMode = actualPositionSide ? !isOneWayMode : hedgeMode;
+
+      if (useHedgeMode && actualPositionSide !== 'BOTH') {
+        const positionSide = actualPositionSide || (side === 'BUY' ? 'LONG' : 'SHORT');
         params.append('positionSide', positionSide);
 
         this.logger.log(
@@ -917,10 +946,31 @@ export class WebhookService {
 
       this.logger.debug(`[TP CREATE] Full request params: ${params.toString()}`);
 
-      const response = await this.createBinanceOrder(params, apiKey, apiSecret, isTestnet);
+      try {
+        const response = await this.createBinanceOrder(params, apiKey, apiSecret, isTestnet);
+        this.logger.log(`[TP CREATE] SUCCESS - Order ID: ${response.orderId}, Status: ${response.status}`);
+        return response.orderId.toString();
+      } catch (firstError: any) {
+        const errorCode = firstError.response?.data?.code;
 
-      this.logger.log(`[TP CREATE] SUCCESS - Order ID: ${response.orderId}, Status: ${response.status}`);
-      return response.orderId.toString();
+        // If error -4061 (position side mismatch) and we used positionSide, retry with reduceOnly
+        if (errorCode === -4061 && useHedgeMode && actualPositionSide !== 'BOTH') {
+          const attemptedPositionSide = params.get('positionSide');
+          this.logger.warn(
+            `[TP CREATE] Error -4061 detected - Retrying with One-Way Mode (reduceOnly) instead of positionSide=${attemptedPositionSide}`
+          );
+
+          // Remove positionSide and add reduceOnly
+          params.delete('positionSide');
+          params.set('reduceOnly', 'true');
+
+          const retryResponse = await this.createBinanceOrder(params, apiKey, apiSecret, isTestnet);
+          this.logger.log(`[TP CREATE] SUCCESS (One-Way Mode fallback) - Order ID: ${retryResponse.orderId}`);
+          return retryResponse.orderId.toString();
+        }
+
+        throw firstError;
+      }
     } catch (error: any) {
       const errorCode = error.response?.data?.code;
       const errorMsg = error.response?.data?.msg;
@@ -1065,13 +1115,16 @@ export class WebhookService {
         this.logger.log(
           `[POSITION VERIFY] SUCCESS - Position found\n` +
           `  Symbol: ${symbol}\n` +
-          `  Position Side: ${positionSide}\n` +
+          `  Position Side: ${targetPosition.positionSide} (searched for: ${positionSide})\n` +
           `  Quantity: ${positionAmt}\n` +
           `  Entry Price: ${targetPosition.entryPrice}\n` +
           `  Attempt: ${attempt}/${maxRetries}`
         );
 
-        return { entryPrice: parseFloat(targetPosition.entryPrice) };
+        return {
+          entryPrice: parseFloat(targetPosition.entryPrice),
+          actualPositionSide: targetPosition.positionSide // Return actual positionSide (BOTH, LONG, or SHORT)
+        };
       } catch (error: any) {
         if (error instanceof PositionNotFoundError) {
           throw error;
@@ -2450,6 +2503,7 @@ export class WebhookService {
 
       // For Binance MARKET: Verify position exists before creating SL/TP (prevents race condition)
       let actualEntryPrice: number | undefined;
+      let detectedPositionSide: string | undefined; // Track actual position mode (BOTH, LONG, SHORT)
 
       if (exchange === Exchange.BINANCE) {
         this.logger.log(`[POSITION VERIFY] Waiting for position to appear in system...`);
@@ -2472,6 +2526,14 @@ export class WebhookService {
             expectedCombinedQty
           );
           actualEntryPrice = positionInfo.entryPrice;
+          detectedPositionSide = positionInfo.actualPositionSide; // Capture actual position mode
+
+          if (detectedPositionSide === 'BOTH') {
+            this.logger.log(`[POSITION MODE] One-Way Mode detected - SL/TP will use positionSide=BOTH`);
+          } else {
+            this.logger.log(`[POSITION MODE] Hedge Mode detected - SL/TP will use positionSide=${detectedPositionSide}`);
+          }
+
           this.logger.log(`[ENTRY PRICE] Using actual entry price from position: ${actualEntryPrice} (signal was ${signal.price})`);
         } catch (error: any) {
           this.logger.error(
@@ -2585,7 +2647,7 @@ export class WebhookService {
           } else {
             try {
               stopLossOrderId = await this.createBinanceStopLossOrder(
-                normalizedSymbol, side, quantity, stopLossPrice, decryptedKey, decryptedSecret, strategy.isTestnet, strategy.hedgeMode
+                normalizedSymbol, side, quantity, stopLossPrice, decryptedKey, decryptedSecret, strategy.isTestnet, strategy.hedgeMode, detectedPositionSide
               );
               this.logger.log(`[SL] Successfully created Stop Loss order: ${stopLossOrderId}`);
             } catch (slError: any) {
@@ -2724,7 +2786,7 @@ export class WebhookService {
                 }
               } else {
                 const tpOrderId = await this.createBinanceTakeProfitOrder(
-                  normalizedSymbol, side, tpQty, tpPriceRaw, decryptedKey, decryptedSecret, strategy.isTestnet, strategy.hedgeMode
+                  normalizedSymbol, side, tpQty, tpPriceRaw, decryptedKey, decryptedSecret, strategy.isTestnet, strategy.hedgeMode, detectedPositionSide
                 );
                 tpOrderIds.push(`${tp.id}:${tpOrderId}`);
                 this.logger.log(`[TP${tp.id}] Successfully created Take Profit order: ${tpOrderId}`);
