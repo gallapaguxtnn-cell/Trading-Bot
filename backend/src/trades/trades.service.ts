@@ -1,9 +1,9 @@
-import { Injectable, Inject, forwardRef } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Trade } from '../strategies/trade.entity';
 import { TradeExecution } from './trade-execution.entity';
-import { TradesGateway } from '../websocket/trades.gateway';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 
 @Injectable()
 export class TradesService {
@@ -12,15 +12,14 @@ export class TradesService {
     private readonly tradesRepository: Repository<Trade>,
     @InjectRepository(TradeExecution)
     private readonly executionsRepository: Repository<TradeExecution>,
-    @Inject(forwardRef(() => TradesGateway))
-    private readonly tradesGateway: TradesGateway,
+    private readonly eventEmitter: EventEmitter2,
   ) {}
 
   async create(trade: Partial<Trade>): Promise<any> {
     const savedTrade = await this.tradesRepository.save(trade);
     const normalized = this.normalizeTrade(savedTrade);
 
-    this.tradesGateway.emitTradeCreated(normalized);
+    this.eventEmitter.emit('trade.created', normalized);
 
     return normalized;
   }
@@ -117,9 +116,9 @@ export class TradesService {
       const normalized = this.normalizeTrade(trade);
 
       if (updates.status === 'CLOSED') {
-        this.tradesGateway.emitTradeClosed(normalized);
+        this.eventEmitter.emit('trade.closed', normalized);
       } else {
-        this.tradesGateway.emitTradeUpdated(normalized);
+        this.eventEmitter.emit('trade.updated', normalized);
       }
 
       return normalized;

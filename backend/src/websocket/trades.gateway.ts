@@ -8,6 +8,7 @@ import {
 import { Server, Socket } from 'socket.io';
 import { Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
+import { OnEvent } from '@nestjs/event-emitter';
 import { TradesService } from '../trades/trades.service';
 
 @WebSocketGateway({
@@ -65,17 +66,20 @@ export class TradesGateway implements OnGatewayInit, OnGatewayConnection, OnGate
     }
   }
 
-  emitTradeCreated(trade: any) {
+  @OnEvent('trade.created')
+  handleTradeCreated(trade: any) {
     this.server.emit('trade:created', trade);
     this.logger.debug(`Emitted trade:created for ${trade.symbol}`);
   }
 
-  emitTradeUpdated(trade: any) {
+  @OnEvent('trade.updated')
+  handleTradeUpdated(trade: any) {
     this.server.emit('trade:updated', trade);
     this.logger.debug(`Emitted trade:updated for ${trade.symbol}`);
   }
 
-  emitTradeClosed(trade: any) {
+  @OnEvent('trade.closed')
+  handleTradeClosed(trade: any) {
     this.server.emit('trade:closed', trade);
     this.logger.debug(`Emitted trade:closed for ${trade.symbol}`);
   }
