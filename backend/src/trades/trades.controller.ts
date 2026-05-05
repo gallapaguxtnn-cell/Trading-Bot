@@ -65,10 +65,71 @@ export class TradesController {
   @Get(':id/executions')
   async getTradeExecutions(@Param('id') id: string) {
     try {
-      return await this.tradesService.findExecutions(id);
+      this.logger.log(`[EXECUTIONS] Fetching executions for trade ${id}`);
+
+      const trade = await this.tradesService.findById(id);
+      if (!trade) {
+        this.logger.warn(`[EXECUTIONS] Trade ${id} not found`);
+        return [];
+      }
+
+      let executions = await this.tradesService.findExecutions(id);
+
+      if (executions.length === 0 && trade.status !== 'ERROR') {
+        this.logger.warn(`[EXECUTIONS] No executions found for trade ${id}. Creating ENTRY execution from trade data.`);
+
+        await this.tradesService.createExecution({
+          tradeId: trade.id,
+          type: ExecutionType.ENTRY,
+          price: trade.entryPrice,
+          quantity: trade.quantity,
+          pnl: null,
+          percentOfPosition: null,
+          exchangeOrderId: trade.exchangeOrderId
+        });
+
+        if (trade.status === 'CLOSED' && trade.exitPrice) {
+          const closeType = this.getCloseExecutionType(trade.closeReason);
+
+          await this.tradesService.createExecution({
+            tradeId: trade.id,
+            type: closeType,
+            price: trade.exitPrice,
+            quantity: trade.quantity,
+            pnl: trade.pnl,
+            percentOfPosition: 100,
+            exchangeOrderId: null
+          });
+        }
+
+        executions = await this.tradesService.findExecutions(id);
+        this.logger.log(`[EXECUTIONS] Created missing executions. Total: ${executions.length}`);
+      }
+
+      this.logger.log(`[EXECUTIONS] Returning ${executions.length} executions for trade ${id}`);
+      return executions;
     } catch (error: any) {
-      this.logger.error(`Failed to fetch executions for trade ${id}: ${error.message}`);
+      this.logger.error(`[EXECUTIONS] Failed to fetch executions for trade ${id}: ${error.message}`, error.stack);
       return [];
+    }
+  }
+
+  private getCloseExecutionType(closeReason?: string): ExecutionType {
+    if (!closeReason) return ExecutionType.MANUAL_CLOSE;
+
+    switch (closeReason) {
+      case 'TAKE_PROFIT_1':
+        return ExecutionType.TAKE_PROFIT_1;
+      case 'TAKE_PROFIT_2':
+        return ExecutionType.TAKE_PROFIT_2;
+      case 'TAKE_PROFIT_3':
+        return ExecutionType.TAKE_PROFIT_3;
+      case 'STOP_LOSS':
+        return ExecutionType.STOP_LOSS;
+      case 'SIGNAL':
+        return ExecutionType.SIGNAL_CLOSE;
+      default:
+        return ExecutionType.MANUAL_CLOSE;
     }
   }
 

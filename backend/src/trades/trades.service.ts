@@ -226,12 +226,17 @@ export class TradesService {
   };
 
   async findExecutions(tradeId: string): Promise<any[]> {
-    const executions = await this.executionsRepository.find({
-      where: { tradeId },
-      order: { executedAt: 'ASC' }
-    });
+    try {
+      const executions = await this.executionsRepository.find({
+        where: { tradeId },
+        order: { executedAt: 'ASC' }
+      });
 
-    return executions.map(this.normalizeExecution);
+      return executions.map(this.normalizeExecution);
+    } catch (error: any) {
+      console.error(`[TradesService] Error finding executions for trade ${tradeId}:`, error.message);
+      throw error;
+    }
   }
 
   private normalizeExecution = (execution: TradeExecution): any => {

@@ -27,17 +27,23 @@ export function TradeTimeline({ tradeId }: TradeTimelineProps) {
     const fetchExecutions = async () => {
       try {
         setLoading(true);
-        const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
-        const response = await fetch(`${apiUrl}/trades/${tradeId}/executions`);
+        setError(null);
+        const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000';
+        const url = `${apiUrl}/trades/${tradeId}/executions`;
+
+        const response = await fetch(url);
 
         if (!response.ok) {
-          throw new Error('Failed to fetch executions');
+          const errorText = await response.text();
+          throw new Error(`HTTP ${response.status}: ${errorText || 'Failed to fetch executions'}`);
         }
 
         const data = await response.json();
-        setEvents(data);
+        setEvents(Array.isArray(data) ? data : []);
       } catch (err) {
-        setError(err instanceof Error ? err.message : 'Unknown error');
+        const errorMessage = err instanceof Error ? err.message : 'Unknown error';
+        console.error('[TradeTimeline] Error fetching executions:', errorMessage);
+        setError(errorMessage);
       } finally {
         setLoading(false);
       }
@@ -58,16 +64,28 @@ export function TradeTimeline({ tradeId }: TradeTimelineProps) {
 
   if (error) {
     return (
-      <div className="text-sm text-red-400 py-2">
-        Error: {error}
+      <div className="bg-red-900/20 border border-red-500/30 rounded-lg p-4 space-y-2">
+        <div className="text-sm font-semibold text-red-400">Failed to load executions</div>
+        <div className="text-xs text-red-300 font-mono">{error}</div>
+        <div className="text-xs text-gray-400 mt-2">
+          This may occur if:
+          <ul className="list-disc list-inside mt-1 ml-2">
+            <li>The backend is not running</li>
+            <li>The API URL is incorrect</li>
+            <li>There are network issues</li>
+          </ul>
+        </div>
       </div>
     );
   }
 
   if (events.length === 0) {
     return (
-      <div className="text-sm text-gray-400 py-2">
-        No executions recorded yet
+      <div className="bg-slate-700/30 rounded-lg p-4 text-center">
+        <div className="text-sm text-gray-400">No execution history available</div>
+        <div className="text-xs text-gray-500 mt-1">
+          Executions will appear here when the trade is closed or take profit levels are hit
+        </div>
       </div>
     );
   }
