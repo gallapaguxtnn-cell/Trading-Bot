@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { TradeTimeline } from './TradeTimeline';
+import { formatPrice, formatQuantity, formatPnL, formatDateUTC, formatTimeUTC, formatCloseReason } from '@/lib/formatters';
 
 interface Trade {
   id: string;
@@ -9,10 +10,10 @@ interface Trade {
   side: string;
   status: string;
   type?: string;
-  entryPrice: number;
-  exitPrice?: number;
-  quantity: number;
-  pnl?: number;
+  entryPrice: number | string;
+  exitPrice?: number | string | null;
+  quantity: number | string;
+  pnl?: number | string | null;
   closeReason?: string;
   timestamp: string;
   closedAt?: string;
@@ -25,19 +26,13 @@ interface TradeCardProps {
 export function TradeCard({ trade }: TradeCardProps) {
   const [showTimeline, setShowTimeline] = useState(false);
 
-  const totalPnl = trade.pnl || 0;
-  const exitPrice = trade.exitPrice || null;
+  const getPnLValue = (): number => {
+    if (!trade.pnl) return 0;
+    return typeof trade.pnl === 'string' ? parseFloat(trade.pnl) : trade.pnl;
+  };
+
+  const totalPnl = getPnLValue();
   const isClosed = trade.status === 'CLOSED';
-
-  const formatPrice = (price: number | null | undefined) => {
-    if (!price) return '-';
-    return `$${parseFloat(price.toString()).toFixed(2)}`;
-  };
-
-  const formatCloseReason = (reason?: string) => {
-    if (!reason) return '-';
-    return reason.replace(/_/g, ' ');
-  };
 
   const getStatusColor = () => {
     if (trade.status === 'OPEN') return 'bg-blue-900 text-blue-300';
@@ -48,7 +43,6 @@ export function TradeCard({ trade }: TradeCardProps) {
 
   return (
     <div className="bg-gray-800 rounded-lg p-4 space-y-3 border border-gray-700 hover:border-gray-600 transition-colors">
-      {/* Header */}
       <div className="flex justify-between items-start">
         <div className="flex items-center gap-2">
           <span className="font-bold text-lg">{trade.symbol}</span>
@@ -62,11 +56,10 @@ export function TradeCard({ trade }: TradeCardProps) {
           </span>
         </div>
         <div className={`font-mono text-lg font-bold ${totalPnl >= 0 ? 'text-green-500' : 'text-red-500'}`}>
-          {totalPnl >= 0 ? '+' : ''}{totalPnl.toFixed(2)} USDT
+          {formatPnL(trade.pnl)} USDT
         </div>
       </div>
 
-      {/* Price Information */}
       <div className="grid grid-cols-2 gap-4 text-sm">
         <div>
           <div className="text-gray-400 text-xs mb-1">Entry Price</div>
@@ -74,11 +67,11 @@ export function TradeCard({ trade }: TradeCardProps) {
         </div>
         <div>
           <div className="text-gray-400 text-xs mb-1">Exit Price</div>
-          <div className="font-mono font-semibold">{formatPrice(exitPrice)}</div>
+          <div className="font-mono font-semibold">{formatPrice(trade.exitPrice)}</div>
         </div>
         <div>
           <div className="text-gray-400 text-xs mb-1">Quantity</div>
-          <div className="font-mono">{trade.quantity != null ? parseFloat(trade.quantity.toString()).toFixed(4) : '-'}</div>
+          <div className="font-mono">{formatQuantity(trade.quantity)}</div>
         </div>
         <div>
           <div className="text-gray-400 text-xs mb-1">Type</div>
@@ -86,7 +79,6 @@ export function TradeCard({ trade }: TradeCardProps) {
         </div>
       </div>
 
-      {/* Close Reason */}
       {isClosed && trade.closeReason && (
         <div className="border-t border-gray-700 pt-3">
           <div className="flex items-center justify-between text-xs">
@@ -96,7 +88,6 @@ export function TradeCard({ trade }: TradeCardProps) {
         </div>
       )}
 
-      {/* Timeline Toggle */}
       <div className="border-t border-gray-700 pt-3">
         <button
           onClick={() => setShowTimeline(!showTimeline)}
@@ -106,7 +97,7 @@ export function TradeCard({ trade }: TradeCardProps) {
             {showTimeline ? '▼' : '▶'} Execution Timeline
           </span>
           <span className="text-xs text-gray-400">
-            {new Date(trade.timestamp).toLocaleDateString()} {new Date(trade.timestamp).toLocaleTimeString()}
+            {formatDateUTC(trade.timestamp)} {formatTimeUTC(trade.timestamp)} UTC
           </span>
         </button>
 

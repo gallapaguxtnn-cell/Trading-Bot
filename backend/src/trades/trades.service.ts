@@ -134,11 +134,11 @@ export class TradesService {
         .slice(0, 50);
 
       return {
-        totalPnL: this.roundToTwo(totalPnL),
-        realizedPnL: this.roundToTwo(realizedPnL),
-        unrealizedPnL: this.roundToTwo(unrealizedPnL),
+        totalPnL,
+        realizedPnL,
+        unrealizedPnL,
         activePositions: openTrades.length,
-        winRate: this.roundToOne(winRate),
+        winRate,
         totalTrades: closedTrades.length,
         wins,
         losses,
@@ -181,54 +181,46 @@ export class TradesService {
     return parseFloat(pnl) || 0;
   }
 
-  private parsePrice(price: any): number {
-    if (price === null || price === undefined || price === '') {
+  private parseValue(value: any): number | string {
+    if (value === null || value === undefined || value === '') {
       return 0;
     }
-    const parsed = parseFloat(price);
-    return isNaN(parsed) ? 0 : parsed;
-  }
-
-  private roundToTwo(value: number): number {
-    if (!isFinite(value) || isNaN(value)) {
-      return 0;
+    if (typeof value === 'string') {
+      const parsed = parseFloat(value);
+      return isNaN(parsed) ? 0 : value;
     }
-    return Math.round(value * 100) / 100;
-  }
-
-  private roundToOne(value: number): number {
-    if (!isFinite(value) || isNaN(value)) {
-      return 0;
+    if (typeof value === 'number') {
+      return isNaN(value) ? 0 : value;
     }
-    return Math.round(value * 10) / 10;
+    return value.toString();
   }
 
   private normalizeTrade = (trade: Trade): any => {
     try {
       return {
         ...trade,
-        pnl: trade.pnl ? this.parsePnL(trade.pnl) : null,
-        entryPrice: this.parsePrice(trade.entryPrice),
-        exitPrice: trade.exitPrice ? this.parsePrice(trade.exitPrice) : null,
-        quantity: this.parsePrice(trade.quantity),
-        binancePositionAmt: trade.binancePositionAmt ? this.parsePrice(trade.binancePositionAmt) : null,
-        currentStopLoss: trade.currentStopLoss ? this.parsePrice(trade.currentStopLoss) : null,
-        initialQuantity: trade.initialQuantity ? this.parsePrice(trade.initialQuantity) : null,
+        pnl: trade.pnl !== null && trade.pnl !== undefined ? this.parseValue(trade.pnl) : null,
+        entryPrice: this.parseValue(trade.entryPrice),
+        exitPrice: trade.exitPrice !== null && trade.exitPrice !== undefined ? this.parseValue(trade.exitPrice) : null,
+        quantity: this.parseValue(trade.quantity),
+        binancePositionAmt: trade.binancePositionAmt !== null && trade.binancePositionAmt !== undefined ? this.parseValue(trade.binancePositionAmt) : null,
+        currentStopLoss: trade.currentStopLoss !== null && trade.currentStopLoss !== undefined ? this.parseValue(trade.currentStopLoss) : null,
+        initialQuantity: trade.initialQuantity !== null && trade.initialQuantity !== undefined ? this.parseValue(trade.initialQuantity) : null,
         timestamp: trade.timestamp,
         closedAt: trade.closedAt
       };
     } catch (error) {
       return {
         ...trade,
-        pnl: 0,
+        pnl: null,
         entryPrice: 0,
         exitPrice: null,
         quantity: 0,
         binancePositionAmt: null,
         currentStopLoss: null,
         initialQuantity: null,
-        timestamp: new Date(),
-        closedAt: null
+        timestamp: trade.timestamp || new Date(),
+        closedAt: trade.closedAt || null
       };
     }
   };
@@ -246,10 +238,10 @@ export class TradesService {
     try {
       return {
         ...execution,
-        price: this.parsePrice(execution.price),
-        quantity: this.parsePrice(execution.quantity),
-        pnl: execution.pnl !== null && execution.pnl !== undefined ? this.parsePrice(execution.pnl) : null,
-        percentOfPosition: execution.percentOfPosition !== null && execution.percentOfPosition !== undefined ? this.parsePrice(execution.percentOfPosition) : null,
+        price: this.parseValue(execution.price),
+        quantity: this.parseValue(execution.quantity),
+        pnl: execution.pnl !== null && execution.pnl !== undefined ? this.parseValue(execution.pnl) : null,
+        percentOfPosition: execution.percentOfPosition !== null && execution.percentOfPosition !== undefined ? this.parseValue(execution.percentOfPosition) : null,
         executedAt: execution.executedAt
       };
     } catch (error) {
@@ -259,7 +251,7 @@ export class TradesService {
         quantity: 0,
         pnl: null,
         percentOfPosition: null,
-        executedAt: new Date()
+        executedAt: execution.executedAt || new Date()
       };
     }
   };

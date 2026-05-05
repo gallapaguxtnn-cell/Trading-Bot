@@ -300,7 +300,7 @@ export class TradesController {
         exchangeOrderId: null
       });
 
-      this.logger.log(`[CLOSE] Trade ${trade.id} closed successfully with P&L: ${pnl.toFixed(4)}`);
+      this.logger.log(`[CLOSE] Trade ${trade.id} closed successfully with P&L: ${pnl}`);
 
       return { success: true, pnl };
 

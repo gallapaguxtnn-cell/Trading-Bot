@@ -2,16 +2,17 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { TradeCard } from '@/components/trades/TradeCard';
+import { formatPrice, formatPnL, formatDateUTC, formatTimeUTC } from '@/lib/formatters';
 
 interface LogEntry {
   id: string;
   symbol: string;
   side: 'BUY' | 'SELL';
   type?: string;
-  entryPrice: number;
-  exitPrice?: number;
-  quantity: number;
-  pnl?: number;
+  entryPrice: number | string;
+  exitPrice?: number | string | null;
+  quantity: number | string;
+  pnl?: number | string | null;
   status: 'OPEN' | 'CLOSED' | 'ERROR';
   closeReason?: string;
   closedAt?: string;
@@ -59,9 +60,14 @@ export default function LogsPage() {
     return () => clearInterval(interval);
   }, [autoRefresh, fetchLogs]);
 
+  const getPnLValue = (pnl: number | string | null | undefined): number => {
+    if (!pnl) return 0;
+    return typeof pnl === 'string' ? parseFloat(pnl) : pnl;
+  };
+
   const getLogLevel = (log: LogEntry): 'INFO' | 'SUCCESS' | 'ERROR' => {
     if (log.status === 'ERROR' || log.error) return 'ERROR';
-    if (log.status === 'CLOSED' && log.pnl != null && log.pnl > 0) return 'SUCCESS';
+    if (log.status === 'CLOSED' && log.pnl != null && getPnLValue(log.pnl) > 0) return 'SUCCESS';
     return 'INFO';
   };
 
@@ -98,14 +104,14 @@ export default function LogsPage() {
 
     parts.push(
       <span key="price" className="text-slate-400 ml-2">
-        @ ${log.entryPrice ? log.entryPrice.toFixed(2) : 'N/A'}
+        @ {formatPrice(log.entryPrice)}
       </span>
     );
 
     if (log.exitPrice != null) {
       parts.push(
         <span key="exit" className="text-slate-400 ml-1">
-          -&gt; ${log.exitPrice.toFixed(2)}
+          -&gt; {formatPrice(log.exitPrice)}
         </span>
       );
     }
@@ -129,9 +135,10 @@ export default function LogsPage() {
     }
 
     if (log.pnl != null && log.status === 'CLOSED') {
+      const pnlVal = getPnLValue(log.pnl);
       parts.push(
-        <span key="pnl" className={`ml-2 font-semibold ${log.pnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-          {log.pnl > 0 ? '+' : ''}${log.pnl.toFixed(2)}
+        <span key="pnl" className={`ml-2 font-semibold ${pnlVal >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+          {formatPnL(log.pnl)} USDT
         </span>
       );
     }
@@ -167,7 +174,7 @@ export default function LogsPage() {
             </button>
             {lastRefresh && (
               <span className="text-xs text-slate-500">
-                Last: {lastRefresh.toLocaleTimeString()}
+                Last: {formatTimeUTC(lastRefresh)} UTC
               </span>
             )}
           </div>
@@ -251,17 +258,15 @@ export default function LogsPage() {
           ) : (
             filteredLogs.map((log) => {
               const level = getLogLevel(log);
-              const date = new Date(log.timestamp);
 
               return (
                 <div
                   key={log.id}
                   className="p-4 hover:bg-slate-700/30 transition-colors flex items-start gap-4"
                 >
-                  {/* Time */}
-                  <div className="text-xs text-slate-500 font-mono w-20 flex-shrink-0">
-                    <div>{date.toLocaleDateString()}</div>
-                    <div>{date.toLocaleTimeString()}</div>
+                  <div className="text-xs text-slate-500 font-mono w-28 flex-shrink-0">
+                    <div>{formatDateUTC(log.timestamp)}</div>
+                    <div>{formatTimeUTC(log.timestamp)} UTC</div>
                   </div>
 
                   {/* Level Badge */}

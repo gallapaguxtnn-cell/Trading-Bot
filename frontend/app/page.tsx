@@ -6,6 +6,7 @@ import { StatsCard } from '@/components/dashboard/StatsCard';
 import { Table } from '@/components/ui/Table';
 import { TradeCard } from '@/components/trades/TradeCard';
 import { closeAllPositions, pauseAllStrategies, resumeAllStrategies, closePosition } from '@/lib/api';
+import { formatPrice, formatQuantity, formatPnL, formatDateUTC, formatTimeUTC } from '@/lib/formatters';
 
 export default function Home() {
   const { stats, isConnected, lastUpdate, forceSync, isSyncing } = useTradesSocket();
@@ -15,9 +16,15 @@ export default function Home() {
   const [isPausingAll, setIsPausingAll] = useState(false);
   const [allPaused, setAllPaused] = useState(false);
 
-  const totalPnl = stats?.totalPnL || 0;
-  const realizedPnl = stats?.realizedPnL || 0;
-  const unrealizedPnl = stats?.unrealizedPnL || 0;
+  const getPnLValue = (pnl: number | string | null | undefined): number => {
+    if (!pnl) return 0;
+    return typeof pnl === 'string' ? parseFloat(pnl) : pnl;
+  };
+
+  const totalPnl = getPnLValue(stats?.totalPnL);
+  const realizedPnl = getPnLValue(stats?.realizedPnL);
+  const unrealizedPnl = getPnLValue(stats?.unrealizedPnL);
+  const winRate = stats?.winRate || 0;
 
   const handleCloseAll = async () => {
     if (!confirm('Are you sure you want to close ALL open positions? This action cannot be undone.')) return;
@@ -145,28 +152,28 @@ export default function Home() {
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
         <StatsCard
           title="Total P&L"
-          value={`${totalPnl >= 0 ? '+' : ''}$${totalPnl.toFixed(2)}`}
+          value={`${formatPnL(totalPnl)} USDT`}
           subValue="Realized + Unrealized"
           subColor="text-slate-400"
           valueColor={totalPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}
         />
         <StatsCard
           title="Win Rate"
-          value={`${(stats?.winRate || 0).toFixed(1)}%`}
+          value={`${winRate}%`}
           subValue={`${stats?.wins || 0}W / ${stats?.losses || 0}L`}
           subColor="text-slate-400"
-          valueColor={(stats?.winRate || 0) >= 50 ? 'text-emerald-400' : 'text-amber-400'}
+          valueColor={winRate >= 50 ? 'text-emerald-400' : 'text-amber-400'}
         />
         <StatsCard
           title="Realized P&L"
-          value={`${realizedPnl >= 0 ? '+' : ''}$${realizedPnl.toFixed(2)}`}
+          value={`${formatPnL(realizedPnl)} USDT`}
           subValue={`${stats?.totalTrades || 0} closed trades`}
           subColor="text-slate-400"
           valueColor={realizedPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}
         />
         <StatsCard
           title="Unrealized P&L"
-          value={`${unrealizedPnl >= 0 ? '+' : ''}$${unrealizedPnl.toFixed(2)}`}
+          value={`${formatPnL(unrealizedPnl)} USDT`}
           subValue={`${stats?.activePositions || 0} open positions`}
           subColor="text-slate-400"
           valueColor={unrealizedPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}
@@ -208,7 +215,7 @@ export default function Home() {
                   header: 'Entry Price',
                   accessor: (item) => (
                     <span className="text-slate-300 font-mono">
-                      ${item.entryPrice?.toFixed(2) || '0.00'}
+                      {formatPrice(item.entryPrice)}
                     </span>
                   ),
                 },
@@ -216,15 +223,15 @@ export default function Home() {
                   header: 'Quantity',
                   accessor: (item) => (
                     <span className="text-slate-300 font-mono">
-                      {item.quantity?.toFixed(4) || '0.0000'}
+                      {formatQuantity(item.quantity)}
                     </span>
                   ),
                 },
                 {
                   header: 'Unrealized P&L',
                   accessor: (item) => {
-                    const val = item.pnl;
-                    if (val === null || val === undefined) {
+                    const val = getPnLValue(item.pnl);
+                    if (item.pnl === null || item.pnl === undefined) {
                       return <span className="text-slate-500">-</span>;
                     }
                     return (
@@ -233,22 +240,19 @@ export default function Home() {
                           val >= 0 ? 'text-emerald-400' : 'text-rose-400'
                         }`}
                       >
-                        {val > 0 ? '+' : ''}${val.toFixed(2)}
+                        {formatPnL(item.pnl)} USDT
                       </span>
                     );
                   },
                 },
                 {
                   header: 'Opened',
-                  accessor: (item) => {
-                    const date = new Date(item.timestamp);
-                    return (
-                      <div className="text-sm">
-                        <div className="text-slate-400">{date.toLocaleDateString()}</div>
-                        <div className="text-slate-500 text-xs">{date.toLocaleTimeString()}</div>
-                      </div>
-                    );
-                  },
+                  accessor: (item) => (
+                    <div className="text-sm">
+                      <div className="text-slate-400">{formatDateUTC(item.timestamp)}</div>
+                      <div className="text-slate-500 text-xs">{formatTimeUTC(item.timestamp)} UTC</div>
+                    </div>
+                  ),
                 },
                 {
                   header: 'Action',
@@ -325,15 +329,12 @@ export default function Home() {
               columns={[
               {
                 header: 'Date',
-                accessor: (item) => {
-                  const date = new Date(item.timestamp);
-                  return (
-                    <div className="text-sm">
-                      <div className="text-white">{date.toLocaleDateString()}</div>
-                      <div className="text-slate-500 text-xs">{date.toLocaleTimeString()}</div>
-                    </div>
-                  );
-                },
+                accessor: (item) => (
+                  <div className="text-sm">
+                    <div className="text-white">{formatDateUTC(item.timestamp)}</div>
+                    <div className="text-slate-500 text-xs">{formatTimeUTC(item.timestamp)} UTC</div>
+                  </div>
+                ),
               },
               {
                 header: 'Symbol',
@@ -359,7 +360,7 @@ export default function Home() {
                 header: 'Entry',
                 accessor: (item) => (
                   <span className="text-slate-300 font-mono">
-                    ${item.entryPrice?.toFixed(2) || '0.00'}
+                    {formatPrice(item.entryPrice)}
                   </span>
                 ),
               },
@@ -367,7 +368,7 @@ export default function Home() {
                 header: 'Exit',
                 accessor: (item) => (
                   <span className="text-slate-300 font-mono">
-                    {item.exitPrice ? `$${item.exitPrice.toFixed(2)}` : '-'}
+                    {formatPrice(item.exitPrice)}
                   </span>
                 ),
               },
@@ -375,24 +376,24 @@ export default function Home() {
                 header: 'Quantity',
                 accessor: (item) => (
                   <span className="text-slate-300 font-mono">
-                    {item.quantity?.toFixed(4) || '0.0000'}
+                    {formatQuantity(item.quantity)}
                   </span>
                 ),
               },
               {
                 header: 'P&L',
                 accessor: (item) => {
-                  const val = item.pnl;
-                  if (val === null || val === undefined) {
+                  if (item.pnl === null || item.pnl === undefined) {
                     return <span className="text-slate-500">-</span>;
                   }
+                  const val = getPnLValue(item.pnl);
                   return (
                     <span
                       className={`font-semibold ${
                         val >= 0 ? 'text-emerald-400' : 'text-rose-400'
                       }`}
                     >
-                      {val > 0 ? '+' : ''}${val.toFixed(2)}
+                      {formatPnL(item.pnl)} USDT
                     </span>
                   );
                 },

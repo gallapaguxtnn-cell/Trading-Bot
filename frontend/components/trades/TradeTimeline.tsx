@@ -1,14 +1,15 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { formatPrice, formatQuantity, formatPnL, formatPercent, formatTimeUTC, formatCloseReason } from '@/lib/formatters';
 
 interface TimelineEvent {
   id: string;
   type: string;
-  price: number;
-  quantity: number;
-  pnl: number;
-  percentOfPosition: number;
+  price: number | string;
+  quantity: number | string;
+  pnl: number | string | null;
+  percentOfPosition: number | string | null;
   executedAt: string;
   exchangeOrderId?: string;
 }
@@ -71,10 +72,6 @@ export function TradeTimeline({ tradeId }: TradeTimelineProps) {
     );
   }
 
-  const formatType = (type: string) => {
-    return type.replace(/_/g, ' ');
-  };
-
   const getTypeColor = (type: string) => {
     if (type === 'ENTRY') return 'border-blue-500';
     if (type.includes('TAKE_PROFIT')) return 'border-green-500';
@@ -82,33 +79,42 @@ export function TradeTimeline({ tradeId }: TradeTimelineProps) {
     return 'border-gray-500';
   };
 
+  const getPnLValue = (pnl: number | string | null): number => {
+    if (pnl === null || pnl === undefined) return 0;
+    return typeof pnl === 'string' ? parseFloat(pnl) : pnl;
+  };
+
+  const getPercentValue = (percent: number | string | null): number => {
+    if (percent === null || percent === undefined) return 100;
+    return typeof percent === 'string' ? parseFloat(percent) : percent;
+  };
+
   return (
     <div className="space-y-3 mt-2">
-      {events.map((event, idx) => (
+      {events.map((event) => (
         <div key={event.id} className={`flex items-start gap-3 border-l-2 ${getTypeColor(event.type)} pl-3 py-1`}>
-          <div className="flex-shrink-0 w-20">
+          <div className="flex-shrink-0 w-24">
             <div className="text-xs text-gray-400">
-              {new Date(event.executedAt).toLocaleTimeString()}
+              {formatTimeUTC(event.executedAt)}
             </div>
           </div>
 
           <div className="flex-1 min-w-0">
-            <div className="font-semibold text-sm">{formatType(event.type)}</div>
+            <div className="font-semibold text-sm">{formatCloseReason(event.type)}</div>
             <div className="text-xs text-gray-300">
-              {event.quantity != null ? parseFloat(event.quantity.toString()).toFixed(4) : '0.0000'} @ ${event.price != null ? parseFloat(event.price.toString()).toFixed(2) : '0.00'}
-              {event.percentOfPosition != null && event.percentOfPosition < 100 && (
+              {formatQuantity(event.quantity)} @ {formatPrice(event.price)}
+              {event.percentOfPosition !== null && getPercentValue(event.percentOfPosition) < 100 && (
                 <span className="ml-1 text-gray-400">
-                  ({parseFloat(event.percentOfPosition.toString()).toFixed(0)}%)
+                  ({formatPercent(event.percentOfPosition)})
                 </span>
               )}
             </div>
           </div>
 
           <div className={`flex-shrink-0 font-mono text-sm font-semibold ${
-            parseFloat(event.pnl?.toString() || '0') >= 0 ? 'text-green-500' : 'text-red-500'
+            getPnLValue(event.pnl) >= 0 ? 'text-green-500' : 'text-red-500'
           }`}>
-            {parseFloat(event.pnl?.toString() || '0') >= 0 ? '+' : ''}
-            {parseFloat(event.pnl?.toString() || '0').toFixed(2)}
+            {formatPnL(event.pnl)} USDT
           </div>
         </div>
       ))}
