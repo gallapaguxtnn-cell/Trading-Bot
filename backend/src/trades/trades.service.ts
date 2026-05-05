@@ -1,8 +1,9 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Inject, forwardRef } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Trade } from '../strategies/trade.entity';
 import { TradeExecution } from './trade-execution.entity';
+import { TradesGateway } from '../websocket/trades.gateway';
 
 @Injectable()
 export class TradesService {
@@ -11,11 +12,17 @@ export class TradesService {
     private readonly tradesRepository: Repository<Trade>,
     @InjectRepository(TradeExecution)
     private readonly executionsRepository: Repository<TradeExecution>,
+    @Inject(forwardRef(() => TradesGateway))
+    private readonly tradesGateway: TradesGateway,
   ) {}
 
   async create(trade: Partial<Trade>): Promise<any> {
     const savedTrade = await this.tradesRepository.save(trade);
-    return this.normalizeTrade(savedTrade);
+    const normalized = this.normalizeTrade(savedTrade);
+
+    this.tradesGateway.emitTradeCreated(normalized);
+
+    return normalized;
   }
 
   async findAll(status?: string, limit: number = 50): Promise<any[]> {
@@ -105,7 +112,20 @@ export class TradesService {
   async updateTrade(id: string, updates: Partial<Trade>): Promise<any> {
     await this.tradesRepository.update(id, updates);
     const trade = await this.tradesRepository.findOneBy({ id });
-    return trade ? this.normalizeTrade(trade) : null;
+
+    if (trade) {
+      const normalized = this.normalizeTrade(trade);
+
+      if (updates.status === 'CLOSED') {
+        this.tradesGateway.emitTradeClosed(normalized);
+      } else {
+        this.tradesGateway.emitTradeUpdated(normalized);
+      }
+
+      return normalized;
+    }
+
+    return null;
   }
 
   async getStats() {

@@ -7,11 +7,13 @@ import { TradesController } from './trades.controller';
 import { PositionSyncModule } from '../position-sync/position-sync.module';
 import { StrategiesModule } from '../strategies/strategies.module';
 import { ExchangeModule } from '../exchange/exchange.module';
+import { WebSocketModule } from '../websocket/websocket.module';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([Trade, TradeExecution]),
     forwardRef(() => PositionSyncModule),
+    forwardRef(() => WebSocketModule),
     StrategiesModule,
     ExchangeModule,
   ],

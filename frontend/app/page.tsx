@@ -6,7 +6,7 @@ import { StatsCard } from '@/components/dashboard/StatsCard';
 import { Table } from '@/components/ui/Table';
 import { TradeCard } from '@/components/trades/TradeCard';
 import { closeAllPositions, pauseAllStrategies, resumeAllStrategies, closePosition } from '@/lib/api';
-import { formatPrice, formatQuantity, formatPnL, formatDateUTC, formatTimeUTC } from '@/lib/formatters';
+import { formatPrice, formatQuantity, formatPnL, formatPnLSummary, formatPercentSummary, formatDateUTC, formatTimeUTC } from '@/lib/formatters';
 
 export default function Home() {
   const { stats, isConnected, lastUpdate, forceSync, isSyncing } = useTradesSocket();
@@ -152,28 +152,28 @@ export default function Home() {
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
         <StatsCard
           title="Total P&L"
-          value={`${formatPnL(totalPnl)} USDT`}
+          value={`${formatPnLSummary(totalPnl)} USDT`}
           subValue="Realized + Unrealized"
           subColor="text-slate-400"
           valueColor={totalPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}
         />
         <StatsCard
           title="Win Rate"
-          value={`${winRate}%`}
+          value={formatPercentSummary(winRate)}
           subValue={`${stats?.wins || 0}W / ${stats?.losses || 0}L`}
           subColor="text-slate-400"
           valueColor={winRate >= 50 ? 'text-emerald-400' : 'text-amber-400'}
         />
         <StatsCard
           title="Realized P&L"
-          value={`${formatPnL(realizedPnl)} USDT`}
+          value={`${formatPnLSummary(realizedPnl)} USDT`}
           subValue={`${stats?.totalTrades || 0} closed trades`}
           subColor="text-slate-400"
           valueColor={realizedPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}
         />
         <StatsCard
           title="Unrealized P&L"
-          value={`${formatPnL(unrealizedPnl)} USDT`}
+          value={`${formatPnLSummary(unrealizedPnl)} USDT`}
           subValue={`${stats?.activePositions || 0} open positions`}
           subColor="text-slate-400"
           valueColor={unrealizedPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}

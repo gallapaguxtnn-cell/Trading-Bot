@@ -32,6 +32,18 @@ export function formatPnL(pnl: number | string | null | undefined, withSign: boo
   return `${sign}${valueStr}`;
 }
 
+export function formatPnLSummary(pnl: number | string | null | undefined, withSign: boolean = true): string {
+  if (pnl === null || pnl === undefined || pnl === '') return '-';
+
+  const numValue = typeof pnl === 'string' ? parseFloat(pnl) : pnl;
+  if (isNaN(numValue)) return '-';
+
+  const rounded = numValue.toFixed(2);
+  const sign = withSign && numValue > 0 ? '+' : '';
+
+  return `${sign}${rounded}`;
+}
+
 export function formatPercent(value: number | string | null | undefined): string {
   if (value === null || value === undefined || value === '') return '-';
 
@@ -41,6 +53,15 @@ export function formatPercent(value: number | string | null | undefined): string
   const valueStr = typeof value === 'string' ? value : numValue.toString();
 
   return `${valueStr}%`;
+}
+
+export function formatPercentSummary(value: number | string | null | undefined, decimals: number = 1): string {
+  if (value === null || value === undefined || value === '') return '-';
+
+  const numValue = typeof value === 'string' ? parseFloat(value) : value;
+  if (isNaN(numValue)) return '-';
+
+  return `${numValue.toFixed(decimals)}%`;
 }
 
 export function formatDateUTC(date: Date | string | null | undefined): string {

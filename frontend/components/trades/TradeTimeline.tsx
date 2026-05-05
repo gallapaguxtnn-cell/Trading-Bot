@@ -29,7 +29,7 @@ export function TradeTimeline({ tradeId }: TradeTimelineProps) {
         setLoading(true);
         setError(null);
         const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000';
-        const url = `${apiUrl}/trades/${tradeId}/executions`;
+        const url = `${apiUrl}/api/trades/${tradeId}/executions`;
 
         const response = await fetch(url);
 

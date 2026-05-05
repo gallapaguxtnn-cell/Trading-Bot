@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { TradeCard } from '@/components/trades/TradeCard';
-import { formatPrice, formatPnL, formatDateUTC, formatTimeUTC } from '@/lib/formatters';
+import { formatPrice, formatPnL, formatPnLSummary, formatDateUTC, formatTimeUTC } from '@/lib/formatters';
 
 interface LogEntry {
   id: string;
@@ -138,7 +138,7 @@ export default function LogsPage() {
       const pnlVal = getPnLValue(log.pnl);
       parts.push(
         <span key="pnl" className={`ml-2 font-semibold ${pnlVal >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-          {formatPnL(log.pnl)} USDT
+          {formatPnLSummary(log.pnl)} USDT
         </span>
       );
     }
