@@ -1,4 +1,4 @@
-import { Entity, PrimaryGeneratedColumn, Column, ManyToOne, CreateDateColumn, JoinColumn } from 'typeorm';
+import { Entity, PrimaryGeneratedColumn, Column, ManyToOne, JoinColumn } from 'typeorm';
 import { Trade } from '../strategies/trade.entity';
 
 export enum ExecutionType {
@@ -41,7 +41,7 @@ export class TradeExecution {
   @Column({ type: 'decimal', precision: 18, scale: 8, nullable: true })
   percentOfPosition: number | null;
 
-  @CreateDateColumn()
+  @Column({ type: 'timestamp', default: () => 'CURRENT_TIMESTAMP' })
   executedAt: Date;
 
   @Column({ type: 'text', nullable: true })

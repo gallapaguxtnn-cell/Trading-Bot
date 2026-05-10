@@ -271,13 +271,28 @@ export default function Home() {
         </div>
       )}
 
+      {/* Error Trades Section */}
+      {stats?.errorTrades && stats.errorTrades.length > 0 && (
+        <div className="mt-8">
+          <h3 className="text-xl font-semibold mb-4 text-white flex items-center gap-2">
+            <span className="w-2 h-2 rounded-full bg-rose-500" />
+            Error Trades ({stats.errorTrades.length})
+          </h3>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {stats.errorTrades.slice(0, 6).map((trade: any) => (
+              <TradeCard key={trade.id} trade={trade} />
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Recent Trades Section */}
       <div className="mt-8">
         <div className="flex justify-between items-center mb-4">
           <h3 className="text-xl font-semibold text-white">Recent Trades</h3>
           <div className="flex gap-4">
             <div className="flex gap-2">
-              {(['ALL', 'OPEN', 'CLOSED'] as const).map((f) => (
+              {(['ALL', 'OPEN', 'CLOSED', 'ERROR'] as const).map((f) => (
                 <button
                   key={f}
                   onClick={() => setFilter(f)}

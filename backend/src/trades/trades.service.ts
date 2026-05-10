@@ -109,6 +109,10 @@ export class TradesService {
   }
 
   async updateTrade(id: string, updates: Partial<Trade>): Promise<any> {
+    if (updates.status === 'ERROR' && !updates.closedAt) {
+      updates.closedAt = new Date();
+    }
+
     await this.tradesRepository.update(id, updates);
     const trade = await this.tradesRepository.findOneBy({ id });
 
@@ -117,6 +121,8 @@ export class TradesService {
 
       if (updates.status === 'CLOSED') {
         this.eventEmitter.emit('trade.closed', normalized);
+      } else if (updates.status === 'ERROR') {
+        this.eventEmitter.emit('trade.error', normalized);
       } else {
         this.eventEmitter.emit('trade.updated', normalized);
       }
@@ -129,7 +135,7 @@ export class TradesService {
 
   async getStats() {
     try {
-      const [openTrades, closedTrades] = await Promise.all([
+      const [openTrades, closedTrades, errorTrades] = await Promise.all([
         this.tradesRepository.find({
           where: { status: 'OPEN' },
           order: { timestamp: 'DESC' }
@@ -137,6 +143,11 @@ export class TradesService {
         this.tradesRepository.find({
           where: { status: 'CLOSED' },
           order: { timestamp: 'DESC' }
+        }),
+        this.tradesRepository.find({
+          where: { status: 'ERROR' },
+          order: { timestamp: 'DESC' },
+          take: 50
         })
       ]);
 
@@ -148,7 +159,7 @@ export class TradesService {
       const losses = this.countLosses(closedTrades);
       const winRate = this.calculateWinRate(wins, closedTrades.length);
 
-      const allTrades = [...openTrades, ...closedTrades]
+      const allTrades = [...openTrades, ...closedTrades, ...errorTrades]
         .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
         .slice(0, 50);
 
@@ -162,7 +173,8 @@ export class TradesService {
         wins,
         losses,
         recentSignals: allTrades.map(this.normalizeTrade),
-        openPositions: openTrades.map(this.normalizeTrade)
+        openPositions: openTrades.map(this.normalizeTrade),
+        errorTrades: errorTrades.map(this.normalizeTrade)
       };
     } catch (error) {
       return {
@@ -175,7 +187,8 @@ export class TradesService {
         wins: 0,
         losses: 0,
         recentSignals: [],
-        openPositions: []
+        openPositions: [],
+        errorTrades: []
       };
     }
   }

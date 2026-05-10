@@ -85,10 +85,11 @@ export class TradesController {
           quantity: trade.quantity,
           pnl: null,
           percentOfPosition: null,
-          exchangeOrderId: trade.exchangeOrderId
+          exchangeOrderId: trade.exchangeOrderId,
+          executedAt: trade.timestamp
         });
 
-        if (trade.status === 'CLOSED' && trade.exitPrice) {
+        if (trade.status === 'CLOSED' && trade.exitPrice && trade.closedAt) {
           const closeType = this.getCloseExecutionType(trade.closeReason);
 
           await this.tradesService.createExecution({
@@ -98,7 +99,8 @@ export class TradesController {
             quantity: trade.quantity,
             pnl: trade.pnl,
             percentOfPosition: 100,
-            exchangeOrderId: null
+            exchangeOrderId: null,
+            executedAt: trade.closedAt
           });
         }
 

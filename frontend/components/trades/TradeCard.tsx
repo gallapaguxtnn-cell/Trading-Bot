@@ -36,9 +36,17 @@ export function TradeCard({ trade }: TradeCardProps) {
 
   const getStatusColor = () => {
     if (trade.status === 'OPEN') return 'bg-blue-900 text-blue-300';
+    if (trade.status === 'ERROR') return 'bg-rose-900 text-rose-300';
     if (trade.status === 'CLOSED' && totalPnl >= 0) return 'bg-green-900 text-green-300';
     if (trade.status === 'CLOSED' && totalPnl < 0) return 'bg-red-900 text-red-300';
     return 'bg-gray-900 text-gray-300';
+  };
+
+  const getDisplayTimestamp = () => {
+    if (trade.status === 'ERROR' && trade.closedAt) {
+      return trade.closedAt;
+    }
+    return trade.timestamp;
   };
 
   return (
@@ -97,7 +105,7 @@ export function TradeCard({ trade }: TradeCardProps) {
             {showTimeline ? '▼' : '▶'} Execution Timeline
           </span>
           <span className="text-xs text-gray-400">
-            {formatDateUTC(trade.timestamp)} {formatTimeUTC(trade.timestamp)} UTC
+            {formatDateUTC(getDisplayTimestamp())} {formatTimeUTC(getDisplayTimestamp())} UTC
           </span>
         </button>
 
