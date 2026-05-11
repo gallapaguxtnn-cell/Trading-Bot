@@ -29,6 +29,7 @@ interface DashboardStats {
   losses: number;
   recentSignals: Trade[];
   openPositions: Trade[];
+  errorTrades: Trade[];
 }
 
 interface UseTradesSocketReturn {
