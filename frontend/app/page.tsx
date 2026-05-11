@@ -10,7 +10,7 @@ import { formatPrice, formatQuantity, formatPnL, formatPnLSummary, formatPercent
 
 export default function Home() {
   const { stats, isConnected, lastUpdate, forceSync, isSyncing } = useTradesSocket();
-  const [filter, setFilter] = useState<'ALL' | 'OPEN' | 'CLOSED'>('ALL');
+  const [filter, setFilter] = useState<'ALL' | 'OPEN' | 'CLOSED' | 'ERROR'>('ALL');
   const [viewMode, setViewMode] = useState<'table' | 'cards'>('cards');
   const [isClosingAll, setIsClosingAll] = useState(false);
   const [isPausingAll, setIsPausingAll] = useState(false);
