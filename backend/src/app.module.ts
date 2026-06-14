@@ -15,6 +15,8 @@ import { StopLossModule } from './stop-loss/stop-loss.module';
 import { TakeProfitModule } from './take-profit/take-profit.module';
 import { WebSocketModule } from './websocket/websocket.module';
 import { BinanceWebSocketModule } from './binance-ws/binance-ws.module';
+import { AuditorModule } from './auditor/auditor.module';
+import { AiChatModule } from './ai-chat/ai-chat.module';
 
 @Module({
   imports: [
@@ -63,7 +65,9 @@ import { BinanceWebSocketModule } from './binance-ws/binance-ws.module';
     PositionSyncModule,
     StopLossModule,
     TakeProfitModule,
-    WebSocketModule
+    WebSocketModule,
+    AuditorModule,
+    AiChatModule,
   ],
   controllers: [AppController],
   providers: [AppService],
