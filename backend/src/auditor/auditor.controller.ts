@@ -1,5 +1,5 @@
 import { Controller, Get, Post, Param, Query, Body } from '@nestjs/common';
-import { AuditorService } from './auditor.service';
+import { AuditorService, ReconciliationResult } from './auditor.service';
 import { AuditCategory, AuditSeverity } from './audit-log.entity';
 
 interface BacktestTradeDto {
@@ -27,7 +27,7 @@ export class AuditorController {
   constructor(private readonly auditorService: AuditorService) {}
 
   @Post('reconcile/trade/:tradeId')
-  async reconcileTrade(@Param('tradeId') tradeId: string) {
+  async reconcileTrade(@Param('tradeId') tradeId: string): Promise<ReconciliationResult> {
     return this.auditorService.reconcileTrade(tradeId);
   }
 
@@ -36,7 +36,7 @@ export class AuditorController {
     @Param('strategyId') strategyId: string,
     @Query('from') from?: string,
     @Query('to') to?: string,
-  ) {
+  ): Promise<Record<string, unknown>> {
     return this.auditorService.reconcileStrategy(
       strategyId,
       from ? new Date(from) : undefined,

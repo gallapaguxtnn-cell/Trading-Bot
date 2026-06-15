@@ -7,6 +7,7 @@ import { Trade } from '../strategies/trade.entity';
 import { TradeExecution } from '../trades/trade-execution.entity';
 import { Strategy } from '../strategies/strategy.entity';
 import { ExchangeService } from '../exchange/exchange.service';
+import { EncryptionUtil } from '../utils/encryption.util';
 import Decimal from 'decimal.js';
 
 interface ExchangeOrder {
@@ -20,7 +21,7 @@ interface ExchangeOrder {
   time: number;
 }
 
-interface ReconciliationResult {
+export interface ReconciliationResult {
   tradeId: string;
   issues: AuditLog[];
   exchangeData: ExchangeOrder | null;
@@ -395,7 +396,6 @@ export class AuditorService {
     orderId: string,
   ): Promise<ExchangeOrder | null> {
     try {
-      const { EncryptionUtil } = await import('../utils/encryption.util');
       const apiKey = await EncryptionUtil.decrypt(strategy.apiKey);
       const apiSecret = await EncryptionUtil.decrypt(strategy.apiSecret);
       const isTestnet = !!strategy.isTestnet;

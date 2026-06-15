@@ -45,13 +45,13 @@ export class AuditLog {
   details: Record<string, unknown>;
 
   @Column({ type: 'decimal', precision: 18, scale: 8, nullable: true })
-  expectedValue: number;
+  expectedValue: number | null;
 
   @Column({ type: 'decimal', precision: 18, scale: 8, nullable: true })
-  actualValue: number;
+  actualValue: number | null;
 
   @Column({ type: 'decimal', precision: 18, scale: 8, nullable: true })
-  deviation: number;
+  deviation: number | null;
 
   @CreateDateColumn()
   createdAt: Date;
