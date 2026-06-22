@@ -96,3 +96,50 @@ export async function closePosition(tradeId: string) {
   if (!res.ok) throw new Error('Failed to close position');
   return res.json();
 }
+
+export async function getAuditSummary(strategyId?: string) {
+  const params = strategyId ? `?strategyId=${strategyId}` : '';
+  const res = await fetch(`${API_URL}/api/auditor/summary${params}`, { cache: 'no-store' });
+  if (!res.ok) throw new Error('Failed to fetch audit summary');
+  return res.json();
+}
+
+export async function getAuditLogs(filters: {
+  strategyId?: string;
+  category?: string;
+  severity?: string;
+  limit?: number;
+}) {
+  const params = new URLSearchParams();
+  if (filters.strategyId) params.set('strategyId', filters.strategyId);
+  if (filters.category) params.set('category', filters.category);
+  if (filters.severity) params.set('severity', filters.severity);
+  if (filters.limit) params.set('limit', String(filters.limit));
+  const res = await fetch(`${API_URL}/api/auditor/logs?${params}`, { cache: 'no-store' });
+  if (!res.ok) throw new Error('Failed to fetch audit logs');
+  return res.json();
+}
+
+export async function reconcileStrategy(strategyId: string) {
+  const res = await fetch(`${API_URL}/api/auditor/reconcile/strategy/${strategyId}`, {
+    method: 'POST',
+  });
+  if (!res.ok) throw new Error('Failed to reconcile strategy');
+  return res.json();
+}
+
+export async function sendChatMessage(message: string, history: Array<{ role: string; content: string }>, strategyId?: string) {
+  const res = await fetch(`${API_URL}/api/ai-chat`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message, history, strategyId }),
+  });
+  if (!res.ok) throw new Error('Failed to send chat message');
+  return res.json();
+}
+
+export async function getChatStatus() {
+  const res = await fetch(`${API_URL}/api/ai-chat/status`, { cache: 'no-store' });
+  if (!res.ok) throw new Error('Failed to get chat status');
+  return res.json();
+}

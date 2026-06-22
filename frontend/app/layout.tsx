@@ -30,10 +30,16 @@ export default function RootLayout({
             <Link href="/strategies" className="block py-2 px-4 rounded hover:bg-slate-700 transition">
               Strategies
             </Link>
+            <Link href="/auditor" className="block py-2 px-4 rounded hover:bg-slate-700 transition">
+              Auditor
+            </Link>
+            <Link href="/chat" className="block py-2 px-4 rounded hover:bg-slate-700 transition">
+              AI Chat
+            </Link>
             <Link href="/settings" className="block py-2 px-4 rounded hover:bg-slate-700 transition">
               Settings
             </Link>
-             <Link href="/logs" className="block py-2 px-4 rounded hover:bg-slate-700 transition">
+            <Link href="/logs" className="block py-2 px-4 rounded hover:bg-slate-700 transition">
               Logs
             </Link>
           </nav>
