@@ -12,7 +12,11 @@ interface BacktestTradeDto {
   size_usd: number;
   leverage: number;
   fee_usd: number;
+  entry_fee_usd?: number;
+  exit_fee_usd?: number;
   pnl_usd: number;
+  pnl_pct: number;
+  balance_after: number;
 }
 
 interface CompareBacktestDto {
@@ -22,7 +26,18 @@ interface CompareBacktestDto {
   to?: string;
 }
 
-@Controller('api/auditor')
+interface AuditBacktestDto {
+  trades: BacktestTradeDto[];
+  stats?: {
+    total_pnl_usd?: number;
+    win_rate?: number;
+    max_drawdown_pct?: number;
+    total_trades?: number;
+    total_fees?: number;
+  };
+}
+
+@Controller('auditor')
 export class AuditorController {
   constructor(private readonly auditorService: AuditorService) {}
 
@@ -52,6 +67,11 @@ export class AuditorController {
       body.from ? new Date(body.from) : undefined,
       body.to ? new Date(body.to) : undefined,
     );
+  }
+
+  @Post('audit-backtest')
+  auditBacktest(@Body() body: AuditBacktestDto) {
+    return this.auditorService.auditBacktestData(body.trades, body.stats);
   }
 
   @Get('logs')

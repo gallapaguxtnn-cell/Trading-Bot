@@ -5,9 +5,10 @@ interface ChatRequestDto {
   message: string;
   history?: Array<{ role: 'user' | 'assistant'; content: string }>;
   strategyId?: string;
+  context?: string;
 }
 
-@Controller('api/ai-chat')
+@Controller('ai-chat')
 export class AiChatController {
   constructor(private readonly aiChatService: AiChatService) {}
 
@@ -17,6 +18,7 @@ export class AiChatController {
       body.message,
       body.history || [],
       body.strategyId,
+      body.context,
     );
     return { response };
   }

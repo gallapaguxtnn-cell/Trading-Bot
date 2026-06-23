@@ -71,7 +71,11 @@ export class AuditorService {
     const trade = await this.tradeRepo.findOne({ where: { id: tradeId } });
     if (!trade) throw new Error(`Trade ${tradeId} not found`);
 
-    const strategy = await this.strategyRepo.findOne({ where: { id: trade.strategyId } });
+    const strategy = await this.strategyRepo
+      .createQueryBuilder('strategy')
+      .addSelect(['strategy.apiKey', 'strategy.apiSecret'])
+      .where('strategy.id = :id', { id: trade.strategyId })
+      .getOne();
     if (!strategy) throw new Error(`Strategy ${trade.strategyId} not found`);
 
     const executions = await this.execRepo.find({ where: { tradeId } });
@@ -211,8 +215,12 @@ export class AuditorService {
     const results: ReconciliationResult[] = [];
 
     for (const trade of trades) {
-      const result = await this.reconcileTrade(trade.id);
-      results.push(result);
+      try {
+        const result = await this.reconcileTrade(trade.id);
+        results.push(result);
+      } catch (err) {
+        this.logger.warn(`Reconcile failed for trade ${trade.id}: ${err}`);
+      }
     }
 
     const totalIssues = results.reduce((sum, r) => sum + r.issues.length, 0);
@@ -387,6 +395,206 @@ export class AuditorService {
       pnlDifference: btPnl - botPnl,
       details: matched,
       unmatchedTrades: unmatched,
+    };
+  }
+
+  auditBacktestData(
+    trades: Array<{
+      side: string;
+      entry_price: number;
+      exit_price: number;
+      entry_time: string;
+      exit_time: string;
+      exit_reason: string;
+      size_usd: number;
+      leverage: number;
+      fee_usd: number;
+      entry_fee_usd?: number;
+      exit_fee_usd?: number;
+      pnl_usd: number;
+      pnl_pct: number;
+      balance_after: number;
+    }>,
+    stats?: {
+      total_pnl_usd?: number;
+      win_rate?: number;
+      max_drawdown_pct?: number;
+      total_trades?: number;
+      total_fees?: number;
+    },
+  ) {
+    const TOLERANCE = 0.01;
+    const issues: Array<{
+      type: string;
+      severity: string;
+      message: string;
+      tradeIndex?: number;
+      expected?: number;
+      actual?: number;
+    }> = [];
+
+    for (let i = 0; i < trades.length; i++) {
+      const t = trades[i];
+
+      const priceChange = t.side === 'LONG'
+        ? (t.exit_price - t.entry_price) / t.entry_price
+        : (t.entry_price - t.exit_price) / t.entry_price;
+      const expectedGross = t.size_usd * priceChange * (t.leverage || 1);
+      const pnlDiff = Math.abs(expectedGross - t.pnl_usd);
+      if (pnlDiff > TOLERANCE) {
+        issues.push({
+          type: 'PNL_MISMATCH',
+          severity: pnlDiff > 1 ? 'ERROR' : 'WARNING',
+          message: `Trade #${i + 1}: P&L bruto esperado ${expectedGross.toFixed(4)}, registrado ${t.pnl_usd.toFixed(4)} (diff: ${pnlDiff.toFixed(4)})`,
+          tradeIndex: i,
+          expected: expectedGross,
+          actual: t.pnl_usd,
+        });
+      }
+
+      const entryFee = t.entry_fee_usd || 0;
+      const exitFee = t.exit_fee_usd || 0;
+      const sumFees = entryFee + exitFee;
+      if (entryFee > 0 && exitFee > 0 && Math.abs(sumFees - t.fee_usd) > TOLERANCE) {
+        issues.push({
+          type: 'FEE_SUM_MISMATCH',
+          severity: 'WARNING',
+          message: `Trade #${i + 1}: entry(${entryFee.toFixed(4)}) + exit(${exitFee.toFixed(4)}) = ${sumFees.toFixed(4)}, total registrado: ${t.fee_usd.toFixed(4)}`,
+          tradeIndex: i,
+          expected: sumFees,
+          actual: t.fee_usd,
+        });
+      }
+
+      if (t.fee_usd < 0) {
+        issues.push({
+          type: 'NEGATIVE_FEE',
+          severity: 'ERROR',
+          message: `Trade #${i + 1}: taxa negativa detectada: ${t.fee_usd.toFixed(4)}`,
+          tradeIndex: i,
+          expected: 0,
+          actual: t.fee_usd,
+        });
+      }
+
+      const entryTime = new Date(t.entry_time).getTime();
+      const exitTime = new Date(t.exit_time).getTime();
+      if (entryTime >= exitTime) {
+        issues.push({
+          type: 'TIME_INCONSISTENCY',
+          severity: 'ERROR',
+          message: `Trade #${i + 1}: entrada >= saida (${t.entry_time} >= ${t.exit_time})`,
+          tradeIndex: i,
+        });
+      }
+
+      if (t.entry_price <= 0 || t.exit_price <= 0) {
+        issues.push({
+          type: 'INVALID_PRICE',
+          severity: 'ERROR',
+          message: `Trade #${i + 1}: preco invalido (entry=${t.entry_price}, exit=${t.exit_price})`,
+          tradeIndex: i,
+        });
+      }
+
+      if (t.size_usd <= 0) {
+        issues.push({
+          type: 'INVALID_SIZE',
+          severity: 'ERROR',
+          message: `Trade #${i + 1}: tamanho invalido (${t.size_usd})`,
+          tradeIndex: i,
+        });
+      }
+
+      if (t.size_usd > 0) {
+        const netPnl = t.pnl_usd - (t.fee_usd || 0);
+        const expectedPct = (netPnl / t.size_usd) * 100;
+        if (Math.abs(expectedPct - t.pnl_pct) > 0.05) {
+          issues.push({
+            type: 'PNL_PCT_MISMATCH',
+            severity: 'WARNING',
+            message: `Trade #${i + 1}: pnl_pct esperado ${expectedPct.toFixed(2)}%, registrado ${t.pnl_pct.toFixed(2)}%`,
+            tradeIndex: i,
+            expected: expectedPct,
+            actual: t.pnl_pct,
+          });
+        }
+      }
+
+      if (i > 0) {
+        const prev = trades[i - 1];
+        const netPnl = t.pnl_usd - (t.fee_usd || 0);
+        const expectedBalance = prev.balance_after + netPnl;
+        const balDiff = Math.abs(expectedBalance - t.balance_after);
+        if (balDiff > TOLERANCE) {
+          issues.push({
+            type: 'BALANCE_DISCONTINUITY',
+            severity: balDiff > 1 ? 'ERROR' : 'WARNING',
+            message: `Trade #${i + 1}: saldo esperado ${expectedBalance.toFixed(2)}, registrado ${t.balance_after.toFixed(2)} (diff: ${balDiff.toFixed(2)})`,
+            tradeIndex: i,
+            expected: expectedBalance,
+            actual: t.balance_after,
+          });
+        }
+      }
+    }
+
+    if (stats) {
+      const calcTotalPnl = trades.reduce((s, t) => s + (t.pnl_usd - (t.fee_usd || 0)), 0);
+      const reportedPnl = stats.total_pnl_usd || 0;
+      if (Math.abs(calcTotalPnl - reportedPnl) > 0.1) {
+        issues.push({
+          type: 'STATS_PNL_MISMATCH',
+          severity: 'ERROR',
+          message: `P&L total: soma dos trades ${calcTotalPnl.toFixed(2)}, stats reporta ${reportedPnl.toFixed(2)}`,
+          expected: calcTotalPnl,
+          actual: reportedPnl,
+        });
+      }
+
+      const winTrades = trades.filter(t => (t.pnl_usd - (t.fee_usd || 0)) > 0);
+      const expectedWinRate = trades.length > 0 ? (winTrades.length / trades.length) * 100 : 0;
+      const reportedWinRate = stats.win_rate || 0;
+      if (Math.abs(expectedWinRate - reportedWinRate) > 0.5) {
+        issues.push({
+          type: 'STATS_WINRATE_MISMATCH',
+          severity: 'WARNING',
+          message: `Win rate: calculado ${expectedWinRate.toFixed(1)}%, stats reporta ${reportedWinRate.toFixed(1)}%`,
+          expected: expectedWinRate,
+          actual: reportedWinRate,
+        });
+      }
+    }
+
+    const errors = issues.filter(i => i.severity === 'ERROR' || i.severity === 'CRITICAL').length;
+    const warnings = issues.filter(i => i.severity === 'WARNING').length;
+
+    const tradesSummary = trades.slice(0, 50).map((t, i) =>
+      `#${i + 1} ${t.side} entry=${t.entry_price} exit=${t.exit_price} pnl=${t.pnl_usd.toFixed(2)} fee=${(t.fee_usd || 0).toFixed(4)} reason=${t.exit_reason}`,
+    ).join('\n');
+
+    const issuesSummary = issues.map(i =>
+      `[${i.severity}] ${i.message}`,
+    ).join('\n');
+
+    const aiContext = `BACKTEST AUDIT REPORT
+Trades: ${trades.length} | Errors: ${errors} | Warnings: ${warnings}
+Win rate: ${stats?.win_rate?.toFixed(1) ?? 'N/A'}% | Total PnL: $${stats?.total_pnl_usd?.toFixed(2) ?? 'N/A'}
+Max Drawdown: ${stats?.max_drawdown_pct?.toFixed(1) ?? 'N/A'}%
+
+ISSUES:
+${issuesSummary || 'Nenhum problema encontrado.'}
+
+TRADES (primeiros 50):
+${tradesSummary}`;
+
+    return {
+      passed: errors === 0,
+      totalIssues: issues.length,
+      errors,
+      warnings,
+      issues,
+      aiContext,
     };
   }
 

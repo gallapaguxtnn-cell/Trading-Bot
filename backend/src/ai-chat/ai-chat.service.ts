@@ -43,6 +43,7 @@ export class AiChatService {
     userMessage: string,
     conversationHistory: ChatMessage[],
     strategyId?: string,
+    directContext?: string,
   ): Promise<string> {
     if (!this.client) {
       throw new Error('ANTHROPIC_API_KEY not configured');
@@ -50,7 +51,9 @@ export class AiChatService {
 
     let contextData = '';
 
-    if (strategyId) {
+    if (directContext) {
+      contextData = `\n\n--- CONTEXT ---\n${directContext}\n--- END CONTEXT ---\n`;
+    } else if (strategyId) {
       try {
         const [summary, recentLogs] = await Promise.all([
           this.auditorService.getAuditSummary(strategyId),
