@@ -479,11 +479,11 @@ export class AuditorService {
 
       const entryTime = new Date(t.entry_time).getTime();
       const exitTime = new Date(t.exit_time).getTime();
-      if (entryTime >= exitTime) {
+      if (entryTime > exitTime) {
         issues.push({
           type: 'TIME_INCONSISTENCY',
           severity: 'ERROR',
-          message: `Trade #${i + 1}: entrada >= saida (${t.entry_time} >= ${t.exit_time})`,
+          message: `Trade #${i + 1}: entrada depois da saida (${t.entry_time} > ${t.exit_time})`,
           tradeIndex: i,
         });
       }
