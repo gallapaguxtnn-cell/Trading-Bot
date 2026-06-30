@@ -78,90 +78,155 @@ export class AuditorService {
       .getOne();
     if (!strategy) throw new Error(`Strategy ${trade.strategyId} not found`);
 
-    const executions = await this.execRepo.find({ where: { tradeId } });
+    const executions = await this.execRepo.find({
+      where: { tradeId },
+      order: { executedAt: 'ASC' },
+    });
     const issues: AuditLog[] = [];
+    let totalFeesFromExchange = 0;
 
-    let exchangeOrder: ExchangeOrder | null = null;
-    let feesFromExchange = 0;
+    const entryOrder = await this.safelyFetchOrder(strategy, trade.symbol, trade.exchangeOrderId);
+    if (entryOrder) {
+      totalFeesFromExchange += entryOrder.commission;
 
-    if (trade.exchangeOrderId) {
-      try {
-        exchangeOrder = await this.fetchExchangeOrder(
-          strategy,
-          trade.symbol,
-          trade.exchangeOrderId,
-        );
-        if (exchangeOrder) {
-          feesFromExchange = exchangeOrder.commission;
-        }
-      } catch (err) {
-        this.logger.warn(`Could not fetch exchange order ${trade.exchangeOrderId}: ${err}`);
-      }
-    }
-
-    if (exchangeOrder && trade.entryPrice) {
       const botEntry = new Decimal(trade.entryPrice);
-      const exchEntry = new Decimal(exchangeOrder.avgPrice);
+      const exchEntry = new Decimal(entryOrder.avgPrice);
       const slippagePct = botEntry.minus(exchEntry).div(exchEntry).abs().times(100);
       const slippageVal = slippagePct.toNumber();
 
       if (slippagePct.gt(0.01)) {
-        const log = this.createLog(trade, AuditCategory.PRICE_DEVIATION,
+        issues.push(this.createLog(trade, AuditCategory.PRICE_DEVIATION,
           slippageVal > 0.5 ? AuditSeverity.ERROR : AuditSeverity.WARNING,
-          `Entry price deviation: bot=${botEntry.toFixed(8)} exchange=${exchEntry.toFixed(8)} (${slippagePct.toFixed(4)}%)`,
-          { botPrice: trade.entryPrice, exchangePrice: exchangeOrder.avgPrice },
-          exchangeOrder.avgPrice, Number(trade.entryPrice), slippageVal,
-        );
-        issues.push(log);
+          `Entrada: bot registrou $${botEntry.toFixed(8)}, exchange executou $${exchEntry.toFixed(8)} (desvio ${slippagePct.toFixed(4)}%)`,
+          { botPrice: trade.entryPrice, exchangePrice: entryOrder.avgPrice, orderId: entryOrder.orderId },
+          entryOrder.avgPrice, Number(trade.entryPrice), slippageVal,
+        ));
       }
 
-      if (slippagePct.gt(0.05)) {
-        const slippageLog = this.createLog(trade, AuditCategory.SLIPPAGE,
-          slippageVal > 0.3 ? AuditSeverity.ERROR : AuditSeverity.WARNING,
-          `Slippage detected: ${slippagePct.toFixed(4)}%`,
-          { expectedPrice: trade.entryPrice, actualPrice: exchangeOrder.avgPrice },
-          Number(trade.entryPrice), exchangeOrder.avgPrice, slippageVal,
-        );
-        issues.push(slippageLog);
+      if (entryOrder.status !== 'closed' && entryOrder.status !== 'FILLED') {
+        issues.push(this.createLog(trade, AuditCategory.MISSED_FILL,
+          AuditSeverity.ERROR,
+          `Ordem de entrada nao preenchida: status=${entryOrder.status}, qty executada=${entryOrder.executedQty}`,
+          { orderId: entryOrder.orderId, status: entryOrder.status, filled: entryOrder.executedQty },
+        ));
+      }
+    } else if (trade.exchangeOrderId) {
+      issues.push(this.createLog(trade, AuditCategory.ORDER_REJECTED,
+        AuditSeverity.WARNING,
+        `Ordem de entrada ${trade.exchangeOrderId} nao encontrada na exchange`,
+        { orderId: trade.exchangeOrderId },
+      ));
+    }
+
+    const slOrder = await this.safelyFetchOrder(strategy, trade.symbol, trade.stopLossOrderId);
+    if (slOrder) {
+      totalFeesFromExchange += slOrder.commission;
+      if (trade.closeReason === 'STOP_LOSS' && trade.exitPrice) {
+        const botExit = new Decimal(trade.exitPrice);
+        const exchExit = new Decimal(slOrder.avgPrice);
+        const slSlippage = botExit.minus(exchExit).div(exchExit).abs().times(100);
+        if (slSlippage.gt(0.05)) {
+          issues.push(this.createLog(trade, AuditCategory.SLIPPAGE,
+            slSlippage.gt(0.5) ? AuditSeverity.ERROR : AuditSeverity.WARNING,
+            `Stop Loss slippage: bot=$${botExit.toFixed(8)}, exchange=$${exchExit.toFixed(8)} (${slSlippage.toFixed(4)}%)`,
+            { botPrice: Number(trade.exitPrice), exchangePrice: slOrder.avgPrice, orderId: slOrder.orderId },
+            Number(trade.exitPrice), slOrder.avgPrice, slSlippage.toNumber(),
+          ));
+        }
+      }
+    } else if (trade.stopLossOrderId) {
+      issues.push(this.createLog(trade, AuditCategory.ORDER_REJECTED,
+        AuditSeverity.WARNING,
+        `Ordem de stop loss ${trade.stopLossOrderId} nao encontrada na exchange`,
+        { orderId: trade.stopLossOrderId },
+      ));
+    }
+
+    for (const exec of executions) {
+      if (exec.type === 'ENTRY') continue;
+      if (!exec.exchangeOrderId) continue;
+      const execOrder = await this.safelyFetchOrder(strategy, trade.symbol, exec.exchangeOrderId);
+      if (execOrder) {
+        totalFeesFromExchange += execOrder.commission;
+        const botPrice = new Decimal(exec.price);
+        const exchPrice = new Decimal(execOrder.avgPrice);
+        const deviation = botPrice.minus(exchPrice).div(exchPrice).abs().times(100);
+        if (deviation.gt(0.05)) {
+          issues.push(this.createLog(trade, AuditCategory.SLIPPAGE,
+            deviation.gt(0.5) ? AuditSeverity.ERROR : AuditSeverity.WARNING,
+            `${exec.type} slippage: bot=$${botPrice.toFixed(8)}, exchange=$${exchPrice.toFixed(8)} (${deviation.toFixed(4)}%)`,
+            { type: exec.type, botPrice: Number(exec.price), exchangePrice: execOrder.avgPrice, orderId: execOrder.orderId },
+            Number(exec.price), execOrder.avgPrice, deviation.toNumber(),
+          ));
+        }
+        if (exec.type.startsWith('TAKE_PROFIT') && execOrder.executedQty > 0) {
+          const expectedQty = exec.quantity;
+          const filledQty = execOrder.executedQty;
+          const qtyDev = Math.abs(Number(expectedQty) - filledQty) / Number(expectedQty) * 100;
+          if (qtyDev > 1) {
+            issues.push(this.createLog(trade, AuditCategory.MISSED_FILL,
+              qtyDev > 10 ? AuditSeverity.ERROR : AuditSeverity.WARNING,
+              `${exec.type} fill parcial: esperado ${expectedQty}, executado ${filledQty} (${qtyDev.toFixed(1)}% diferenca)`,
+              { type: exec.type, expected: Number(expectedQty), filled: filledQty },
+              Number(expectedQty), filledQty, qtyDev,
+            ));
+          }
+        }
       }
     }
 
-    if (feesFromExchange > 0) {
-      const log = this.createLog(trade, AuditCategory.FEE_MISMATCH,
+    if (totalFeesFromExchange > 0) {
+      issues.push(this.createLog(trade, AuditCategory.FEE_MISMATCH,
         AuditSeverity.WARNING,
-        `Bot P&L does not account for exchange fees: $${feesFromExchange.toFixed(4)}`,
-        { exchangeFees: feesFromExchange, botPnl: trade.pnl },
-        0, feesFromExchange, feesFromExchange,
-      );
-      issues.push(log);
+        `Taxas da exchange: $${totalFeesFromExchange.toFixed(4)} (bot P&L nao desconta taxas)`,
+        { totalExchangeFees: totalFeesFromExchange, botPnl: trade.pnl },
+        0, totalFeesFromExchange, totalFeesFromExchange,
+      ));
     }
 
     let calculatedPnl: number | null = null;
+    const useQty = trade.initialQuantity ?? trade.quantity;
     if (trade.status === 'CLOSED' && trade.exitPrice && trade.entryPrice) {
       const entry = new Decimal(trade.entryPrice);
       const exit = new Decimal(trade.exitPrice);
-      const qty = new Decimal(trade.quantity);
+      const qty = new Decimal(useQty);
       const direction = trade.side === 'BUY' ? 1 : -1;
 
       calculatedPnl = exit.minus(entry).times(qty).times(direction).toNumber();
-      const adjustedPnl = calculatedPnl - feesFromExchange;
 
+      if (executions.length > 1) {
+        const execPnlSum = executions
+          .filter(e => e.pnl !== null)
+          .reduce((s, e) => s + Number(e.pnl), 0);
+        if (execPnlSum !== 0 && trade.pnl !== null) {
+          const execDiff = Math.abs(execPnlSum - Number(trade.pnl));
+          if (execDiff > 0.01) {
+            issues.push(this.createLog(trade, AuditCategory.PNL_MISMATCH,
+              execDiff > 1 ? AuditSeverity.ERROR : AuditSeverity.WARNING,
+              `Soma dos PnL das execucoes ($${execPnlSum.toFixed(4)}) difere do PnL do trade ($${Number(trade.pnl).toFixed(4)}), diff=$${execDiff.toFixed(4)}`,
+              { execPnlSum, tradePnl: Number(trade.pnl), executionCount: executions.length },
+              execPnlSum, Number(trade.pnl), execDiff,
+            ));
+          }
+        }
+      }
+
+      const adjustedPnl = calculatedPnl - totalFeesFromExchange;
       if (trade.pnl !== null) {
         const botPnl = new Decimal(trade.pnl);
         const diff = botPnl.minus(adjustedPnl).abs();
         if (diff.gt(0.01)) {
-          const log = this.createLog(trade, AuditCategory.PNL_MISMATCH,
+          issues.push(this.createLog(trade, AuditCategory.PNL_MISMATCH,
             diff.gt(1) ? AuditSeverity.ERROR : AuditSeverity.WARNING,
-            `P&L mismatch: bot=${botPnl.toFixed(4)} calculated=${new Decimal(adjustedPnl).toFixed(4)} diff=${diff.toFixed(4)}`,
+            `PnL: bot=$${botPnl.toFixed(4)}, calculado=(${exit.toFixed(4)}-${entry.toFixed(4)})×${qty.toFixed(6)}×${direction}-taxas$${totalFeesFromExchange.toFixed(4)}=$${new Decimal(adjustedPnl).toFixed(4)}, diff=$${diff.toFixed(4)}`,
             {
-              botPnl: Number(trade.pnl),
-              calculatedGross: calculatedPnl,
-              calculatedNet: adjustedPnl,
-              fees: feesFromExchange,
+              botPnl: Number(trade.pnl), calculatedGross: calculatedPnl,
+              calculatedNet: adjustedPnl, fees: totalFeesFromExchange,
+              entry: Number(trade.entryPrice), exit: Number(trade.exitPrice),
+              qty: Number(useQty), side: trade.side,
             },
             adjustedPnl, Number(trade.pnl), diff.toNumber(),
-          );
-          issues.push(log);
+          ));
         }
       }
     }
@@ -171,14 +236,29 @@ export class AuditorService {
     if (entryExec && trade.timestamp) {
       signalLatencyMs = new Date(entryExec.executedAt).getTime() - new Date(trade.timestamp).getTime();
       if (signalLatencyMs > 5000) {
-        const log = this.createLog(trade, AuditCategory.SIGNAL_LATENCY,
+        issues.push(this.createLog(trade, AuditCategory.SIGNAL_LATENCY,
           signalLatencyMs > 30000 ? AuditSeverity.ERROR : AuditSeverity.WARNING,
-          `Signal latency: ${signalLatencyMs}ms`,
+          `Latencia do sinal: ${signalLatencyMs}ms (webhook→execucao)`,
           { webhookTime: trade.timestamp, executionTime: entryExec.executedAt },
           0, signalLatencyMs, signalLatencyMs,
-        );
-        issues.push(log);
+        ));
       }
+    }
+
+    if (trade.status === 'CLOSED' && !trade.exitPrice) {
+      issues.push(this.createLog(trade, AuditCategory.PNL_MISMATCH,
+        AuditSeverity.ERROR,
+        `Trade fechado sem preco de saida registrado`,
+        { status: trade.status, closeReason: trade.closeReason },
+      ));
+    }
+
+    if (trade.status === 'ERROR' && trade.error) {
+      issues.push(this.createLog(trade, AuditCategory.ORDER_REJECTED,
+        AuditSeverity.ERROR,
+        `Trade com erro: ${trade.error}`,
+        { error: trade.error, status: trade.status },
+      ));
     }
 
     if (issues.length > 0) {
@@ -188,18 +268,18 @@ export class AuditorService {
     return {
       tradeId,
       issues,
-      exchangeData: exchangeOrder,
+      exchangeData: entryOrder,
       botData: {
         entryPrice: Number(trade.entryPrice),
         exitPrice: trade.exitPrice ? Number(trade.exitPrice) : null,
-        quantity: Number(trade.quantity),
+        quantity: Number(useQty),
         pnl: trade.pnl ? Number(trade.pnl) : null,
       },
       calculatedPnl,
-      feesFromExchange,
+      feesFromExchange: totalFeesFromExchange,
       feesFromBot: 0,
-      slippage: exchangeOrder
-        ? new Decimal(trade.entryPrice).minus(exchangeOrder.avgPrice).abs().div(exchangeOrder.avgPrice).times(100).toNumber()
+      slippage: entryOrder
+        ? new Decimal(trade.entryPrice).minus(entryOrder.avgPrice).abs().div(entryOrder.avgPrice).times(100).toNumber()
         : null,
       signalLatencyMs,
     };
@@ -431,24 +511,28 @@ export class AuditorService {
       tradeIndex?: number;
       expected?: number;
       actual?: number;
+      details?: Record<string, unknown>;
     }> = [];
 
     for (let i = 0; i < trades.length; i++) {
       const t = trades[i];
+      const lev = t.leverage || 1;
 
       const priceChange = t.side === 'LONG'
         ? (t.exit_price - t.entry_price) / t.entry_price
         : (t.entry_price - t.exit_price) / t.entry_price;
-      const expectedGross = t.size_usd * priceChange * (t.leverage || 1);
+      const expectedGross = t.size_usd * priceChange * lev;
       const pnlDiff = Math.abs(expectedGross - t.pnl_usd);
       if (pnlDiff > TOLERANCE) {
+        const formula = `${t.side}: (${t.exit_price} - ${t.entry_price}) / ${t.entry_price} × ${t.size_usd} × ${lev}x`;
         issues.push({
           type: 'PNL_MISMATCH',
           severity: pnlDiff > 1 ? 'ERROR' : 'WARNING',
-          message: `Trade #${i + 1}: P&L bruto esperado ${expectedGross.toFixed(4)}, registrado ${t.pnl_usd.toFixed(4)} (diff: ${pnlDiff.toFixed(4)})`,
+          message: `Trade #${i + 1} ${t.side} ${t.exit_reason}: P&L bruto esperado $${expectedGross.toFixed(4)}, registrado $${t.pnl_usd.toFixed(4)} (diff $${pnlDiff.toFixed(4)}). Formula: ${formula}`,
           tradeIndex: i,
           expected: expectedGross,
           actual: t.pnl_usd,
+          details: { formula, entry: t.entry_price, exit: t.exit_price, size: t.size_usd, leverage: lev, priceChangePct: (priceChange * 100).toFixed(4) },
         });
       }
 
@@ -459,7 +543,7 @@ export class AuditorService {
         issues.push({
           type: 'FEE_SUM_MISMATCH',
           severity: 'WARNING',
-          message: `Trade #${i + 1}: entry(${entryFee.toFixed(4)}) + exit(${exitFee.toFixed(4)}) = ${sumFees.toFixed(4)}, total registrado: ${t.fee_usd.toFixed(4)}`,
+          message: `Trade #${i + 1}: taxa entrada $${entryFee.toFixed(4)} + saida $${exitFee.toFixed(4)} = $${sumFees.toFixed(4)}, total registrado $${t.fee_usd.toFixed(4)} (diff $${Math.abs(sumFees - t.fee_usd).toFixed(4)})`,
           tradeIndex: i,
           expected: sumFees,
           actual: t.fee_usd,
@@ -470,7 +554,7 @@ export class AuditorService {
         issues.push({
           type: 'NEGATIVE_FEE',
           severity: 'ERROR',
-          message: `Trade #${i + 1}: taxa negativa detectada: ${t.fee_usd.toFixed(4)}`,
+          message: `Trade #${i + 1}: taxa negativa $${t.fee_usd.toFixed(4)} (taxas devem ser >= 0)`,
           tradeIndex: i,
           expected: 0,
           actual: t.fee_usd,
@@ -483,7 +567,7 @@ export class AuditorService {
         issues.push({
           type: 'TIME_INCONSISTENCY',
           severity: 'ERROR',
-          message: `Trade #${i + 1}: entrada depois da saida (${t.entry_time} > ${t.exit_time})`,
+          message: `Trade #${i + 1}: entrada (${t.entry_time}) posterior a saida (${t.exit_time})`,
           tradeIndex: i,
         });
       }
@@ -492,7 +576,7 @@ export class AuditorService {
         issues.push({
           type: 'INVALID_PRICE',
           severity: 'ERROR',
-          message: `Trade #${i + 1}: preco invalido (entry=${t.entry_price}, exit=${t.exit_price})`,
+          message: `Trade #${i + 1}: preco invalido — entrada=$${t.entry_price}, saida=$${t.exit_price} (precos devem ser > 0)`,
           tradeIndex: i,
         });
       }
@@ -501,7 +585,7 @@ export class AuditorService {
         issues.push({
           type: 'INVALID_SIZE',
           severity: 'ERROR',
-          message: `Trade #${i + 1}: tamanho invalido (${t.size_usd})`,
+          message: `Trade #${i + 1}: tamanho da posicao invalido $${t.size_usd} (deve ser > 0)`,
           tradeIndex: i,
         });
       }
@@ -509,11 +593,12 @@ export class AuditorService {
       if (t.size_usd > 0) {
         const netPnl = t.pnl_usd - (t.fee_usd || 0);
         const expectedPct = (netPnl / t.size_usd) * 100;
-        if (Math.abs(expectedPct - t.pnl_pct) > 0.05) {
+        const pctDiff = Math.abs(expectedPct - t.pnl_pct);
+        if (pctDiff > 0.05) {
           issues.push({
             type: 'PNL_PCT_MISMATCH',
             severity: 'WARNING',
-            message: `Trade #${i + 1}: pnl_pct esperado ${expectedPct.toFixed(2)}%, registrado ${t.pnl_pct.toFixed(2)}%`,
+            message: `Trade #${i + 1}: pnl% esperado ${expectedPct.toFixed(2)}% [(${t.pnl_usd.toFixed(2)} - ${(t.fee_usd||0).toFixed(2)}) / ${t.size_usd.toFixed(2)} × 100], registrado ${t.pnl_pct.toFixed(2)}% (diff ${pctDiff.toFixed(2)}%)`,
             tradeIndex: i,
             expected: expectedPct,
             actual: t.pnl_pct,
@@ -530,10 +615,11 @@ export class AuditorService {
           issues.push({
             type: 'BALANCE_DISCONTINUITY',
             severity: balDiff > 1 ? 'ERROR' : 'WARNING',
-            message: `Trade #${i + 1}: saldo esperado ${expectedBalance.toFixed(2)}, registrado ${t.balance_after.toFixed(2)} (diff: ${balDiff.toFixed(2)})`,
+            message: `Trade #${i + 1}: saldo esperado $${expectedBalance.toFixed(2)} [anterior $${prev.balance_after.toFixed(2)} + pnl liquido $${netPnl.toFixed(2)}], registrado $${t.balance_after.toFixed(2)} (diff $${balDiff.toFixed(2)})`,
             tradeIndex: i,
             expected: expectedBalance,
             actual: t.balance_after,
+            details: { prevBalance: prev.balance_after, grossPnl: t.pnl_usd, fees: t.fee_usd, netPnl },
           });
         }
       }
@@ -541,14 +627,17 @@ export class AuditorService {
 
     if (stats) {
       const calcTotalPnl = trades.reduce((s, t) => s + (t.pnl_usd - (t.fee_usd || 0)), 0);
+      const totalFees = trades.reduce((s, t) => s + (t.fee_usd || 0), 0);
+      const totalGross = trades.reduce((s, t) => s + t.pnl_usd, 0);
       const reportedPnl = stats.total_pnl_usd || 0;
       if (Math.abs(calcTotalPnl - reportedPnl) > 0.1) {
         issues.push({
           type: 'STATS_PNL_MISMATCH',
           severity: 'ERROR',
-          message: `P&L total: soma dos trades ${calcTotalPnl.toFixed(2)}, stats reporta ${reportedPnl.toFixed(2)}`,
+          message: `P&L total: soma bruta $${totalGross.toFixed(2)} - taxas $${totalFees.toFixed(2)} = liquido $${calcTotalPnl.toFixed(2)}, stats reporta $${reportedPnl.toFixed(2)} (diff $${Math.abs(calcTotalPnl - reportedPnl).toFixed(2)})`,
           expected: calcTotalPnl,
           actual: reportedPnl,
+          details: { grossTotal: totalGross, feesTotal: totalFees, netTotal: calcTotalPnl },
         });
       }
 
@@ -559,7 +648,7 @@ export class AuditorService {
         issues.push({
           type: 'STATS_WINRATE_MISMATCH',
           severity: 'WARNING',
-          message: `Win rate: calculado ${expectedWinRate.toFixed(1)}%, stats reporta ${reportedWinRate.toFixed(1)}%`,
+          message: `Win rate: ${winTrades.length}/${trades.length} = ${expectedWinRate.toFixed(1)}%, stats reporta ${reportedWinRate.toFixed(1)}%`,
           expected: expectedWinRate,
           actual: reportedWinRate,
         });
@@ -570,7 +659,7 @@ export class AuditorService {
     const warnings = issues.filter(i => i.severity === 'WARNING').length;
 
     const tradesSummary = trades.slice(0, 50).map((t, i) =>
-      `#${i + 1} ${t.side} entry=${t.entry_price} exit=${t.exit_price} pnl=${t.pnl_usd.toFixed(2)} fee=${(t.fee_usd || 0).toFixed(4)} reason=${t.exit_reason}`,
+      `#${i + 1} ${t.side} entry=$${t.entry_price} exit=$${t.exit_price} pnl_bruto=$${t.pnl_usd.toFixed(2)} taxa=$${(t.fee_usd || 0).toFixed(4)} pnl_liq=$${(t.pnl_usd - (t.fee_usd||0)).toFixed(2)} saldo=$${t.balance_after.toFixed(2)} motivo=${t.exit_reason}`,
     ).join('\n');
 
     const issuesSummary = issues.map(i =>
@@ -598,31 +687,41 @@ ${tradesSummary}`;
     };
   }
 
+  private async safelyFetchOrder(
+    strategy: Strategy,
+    symbol: string,
+    orderId: string | null,
+  ): Promise<ExchangeOrder | null> {
+    if (!orderId || !strategy.apiKey || !strategy.apiSecret) return null;
+    try {
+      return await this.fetchExchangeOrder(strategy, symbol, orderId);
+    } catch (err) {
+      this.logger.warn(`Could not fetch order ${orderId}: ${err}`);
+      return null;
+    }
+  }
+
   private async fetchExchangeOrder(
     strategy: Strategy,
     symbol: string,
     orderId: string,
   ): Promise<ExchangeOrder | null> {
-    try {
-      const apiKey = await EncryptionUtil.decrypt(strategy.apiKey);
-      const apiSecret = await EncryptionUtil.decrypt(strategy.apiSecret);
-      const isTestnet = !!strategy.isTestnet;
-      const exchangeId = strategy.exchange as 'binance' | 'bybit';
-      const exchange = await this.exchangeService.getExchange(exchangeId, apiKey, apiSecret, isTestnet);
-      const order = await exchange.fetchOrder(orderId, symbol);
-      return {
-        orderId: String(order.id),
-        price: order.price ?? 0,
-        avgPrice: order.average ?? order.price ?? 0,
-        executedQty: order.filled ?? 0,
-        commission: order.fee?.cost ?? 0,
-        commissionAsset: order.fee?.currency ?? 'USDT',
-        status: order.status ?? 'unknown',
-        time: order.timestamp ?? 0,
-      };
-    } catch {
-      return null;
-    }
+    const apiKey = await EncryptionUtil.decrypt(strategy.apiKey);
+    const apiSecret = await EncryptionUtil.decrypt(strategy.apiSecret);
+    const isTestnet = !!strategy.isTestnet;
+    const exchangeId = strategy.exchange as 'binance' | 'bybit';
+    const exchange = await this.exchangeService.getExchange(exchangeId, apiKey, apiSecret, isTestnet);
+    const order = await exchange.fetchOrder(orderId, symbol);
+    return {
+      orderId: String(order.id),
+      price: order.price ?? 0,
+      avgPrice: order.average ?? order.price ?? 0,
+      executedQty: order.filled ?? 0,
+      commission: order.fee?.cost ?? 0,
+      commissionAsset: order.fee?.currency ?? 'USDT',
+      status: order.status ?? 'unknown',
+      time: order.timestamp ?? 0,
+    };
   }
 
   private createLog(
