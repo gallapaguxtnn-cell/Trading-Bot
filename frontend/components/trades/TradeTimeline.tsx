@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { formatPrice, formatQuantity, formatPnL, formatPercent, formatTimeUTC, formatCloseReason } from '@/lib/formatters';
+import { formatPrice, formatQuantity, formatPnL, formatPercent, formatTimeUTC, formatDateTimeUTC, formatCloseReason } from '@/lib/formatters';
 
 interface TimelineEvent {
   id: string;
@@ -30,7 +30,6 @@ export function TradeTimeline({ tradeId }: TradeTimelineProps) {
         setError(null);
         const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000';
         const url = `${apiUrl}/api/trades/${tradeId}/executions`;
-
         const response = await fetch(url);
 
         if (!response.ok) {
@@ -42,59 +41,52 @@ export function TradeTimeline({ tradeId }: TradeTimelineProps) {
         setEvents(Array.isArray(data) ? data : []);
       } catch (err) {
         const errorMessage = err instanceof Error ? err.message : 'Unknown error';
-        console.error('[TradeTimeline] Error fetching executions:', errorMessage);
+        console.error('[TradeTimeline] Error:', errorMessage);
         setError(errorMessage);
       } finally {
         setLoading(false);
       }
     };
 
-    if (tradeId) {
-      fetchExecutions();
-    }
+    if (tradeId) fetchExecutions();
   }, [tradeId]);
 
   if (loading) {
     return (
-      <div className="text-sm text-gray-400 py-2">
-        Loading timeline...
+      <div className="flex items-center gap-2 text-xs text-muted-foreground py-3">
+        <span className="w-3 h-3 border-2 border-primary/30 border-t-primary rounded-full animate-spin" />
+        Carregando timeline...
       </div>
     );
   }
 
   if (error) {
     return (
-      <div className="bg-red-900/20 border border-red-500/30 rounded-lg p-4 space-y-2">
-        <div className="text-sm font-semibold text-red-400">Failed to load executions</div>
-        <div className="text-xs text-red-300 font-mono">{error}</div>
-        <div className="text-xs text-gray-400 mt-2">
-          This may occur if:
-          <ul className="list-disc list-inside mt-1 ml-2">
-            <li>The backend is not running</li>
-            <li>The API URL is incorrect</li>
-            <li>There are network issues</li>
-          </ul>
-        </div>
+      <div className="bg-red-500/10 border border-red-500/20 rounded-md p-3 space-y-1">
+        <div className="text-xs font-semibold text-red-400">Falha ao carregar execuções</div>
+        <div className="text-[10px] text-red-300 font-mono break-words">{error}</div>
       </div>
     );
   }
 
   if (events.length === 0) {
     return (
-      <div className="bg-slate-700/30 rounded-lg p-4 text-center">
-        <div className="text-sm text-gray-400">No execution history available</div>
-        <div className="text-xs text-gray-500 mt-1">
-          Executions will appear here when the trade is closed or take profit levels are hit
+      <div className="bg-secondary/30 rounded-md p-3 text-center">
+        <div className="text-xs text-muted-foreground">Sem histórico de execução</div>
+        <div className="text-[10px] text-muted-foreground/60 mt-0.5">
+          Execuções aparecem quando TPs são atingidos ou o trade é fechado
         </div>
       </div>
     );
   }
 
   const getTypeColor = (type: string) => {
-    if (type === 'ENTRY') return 'border-blue-500';
-    if (type.includes('TAKE_PROFIT')) return 'border-green-500';
-    if (type === 'STOP_LOSS') return 'border-red-500';
-    return 'border-gray-500';
+    if (type === 'ENTRY') return 'border-l-blue-500 bg-blue-500';
+    if (type.includes('TAKE_PROFIT')) return 'border-l-emerald-500 bg-emerald-500';
+    if (type === 'STOP_LOSS') return 'border-l-red-500 bg-red-500';
+    if (type === 'MANUAL_CLOSE') return 'border-l-yellow-500 bg-yellow-500';
+    if (type === 'SIGNAL_CLOSE') return 'border-l-purple-500 bg-purple-500';
+    return 'border-l-muted-foreground bg-muted-foreground';
   };
 
   const getPnLValue = (pnl: number | string | null): number => {
@@ -107,35 +99,55 @@ export function TradeTimeline({ tradeId }: TradeTimelineProps) {
     return typeof percent === 'string' ? parseFloat(percent) : percent;
   };
 
+  const firstTime = events.length > 0 ? new Date(events[0].executedAt).getTime() : 0;
+
   return (
-    <div className="space-y-3 mt-2">
-      {events.map((event) => (
-        <div key={event.id} className={`flex items-start gap-3 border-l-2 ${getTypeColor(event.type)} pl-3 py-1`}>
-          <div className="flex-shrink-0 w-24">
-            <div className="text-xs text-gray-400">
-              {formatTimeUTC(event.executedAt)}
-            </div>
-          </div>
+    <div className="space-y-0 mt-1">
+      {events.map((event, idx) => {
+        const color = getTypeColor(event.type);
+        const dotColor = color.split(' ')[1];
+        const latencyMs = idx > 0 ? new Date(event.executedAt).getTime() - new Date(events[idx - 1].executedAt).getTime() : 0;
 
-          <div className="flex-1 min-w-0">
-            <div className="font-semibold text-sm">{formatCloseReason(event.type)}</div>
-            <div className="text-xs text-gray-300">
-              {formatQuantity(event.quantity)} @ {formatPrice(event.price)}
-              {event.percentOfPosition !== null && getPercentValue(event.percentOfPosition) < 100 && (
-                <span className="ml-1 text-gray-400">
-                  ({formatPercent(event.percentOfPosition)})
+        return (
+          <div key={event.id} className="flex items-start gap-3 relative">
+            <div className="flex flex-col items-center flex-shrink-0 w-5">
+              <div className={`w-2.5 h-2.5 rounded-full ${dotColor} ring-2 ring-background mt-1`} />
+              {idx < events.length - 1 && <div className="w-px h-full bg-border/40 min-h-[28px]" />}
+            </div>
+
+            <div className="flex-1 pb-3 min-w-0">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs font-semibold text-foreground">{formatCloseReason(event.type)}</span>
+                <span className={`font-mono text-xs font-semibold ${
+                  event.type === 'ENTRY' ? 'text-muted-foreground' :
+                  getPnLValue(event.pnl) >= 0 ? 'text-emerald-400' : 'text-red-400'
+                }`}>
+                  {event.type === 'ENTRY' ? '' : `${formatPnL(event.pnl)} USDT`}
                 </span>
-              )}
+              </div>
+              <div className="flex items-center gap-2 text-[10px] text-muted-foreground mt-0.5">
+                <span className="font-mono">{formatQuantity(event.quantity)} @ {formatPrice(event.price)}</span>
+                {event.percentOfPosition !== null && getPercentValue(event.percentOfPosition) < 100 && (
+                  <span className="text-accent">({formatPercent(event.percentOfPosition)})</span>
+                )}
+              </div>
+              <div className="flex items-center gap-2 text-[10px] text-muted-foreground/60 mt-0.5">
+                <span className="font-mono">{formatDateTimeUTC(event.executedAt)}</span>
+                {idx > 0 && latencyMs > 0 && (
+                  <span className={`font-mono ${latencyMs > 5000 ? 'text-yellow-400' : ''}`}>
+                    +{latencyMs < 1000 ? `${latencyMs}ms` : `${(latencyMs / 1000).toFixed(1)}s`}
+                  </span>
+                )}
+                {event.exchangeOrderId && (
+                  <span className="font-mono truncate max-w-[100px]" title={event.exchangeOrderId}>
+                    ID: {event.exchangeOrderId.slice(0, 8)}...
+                  </span>
+                )}
+              </div>
             </div>
           </div>
-
-          <div className={`flex-shrink-0 font-mono text-sm font-semibold ${
-            getPnLValue(event.pnl) >= 0 ? 'text-green-500' : 'text-red-500'
-          }`}>
-            {formatPnL(event.pnl)} USDT
-          </div>
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }

@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { useTradesSocket } from '@/hooks/useTradesSocket';
 import { StatsCard } from '@/components/dashboard/StatsCard';
 import { Table } from '@/components/ui/Table';
@@ -27,14 +27,15 @@ export default function Home() {
   const winRate = stats?.winRate || 0;
 
   const handleCloseAll = async () => {
-    if (!confirm('Are you sure you want to close ALL open positions? This action cannot be undone.')) return;
+    if (!confirm('Tem certeza que deseja fechar TODAS as posições abertas? Esta ação não pode ser desfeita.')) return;
     setIsClosingAll(true);
     try {
       const result = await closeAllPositions();
-      alert(`Closed ${result.closed} positions${result.errors?.length > 0 ? `. Errors: ${result.errors.join(', ')}` : ''}`);
+      alert(`${result.closed} posições fechadas${result.errors?.length > 0 ? `. Erros: ${result.errors.join(', ')}` : ''}`);
       forceSync();
-    } catch (error: any) {
-      alert(`Failed to close positions: ${error.message}`);
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : 'Erro desconhecido';
+      alert(`Falha ao fechar posições: ${msg}`);
     } finally {
       setIsClosingAll(false);
     }
@@ -51,25 +52,27 @@ export default function Home() {
         setAllPaused(true);
       }
       forceSync();
-    } catch (error: any) {
-      alert(`Failed to ${allPaused ? 'resume' : 'pause'} strategies: ${error.message}`);
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : 'Erro desconhecido';
+      alert(`Falha ao ${allPaused ? 'retomar' : 'pausar'} estratégias: ${msg}`);
     } finally {
       setIsPausingAll(false);
     }
   };
 
   const handleClosePosition = async (tradeId: string) => {
-    if (!confirm('Are you sure you want to close this position?')) return;
+    if (!confirm('Tem certeza que deseja fechar esta posição?')) return;
     try {
       const result = await closePosition(tradeId);
       if (result.success) {
-        alert(`Position closed. P&L: ${result.pnl?.toFixed(2) || 'N/A'} USDT`);
+        alert(`Posição fechada. P&L: ${result.pnl?.toFixed(2) || 'N/A'} USDT`);
         forceSync();
       } else {
-        alert(`Failed: ${result.message}`);
+        alert(`Falha: ${result.message}`);
       }
-    } catch (error: any) {
-      alert(`Error: ${error.message}`);
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : 'Erro desconhecido';
+      alert(`Erro: ${msg}`);
     }
   };
 
@@ -79,189 +82,174 @@ export default function Home() {
   }) || [];
 
   return (
-    <div className="space-y-6">
-      {/* Header with Connection Status */}
-      <div className="flex justify-between items-center">
-        <h2 className="text-3xl font-bold text-white">Dashboard</h2>
-        <div className="flex items-center gap-4">
+    <div className="space-y-5">
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
+        <div>
+          <h1 className="text-xl font-bold text-foreground">Dashboard</h1>
+          <p className="text-xs text-muted-foreground mt-0.5">Visão geral do sistema de trading</p>
+        </div>
+        <div className="flex items-center gap-3">
           <div className="flex items-center gap-2">
-            <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-emerald-500' : 'bg-rose-500'} animate-pulse`} />
-            <span className="text-sm text-slate-400">
-              {isConnected ? 'Connected' : 'Disconnected'}
+            <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-emerald-500 pulse-dot' : 'bg-red-500'}`} />
+            <span className="text-xs text-muted-foreground">
+              {isConnected ? 'Conectado' : 'Desconectado'}
             </span>
           </div>
           {lastUpdate && (
-            <span className="text-xs text-slate-500">
-              Last update: {lastUpdate.toLocaleTimeString()}
+            <span className="text-[10px] text-muted-foreground/60 font-mono hidden sm:inline">
+              {lastUpdate.toLocaleTimeString()}
             </span>
           )}
           <button
             onClick={forceSync}
             disabled={isSyncing}
-            className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+            className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all ${
               isSyncing
-                ? 'bg-slate-700 text-slate-400 cursor-not-allowed'
-                : 'bg-blue-600 hover:bg-blue-700 text-white'
+                ? 'bg-secondary text-muted-foreground cursor-not-allowed'
+                : 'bg-primary/15 text-primary border border-primary/30 hover:bg-primary/25'
             }`}
           >
-            {isSyncing ? 'Syncing...' : 'Sync with Binance'}
+            {isSyncing ? 'Sincronizando...' : 'Sincronizar'}
           </button>
         </div>
       </div>
 
-      {/* Emergency Controls */}
-      <div className="bg-slate-800/50 rounded-xl border border-rose-500/30 p-4">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-2 h-2 rounded-full bg-rose-500 animate-pulse" />
-            <h3 className="text-white font-semibold">Emergency Controls</h3>
-            <span className="text-xs text-slate-400">
-              {stats?.activePositions || 0} open positions | {allPaused ? 'All strategies paused' : 'Strategies active'}
+      <div className="bg-card/60 rounded-lg border border-red-500/20 p-3">
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5">
+            <div className="w-2 h-2 rounded-full bg-red-500 pulse-dot" />
+            <h3 className="text-sm font-semibold text-foreground">Controles de Emergência</h3>
+            <span className="text-[10px] text-muted-foreground">
+              {stats?.activePositions || 0} posições abertas | {allPaused ? 'Estratégias pausadas' : 'Estratégias ativas'}
             </span>
           </div>
-          <div className="flex gap-3">
+          <div className="flex gap-2">
             <button
               onClick={handlePauseAll}
               disabled={isPausingAll}
-              className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+              className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all ${
                 isPausingAll
-                  ? 'bg-slate-700 text-slate-400 cursor-not-allowed'
+                  ? 'bg-secondary text-muted-foreground cursor-not-allowed'
                   : allPaused
-                  ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
-                  : 'bg-amber-600 hover:bg-amber-700 text-white'
+                  ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/25'
+                  : 'bg-yellow-500/15 text-yellow-400 border border-yellow-500/30 hover:bg-yellow-500/25'
               }`}
             >
-              {isPausingAll ? 'Processing...' : allPaused ? 'Resume All Strategies' : 'Pause All Strategies'}
+              {isPausingAll ? 'Processando...' : allPaused ? 'Retomar Todas' : 'Pausar Todas'}
             </button>
             <button
               onClick={handleCloseAll}
               disabled={isClosingAll || !stats?.activePositions}
-              className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+              className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all ${
                 isClosingAll || !stats?.activePositions
-                  ? 'bg-slate-700 text-slate-400 cursor-not-allowed'
-                  : 'bg-rose-600 hover:bg-rose-700 text-white'
+                  ? 'bg-secondary text-muted-foreground cursor-not-allowed'
+                  : 'bg-red-500/15 text-red-400 border border-red-500/30 hover:bg-red-500/25'
               }`}
             >
-              {isClosingAll ? 'Closing...' : 'Close All Positions'}
+              {isClosingAll ? 'Fechando...' : 'Fechar Todas'}
             </button>
           </div>
         </div>
       </div>
 
-      {/* Main Stats */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         <StatsCard
-          title="Total P&L"
+          title="P&L Total"
           value={`${formatPnLSummary(totalPnl)} USDT`}
-          subValue="Realized + Unrealized"
-          subColor="text-slate-400"
-          valueColor={totalPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}
+          subValue="Realizado + Não Realizado"
+          valueColor={totalPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}
         />
         <StatsCard
           title="Win Rate"
           value={formatPercentSummary(winRate)}
           subValue={`${stats?.wins || 0}W / ${stats?.losses || 0}L`}
-          subColor="text-slate-400"
-          valueColor={winRate >= 50 ? 'text-emerald-400' : 'text-amber-400'}
+          valueColor={winRate >= 50 ? 'text-emerald-400' : 'text-yellow-400'}
         />
         <StatsCard
-          title="Realized P&L"
+          title="P&L Realizado"
           value={`${formatPnLSummary(realizedPnl)} USDT`}
-          subValue={`${stats?.totalTrades || 0} closed trades`}
-          subColor="text-slate-400"
-          valueColor={realizedPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}
+          subValue={`${stats?.totalTrades || 0} trades fechados`}
+          valueColor={realizedPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}
         />
         <StatsCard
-          title="Unrealized P&L"
+          title="P&L Não Realizado"
           value={`${formatPnLSummary(unrealizedPnl)} USDT`}
-          subValue={`${stats?.activePositions || 0} open positions`}
-          subColor="text-slate-400"
-          valueColor={unrealizedPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}
+          subValue={`${stats?.activePositions || 0} posições abertas`}
+          valueColor={unrealizedPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}
         />
       </div>
 
-      {/* Open Positions Section */}
       {stats?.openPositions && stats.openPositions.length > 0 && (
-        <div className="mt-8">
-          <h3 className="text-xl font-semibold mb-4 text-white flex items-center gap-2">
-            <span className="w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
-            Open Positions ({stats.openPositions.length})
+        <div>
+          <h3 className="text-sm font-semibold mb-3 text-foreground flex items-center gap-2">
+            <span className="w-2 h-2 rounded-full bg-blue-500 pulse-dot" />
+            Posições Abertas ({stats.openPositions.length})
           </h3>
-          <div className="bg-slate-800/50 rounded-xl border border-slate-700 overflow-hidden">
+          <div className="bg-card/60 rounded-lg border border-border/60 overflow-hidden">
             <Table
               data={stats.openPositions}
               columns={[
                 {
-                  header: 'Symbol',
+                  header: 'Ativo',
                   accessor: (item) => (
-                    <span className="text-white font-bold text-lg">{item.symbol}</span>
+                    <span className="text-foreground font-bold">{item.symbol}</span>
                   ),
                 },
                 {
-                  header: 'Side',
+                  header: 'Lado',
                   accessor: (item) => (
-                    <span
-                      className={`px-3 py-1 rounded text-xs font-bold ${
-                        item.side === 'BUY'
-                          ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
-                          : 'bg-rose-500/20 text-rose-400 border border-rose-500/30'
-                      }`}
-                    >
+                    <span className={`px-2 py-0.5 rounded text-[10px] font-bold border ${
+                      item.side === 'BUY'
+                        ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30'
+                        : 'bg-red-500/15 text-red-400 border-red-500/30'
+                    }`}>
                       {item.side === 'BUY' ? 'LONG' : 'SHORT'}
                     </span>
                   ),
                 },
                 {
-                  header: 'Entry Price',
+                  header: 'Preço Entrada',
                   accessor: (item) => (
-                    <span className="text-slate-300 font-mono">
-                      {formatPrice(item.entryPrice)}
-                    </span>
+                    <span className="text-foreground font-mono text-xs">{formatPrice(item.entryPrice)}</span>
                   ),
                 },
                 {
-                  header: 'Quantity',
+                  header: 'Quantidade',
                   accessor: (item) => (
-                    <span className="text-slate-300 font-mono">
-                      {formatQuantity(item.quantity)}
-                    </span>
+                    <span className="text-foreground font-mono text-xs">{formatQuantity(item.quantity)}</span>
                   ),
                 },
                 {
-                  header: 'Unrealized P&L',
+                  header: 'P&L',
                   accessor: (item) => {
                     const val = getPnLValue(item.pnl);
                     if (item.pnl === null || item.pnl === undefined) {
-                      return <span className="text-slate-500">-</span>;
+                      return <span className="text-muted-foreground">-</span>;
                     }
                     return (
-                      <span
-                        className={`font-bold text-lg ${
-                          val >= 0 ? 'text-emerald-400' : 'text-rose-400'
-                        }`}
-                      >
+                      <span className={`font-bold font-mono text-sm ${val >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
                         {formatPnL(item.pnl)} USDT
                       </span>
                     );
                   },
                 },
                 {
-                  header: 'Opened',
+                  header: 'Abertura',
                   accessor: (item) => (
-                    <div className="text-sm">
-                      <div className="text-slate-400">{formatDateUTC(item.timestamp)}</div>
-                      <div className="text-slate-500 text-xs">{formatTimeUTC(item.timestamp)} UTC</div>
+                    <div className="text-xs">
+                      <div className="text-muted-foreground font-mono">{formatDateUTC(item.timestamp)}</div>
+                      <div className="text-muted-foreground/60 text-[10px] font-mono">{formatTimeUTC(item.timestamp)} UTC</div>
                     </div>
                   ),
                 },
                 {
-                  header: 'Action',
+                  header: '',
                   accessor: (item) => (
                     <button
                       onClick={() => handleClosePosition(item.id)}
-                      className="px-2 py-1 text-xs bg-rose-600/20 hover:bg-rose-600 text-rose-400 hover:text-white rounded transition-all"
+                      className="px-2.5 py-1 text-[10px] font-medium bg-red-500/10 hover:bg-red-500/25 text-red-400 border border-red-500/20 rounded-md transition-all"
                     >
-                      Close
+                      Fechar
                     </button>
                   ),
                 },
@@ -271,14 +259,13 @@ export default function Home() {
         </div>
       )}
 
-      {/* Error Trades Section */}
       {stats?.errorTrades && stats.errorTrades.length > 0 && (
-        <div className="mt-8">
-          <h3 className="text-xl font-semibold mb-4 text-white flex items-center gap-2">
-            <span className="w-2 h-2 rounded-full bg-rose-500" />
-            Error Trades ({stats.errorTrades.length})
+        <div>
+          <h3 className="text-sm font-semibold mb-3 text-foreground flex items-center gap-2">
+            <span className="w-2 h-2 rounded-full bg-red-500" />
+            Trades com Erro ({stats.errorTrades.length})
           </h3>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
             {stats.errorTrades.slice(0, 6).map((trade: any) => (
               <TradeCard key={trade.id} trade={trade} />
             ))}
@@ -286,156 +273,141 @@ export default function Home() {
         </div>
       )}
 
-      {/* Recent Trades Section */}
-      <div className="mt-8">
-        <div className="flex justify-between items-center mb-4">
-          <h3 className="text-xl font-semibold text-white">Recent Trades</h3>
-          <div className="flex gap-4">
-            <div className="flex gap-2">
+      <div>
+        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 mb-3">
+          <h3 className="text-sm font-semibold text-foreground">Trades Recentes</h3>
+          <div className="flex gap-3">
+            <div className="flex gap-1">
               {(['ALL', 'OPEN', 'CLOSED', 'ERROR'] as const).map((f) => (
                 <button
                   key={f}
                   onClick={() => setFilter(f)}
-                  className={`px-3 py-1 rounded-lg text-sm font-medium transition-all ${
+                  className={`px-2.5 py-1 rounded-md text-[11px] font-medium transition-all ${
                     filter === f
-                      ? 'bg-blue-600 text-white'
-                      : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
+                      ? 'bg-primary/15 text-primary border border-primary/30'
+                      : 'text-muted-foreground hover:text-foreground hover:bg-secondary/60'
                   }`}
                 >
-                  {f}
+                  {f === 'ALL' ? 'Todos' : f}
                 </button>
               ))}
             </div>
-            <div className="flex gap-2 border-l border-slate-600 pl-4">
+            <div className="flex gap-1 border-l border-border/40 pl-3">
               <button
                 onClick={() => setViewMode('cards')}
-                className={`px-3 py-1 rounded-lg text-sm font-medium transition-all ${
+                className={`px-2.5 py-1 rounded-md text-[11px] font-medium transition-all ${
                   viewMode === 'cards'
-                    ? 'bg-blue-600 text-white'
-                    : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
+                    ? 'bg-primary/15 text-primary border border-primary/30'
+                    : 'text-muted-foreground hover:text-foreground hover:bg-secondary/60'
                 }`}
               >
                 Cards
               </button>
               <button
                 onClick={() => setViewMode('table')}
-                className={`px-3 py-1 rounded-lg text-sm font-medium transition-all ${
+                className={`px-2.5 py-1 rounded-md text-[11px] font-medium transition-all ${
                   viewMode === 'table'
-                    ? 'bg-blue-600 text-white'
-                    : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
+                    ? 'bg-primary/15 text-primary border border-primary/30'
+                    : 'text-muted-foreground hover:text-foreground hover:bg-secondary/60'
                 }`}
               >
-                Table
+                Tabela
               </button>
             </div>
           </div>
         </div>
 
         {viewMode === 'cards' ? (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
             {filteredTrades.map((trade) => (
               <TradeCard key={trade.id} trade={trade} />
             ))}
           </div>
         ) : (
-          <div className="bg-slate-800/50 rounded-xl border border-slate-700 overflow-hidden">
+          <div className="bg-card/60 rounded-lg border border-border/60 overflow-hidden">
             <Table
               data={filteredTrades}
               columns={[
-              {
-                header: 'Date',
-                accessor: (item) => (
-                  <div className="text-sm">
-                    <div className="text-white">{formatDateUTC(item.timestamp)}</div>
-                    <div className="text-slate-500 text-xs">{formatTimeUTC(item.timestamp)} UTC</div>
-                  </div>
-                ),
-              },
-              {
-                header: 'Symbol',
-                accessor: (item) => (
-                  <span className="text-white font-semibold">{item.symbol}</span>
-                ),
-              },
-              {
-                header: 'Side',
-                accessor: (item) => (
-                  <span
-                    className={`px-2 py-1 rounded text-xs font-semibold ${
-                      item.side === 'BUY'
-                        ? 'bg-emerald-500/20 text-emerald-400'
-                        : 'bg-rose-500/20 text-rose-400'
-                    }`}
-                  >
-                    {item.side}
-                  </span>
-                ),
-              },
-              {
-                header: 'Entry',
-                accessor: (item) => (
-                  <span className="text-slate-300 font-mono">
-                    {formatPrice(item.entryPrice)}
-                  </span>
-                ),
-              },
-              {
-                header: 'Exit',
-                accessor: (item) => (
-                  <span className="text-slate-300 font-mono">
-                    {formatPrice(item.exitPrice)}
-                  </span>
-                ),
-              },
-              {
-                header: 'Quantity',
-                accessor: (item) => (
-                  <span className="text-slate-300 font-mono">
-                    {formatQuantity(item.quantity)}
-                  </span>
-                ),
-              },
-              {
-                header: 'P&L',
-                accessor: (item) => {
-                  if (item.pnl === null || item.pnl === undefined) {
-                    return <span className="text-slate-500">-</span>;
-                  }
-                  const val = getPnLValue(item.pnl);
-                  return (
-                    <span
-                      className={`font-semibold ${
-                        val >= 0 ? 'text-emerald-400' : 'text-rose-400'
-                      }`}
-                    >
-                      {formatPnL(item.pnl)} USDT
-                    </span>
-                  );
+                {
+                  header: 'Data',
+                  accessor: (item) => (
+                    <div className="text-xs">
+                      <div className="text-foreground font-mono">{formatDateUTC(item.timestamp)}</div>
+                      <div className="text-muted-foreground/60 text-[10px] font-mono">{formatTimeUTC(item.timestamp)} UTC</div>
+                    </div>
+                  ),
                 },
-              },
-              {
-                header: 'Status',
-                accessor: (item) => (
-                  <div className="flex flex-col gap-1">
-                    <span
-                      className={`px-2 py-1 rounded text-xs font-semibold ${
-                        item.status === 'OPEN'
-                          ? 'bg-blue-500/20 text-blue-400'
-                          : item.status === 'CLOSED'
-                          ? 'bg-slate-500/20 text-slate-300'
-                          : 'bg-red-500/20 text-red-400'
-                      }`}
-                    >
-                      {item.status}
+                {
+                  header: 'Ativo',
+                  accessor: (item) => (
+                    <span className="text-foreground font-semibold text-xs">{item.symbol}</span>
+                  ),
+                },
+                {
+                  header: 'Lado',
+                  accessor: (item) => (
+                    <span className={`px-2 py-0.5 rounded text-[10px] font-bold border ${
+                      item.side === 'BUY'
+                        ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30'
+                        : 'bg-red-500/15 text-red-400 border-red-500/30'
+                    }`}>
+                      {item.side === 'BUY' ? 'LONG' : 'SHORT'}
                     </span>
-                    {item.closeReason && (
-                      <span className="text-xs text-slate-500">{item.closeReason}</span>
-                    )}
-                  </div>
-                ),
-              },
-            ]}
-          />
+                  ),
+                },
+                {
+                  header: 'Entry',
+                  accessor: (item) => (
+                    <span className="text-foreground font-mono text-xs">{formatPrice(item.entryPrice)}</span>
+                  ),
+                },
+                {
+                  header: 'Exit',
+                  accessor: (item) => (
+                    <span className="text-foreground font-mono text-xs">{formatPrice(item.exitPrice)}</span>
+                  ),
+                },
+                {
+                  header: 'Qty',
+                  accessor: (item) => (
+                    <span className="text-foreground font-mono text-xs">{formatQuantity(item.quantity)}</span>
+                  ),
+                },
+                {
+                  header: 'P&L',
+                  accessor: (item) => {
+                    if (item.pnl === null || item.pnl === undefined) {
+                      return <span className="text-muted-foreground">-</span>;
+                    }
+                    const val = getPnLValue(item.pnl);
+                    return (
+                      <span className={`font-semibold font-mono text-xs ${val >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                        {formatPnL(item.pnl)} USDT
+                      </span>
+                    );
+                  },
+                },
+                {
+                  header: 'Status',
+                  accessor: (item) => (
+                    <div className="flex flex-col gap-1">
+                      <span className={`px-2 py-0.5 rounded text-[10px] font-bold border w-fit ${
+                        item.status === 'OPEN'
+                          ? 'bg-blue-500/15 text-blue-400 border-blue-500/30'
+                          : item.status === 'CLOSED'
+                          ? 'bg-secondary text-muted-foreground border-border/40'
+                          : 'bg-red-500/15 text-red-400 border-red-500/30'
+                      }`}>
+                        {item.status}
+                      </span>
+                      {item.closeReason && (
+                        <span className="text-[10px] text-muted-foreground/60">{item.closeReason}</span>
+                      )}
+                    </div>
+                  ),
+                },
+              ]}
+            />
           </div>
         )}
       </div>

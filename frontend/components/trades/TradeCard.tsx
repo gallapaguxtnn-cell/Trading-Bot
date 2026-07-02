@@ -17,6 +17,7 @@ interface Trade {
   closeReason?: string;
   timestamp: string;
   closedAt?: string;
+  error?: string;
 }
 
 interface TradeCardProps {
@@ -34,86 +35,95 @@ export function TradeCard({ trade }: TradeCardProps) {
   const totalPnl = getPnLValue();
   const isClosed = trade.status === 'CLOSED';
 
-  const getStatusColor = () => {
-    if (trade.status === 'OPEN') return 'bg-blue-900 text-blue-300';
-    if (trade.status === 'ERROR') return 'bg-rose-900 text-rose-300';
-    if (trade.status === 'CLOSED' && totalPnl >= 0) return 'bg-green-900 text-green-300';
-    if (trade.status === 'CLOSED' && totalPnl < 0) return 'bg-red-900 text-red-300';
-    return 'bg-gray-900 text-gray-300';
+  const statusStyles = () => {
+    if (trade.status === 'OPEN') return 'bg-blue-500/15 text-blue-400 border-blue-500/30';
+    if (trade.status === 'ERROR') return 'bg-red-500/15 text-red-400 border-red-500/30';
+    if (trade.status === 'CLOSED' && totalPnl >= 0) return 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30';
+    if (trade.status === 'CLOSED' && totalPnl < 0) return 'bg-red-500/15 text-red-400 border-red-500/30';
+    return 'bg-secondary text-muted-foreground border-border/40';
   };
 
   const getDisplayTimestamp = () => {
-    if (trade.status === 'ERROR' && trade.closedAt) {
-      return trade.closedAt;
-    }
+    if (trade.status === 'ERROR' && trade.closedAt) return trade.closedAt;
     return trade.timestamp;
   };
 
   return (
-    <div className="bg-gray-800 rounded-lg p-4 space-y-3 border border-gray-700 hover:border-gray-600 transition-colors">
-      <div className="flex justify-between items-start">
-        <div className="flex items-center gap-2">
-          <span className="font-bold text-lg">{trade.symbol}</span>
-          <span className={`px-2 py-1 rounded text-xs font-semibold ${
-            trade.side === 'BUY' ? 'bg-green-900 text-green-300' : 'bg-red-900 text-red-300'
-          }`}>
-            {trade.side}
-          </span>
-          <span className={`px-2 py-1 rounded text-xs font-semibold ${getStatusColor()}`}>
-            {trade.status}
-          </span>
-        </div>
-        <div className={`font-mono text-lg font-bold ${totalPnl >= 0 ? 'text-green-500' : 'text-red-500'}`}>
-          {formatPnL(trade.pnl)} USDT
-        </div>
-      </div>
-
-      <div className="grid grid-cols-2 gap-4 text-sm">
-        <div>
-          <div className="text-gray-400 text-xs mb-1">Entry Price</div>
-          <div className="font-mono font-semibold">{formatPrice(trade.entryPrice)}</div>
-        </div>
-        <div>
-          <div className="text-gray-400 text-xs mb-1">Exit Price</div>
-          <div className="font-mono font-semibold">{formatPrice(trade.exitPrice)}</div>
-        </div>
-        <div>
-          <div className="text-gray-400 text-xs mb-1">Quantity</div>
-          <div className="font-mono">{formatQuantity(trade.quantity)}</div>
-        </div>
-        <div>
-          <div className="text-gray-400 text-xs mb-1">Type</div>
-          <div className="uppercase text-xs">{trade.type || 'MARKET'}</div>
-        </div>
-      </div>
-
-      {isClosed && trade.closeReason && (
-        <div className="border-t border-gray-700 pt-3">
-          <div className="flex items-center justify-between text-xs">
-            <span className="text-gray-400">Close Reason:</span>
-            <span className="font-semibold text-gray-200">{formatCloseReason(trade.closeReason)}</span>
+    <div className="bg-card/80 rounded-lg border border-border/60 backdrop-blur-sm hover:border-border transition-all">
+      <div className="p-4 space-y-3">
+        <div className="flex justify-between items-start">
+          <div className="flex items-center gap-2">
+            <span className="font-bold text-base text-foreground">{trade.symbol}</span>
+            <span className={`px-2 py-0.5 rounded text-[10px] font-bold border ${
+              trade.side === 'BUY' ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30' : 'bg-red-500/15 text-red-400 border-red-500/30'
+            }`}>
+              {trade.side === 'BUY' ? 'LONG' : 'SHORT'}
+            </span>
+            <span className={`px-2 py-0.5 rounded text-[10px] font-bold border ${statusStyles()}`}>
+              {trade.status}
+            </span>
+          </div>
+          <div className={`font-mono text-base font-bold ${totalPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+            {formatPnL(trade.pnl)} USDT
           </div>
         </div>
-      )}
 
-      <div className="border-t border-gray-700 pt-3">
-        <button
-          onClick={() => setShowTimeline(!showTimeline)}
-          className="w-full text-left text-sm text-blue-400 hover:text-blue-300 transition-colors flex items-center justify-between"
-        >
-          <span className="font-semibold">
-            {showTimeline ? '▼' : '▶'} Execution Timeline
-          </span>
-          <span className="text-xs text-gray-400">
-            {formatDateUTC(getDisplayTimestamp())} {formatTimeUTC(getDisplayTimestamp())} UTC
-          </span>
-        </button>
+        <div className="grid grid-cols-2 gap-3 text-xs">
+          <div>
+            <div className="text-muted-foreground text-[10px] uppercase tracking-wider mb-0.5">Entry</div>
+            <div className="font-mono font-semibold text-foreground">{formatPrice(trade.entryPrice)}</div>
+          </div>
+          <div>
+            <div className="text-muted-foreground text-[10px] uppercase tracking-wider mb-0.5">Exit</div>
+            <div className="font-mono font-semibold text-foreground">{formatPrice(trade.exitPrice)}</div>
+          </div>
+          <div>
+            <div className="text-muted-foreground text-[10px] uppercase tracking-wider mb-0.5">Quantidade</div>
+            <div className="font-mono text-foreground">{formatQuantity(trade.quantity)}</div>
+          </div>
+          <div>
+            <div className="text-muted-foreground text-[10px] uppercase tracking-wider mb-0.5">Tipo</div>
+            <div className="uppercase text-[11px] text-foreground">{trade.type || 'MARKET'}</div>
+          </div>
+        </div>
 
-        {showTimeline && (
-          <div className="mt-3">
-            <TradeTimeline tradeId={trade.id} />
+        {trade.error && (
+          <div className="bg-red-500/10 border border-red-500/20 rounded-md px-3 py-2 text-xs text-red-400 break-words">
+            {trade.error}
           </div>
         )}
+
+        {isClosed && trade.closeReason && (
+          <div className="border-t border-border/30 pt-2">
+            <div className="flex items-center justify-between text-xs">
+              <span className="text-muted-foreground">Motivo:</span>
+              <span className="font-semibold text-foreground">{formatCloseReason(trade.closeReason)}</span>
+            </div>
+          </div>
+        )}
+
+        <div className="border-t border-border/30 pt-2">
+          <button
+            onClick={() => setShowTimeline(!showTimeline)}
+            className="w-full text-left text-xs text-primary hover:text-primary/80 transition-colors flex items-center justify-between"
+          >
+            <span className="font-semibold flex items-center gap-1.5">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className={`transition-transform ${showTimeline ? 'rotate-90' : ''}`}>
+                <polyline points="9 18 15 12 9 6" />
+              </svg>
+              Execution Timeline
+            </span>
+            <span className="text-[10px] text-muted-foreground font-mono">
+              {formatDateUTC(getDisplayTimestamp())} {formatTimeUTC(getDisplayTimestamp())}
+            </span>
+          </button>
+
+          {showTimeline && (
+            <div className="mt-3">
+              <TradeTimeline tradeId={trade.id} />
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

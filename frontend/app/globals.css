@@ -1,12 +1,115 @@
 @import "tailwindcss";
 
+@custom-variant dark (&:is(.dark *));
+
 :root {
-  --background: #0f172a;
-  --foreground: #ededed;
+  --background: 240 10% 3.5%;
+  --foreground: 0 0% 98%;
+  --card: 240 10% 5.5%;
+  --card-foreground: 0 0% 98%;
+  --popover: 240 10% 5%;
+  --popover-foreground: 0 0% 98%;
+  --primary: 264 83% 66%;
+  --primary-foreground: 0 0% 100%;
+  --secondary: 240 6% 10%;
+  --secondary-foreground: 0 0% 90%;
+  --muted: 240 6% 11%;
+  --muted-foreground: 240 5% 55%;
+  --accent: 189 94% 55%;
+  --accent-foreground: 240 10% 3.5%;
+  --destructive: 0 84% 60%;
+  --destructive-foreground: 0 0% 98%;
+  --border: 240 6% 14%;
+  --input: 240 6% 12%;
+  --ring: 264 83% 66%;
+  --success: 142 71% 45%;
+  --danger: 0 84% 60%;
+  --chart-1: 264 83% 66%;
+  --chart-2: 189 94% 55%;
+  --chart-3: 142 71% 45%;
+  --chart-4: 38 92% 50%;
+  --chart-5: 0 84% 60%;
+  --radius: 0.625rem;
+  --sidebar-width: 260px;
+  --sidebar-width-collapsed: 64px;
+}
+
+* {
+  border-color: hsl(var(--border));
+}
+
+html, body {
+  height: 100%;
+  overflow: hidden;
 }
 
 body {
-  color: var(--foreground);
-  background: var(--background);
-  font-family: Arial, Helvetica, sans-serif;
+  color: hsl(var(--foreground));
+  background: hsl(var(--background));
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background-image:
+    radial-gradient(circle at 20% 10%, hsl(264 83% 20% / 0.15), transparent 40%),
+    radial-gradient(circle at 80% 90%, hsl(189 94% 25% / 0.08), transparent 40%);
 }
+
+.font-mono {
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+}
+
+.glass {
+  background: linear-gradient(180deg, hsl(240 10% 7% / 0.6) 0%, hsl(240 10% 5% / 0.6) 100%);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+.glow-primary {
+  box-shadow: 0 0 24px hsl(264 83% 66% / 0.25), 0 0 1px hsl(264 83% 66% / 0.4);
+}
+
+.glow-accent {
+  box-shadow: 0 0 24px hsl(189 94% 55% / 0.2);
+}
+
+.scrollbar-thin {
+  scrollbar-width: thin;
+  scrollbar-color: hsl(240 6% 18%) transparent;
+}
+.scrollbar-thin::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.scrollbar-thin::-webkit-scrollbar-track {
+  background: transparent;
+}
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  background: hsl(240 6% 18%);
+  border-radius: 3px;
+}
+
+.no-scrollbar::-webkit-scrollbar { display: none; }
+.no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.6; transform: scale(1.3); }
+}
+.pulse-dot { animation: pulse-dot 1.8s ease-in-out infinite; }
+
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+.shimmer {
+  background: linear-gradient(90deg, transparent, hsl(264 83% 66% / 0.15), transparent);
+  background-size: 200% 100%;
+  animation: shimmer 2s linear infinite;
+}
+
+@keyframes spin-slow {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+.animate-spin-slow { animation: spin-slow 2s linear infinite; }

@@ -49,13 +49,10 @@ export default function LogsPage() {
     }
   }, []);
 
-  useEffect(() => {
-    fetchLogs();
-  }, [fetchLogs]);
+  useEffect(() => { fetchLogs(); }, [fetchLogs]);
 
   useEffect(() => {
     if (!autoRefresh) return;
-
     const interval = setInterval(fetchLogs, 5000);
     return () => clearInterval(interval);
   }, [autoRefresh, fetchLogs]);
@@ -76,14 +73,11 @@ export default function LogsPage() {
     return getLogLevel(log) === filter;
   });
 
-  const getLevelBadge = (level: 'INFO' | 'SUCCESS' | 'ERROR') => {
+  const getLevelStyles = (level: 'INFO' | 'SUCCESS' | 'ERROR') => {
     switch (level) {
-      case 'ERROR':
-        return 'bg-rose-500/20 text-rose-400 border-rose-500/30';
-      case 'SUCCESS':
-        return 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30';
-      default:
-        return 'bg-blue-500/20 text-blue-400 border-blue-500/30';
+      case 'ERROR': return 'bg-red-500/15 text-red-400 border-red-500/30';
+      case 'SUCCESS': return 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30';
+      default: return 'bg-blue-500/15 text-blue-400 border-blue-500/30';
     }
   };
 
@@ -91,36 +85,30 @@ export default function LogsPage() {
     const parts = [];
 
     parts.push(
-      <span key="action" className={log.side === 'BUY' ? 'text-emerald-400' : 'text-rose-400'}>
-        {log.side}
+      <span key="action" className={log.side === 'BUY' ? 'text-emerald-400' : 'text-red-400'}>
+        {log.side === 'BUY' ? 'LONG' : 'SHORT'}
       </span>
     );
 
     parts.push(
-      <span key="symbol" className="text-white font-semibold ml-1">
-        {log.symbol}
-      </span>
+      <span key="symbol" className="text-foreground font-semibold ml-1">{log.symbol}</span>
     );
 
     parts.push(
-      <span key="price" className="text-slate-400 ml-2">
-        @ {formatPrice(log.entryPrice)}
-      </span>
+      <span key="price" className="text-muted-foreground ml-2 font-mono">@ {formatPrice(log.entryPrice)}</span>
     );
 
     if (log.exitPrice != null) {
       parts.push(
-        <span key="exit" className="text-slate-400 ml-1">
-          -&gt; {formatPrice(log.exitPrice)}
-        </span>
+        <span key="exit" className="text-muted-foreground ml-1 font-mono">&rarr; {formatPrice(log.exitPrice)}</span>
       );
     }
 
     parts.push(
-      <span key="status" className={`ml-2 px-2 py-0.5 rounded text-xs ${
-        log.status === 'OPEN' ? 'bg-blue-500/20 text-blue-400' :
-        log.status === 'CLOSED' ? 'bg-slate-500/20 text-slate-300' :
-        'bg-rose-500/20 text-rose-400'
+      <span key="status" className={`ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold border ${
+        log.status === 'OPEN' ? 'bg-blue-500/15 text-blue-400 border-blue-500/20' :
+        log.status === 'CLOSED' ? 'bg-secondary text-muted-foreground border-border/30' :
+        'bg-red-500/15 text-red-400 border-red-500/20'
       }`}>
         {log.status}
       </span>
@@ -128,16 +116,14 @@ export default function LogsPage() {
 
     if (log.closeReason) {
       parts.push(
-        <span key="reason" className="text-slate-500 ml-2 text-xs">
-          ({log.closeReason})
-        </span>
+        <span key="reason" className="text-muted-foreground/60 ml-2 text-[10px]">({log.closeReason})</span>
       );
     }
 
     if (log.pnl != null && log.status === 'CLOSED') {
       const pnlVal = getPnLValue(log.pnl);
       parts.push(
-        <span key="pnl" className={`ml-2 font-semibold ${pnlVal >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+        <span key="pnl" className={`ml-2 font-semibold font-mono ${pnlVal >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
           {formatPnLSummary(log.pnl)} USDT
         </span>
       );
@@ -145,9 +131,7 @@ export default function LogsPage() {
 
     if (log.error) {
       parts.push(
-        <span key="error" className="text-rose-400 ml-2 text-sm">
-          Error: {log.error}
-        </span>
+        <span key="error" className="text-red-400 ml-2 text-[10px]">Error: {log.error}</span>
       );
     }
 
@@ -155,85 +139,84 @@ export default function LogsPage() {
   };
 
   return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div className="flex justify-between items-center">
-        <h2 className="text-3xl font-bold text-white">System Logs</h2>
-        <div className="flex items-center gap-4">
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => setAutoRefresh(!autoRefresh)}
-              className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-all flex items-center gap-2 ${
-                autoRefresh
-                  ? 'bg-emerald-600/20 text-emerald-400 border border-emerald-500/30'
-                  : 'bg-slate-700 text-slate-400'
-              }`}
-            >
-              <div className={`w-2 h-2 rounded-full ${autoRefresh ? 'bg-emerald-500 animate-pulse' : 'bg-slate-500'}`} />
-              Auto-refresh {autoRefresh ? 'ON' : 'OFF'}
-            </button>
-            {lastRefresh && (
-              <span className="text-xs text-slate-500">
-                Last: {formatTimeUTC(lastRefresh)} UTC
-              </span>
-            )}
-          </div>
+    <div className="space-y-5">
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
+        <div>
+          <h1 className="text-xl font-bold text-foreground">System Logs</h1>
+          <p className="text-xs text-muted-foreground mt-0.5">Histórico de todos os trades do sistema</p>
+        </div>
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => setAutoRefresh(!autoRefresh)}
+            className={`px-2.5 py-1.5 rounded-md text-[10px] font-medium transition-all flex items-center gap-1.5 border ${
+              autoRefresh
+                ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30'
+                : 'bg-secondary text-muted-foreground border-border/40'
+            }`}
+          >
+            <div className={`w-1.5 h-1.5 rounded-full ${autoRefresh ? 'bg-emerald-500 pulse-dot' : 'bg-muted-foreground'}`} />
+            Auto-refresh {autoRefresh ? 'ON' : 'OFF'}
+          </button>
+          {lastRefresh && (
+            <span className="text-[10px] text-muted-foreground/60 font-mono hidden sm:inline">
+              {formatTimeUTC(lastRefresh)} UTC
+            </span>
+          )}
           <button
             onClick={fetchLogs}
             disabled={isLoading}
-            className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+            className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all ${
               isLoading
-                ? 'bg-slate-700 text-slate-400 cursor-not-allowed'
-                : 'bg-blue-600 hover:bg-blue-700 text-white'
+                ? 'bg-secondary text-muted-foreground cursor-not-allowed'
+                : 'bg-primary/15 text-primary border border-primary/30 hover:bg-primary/25'
             }`}
           >
-            {isLoading ? 'Loading...' : 'Refresh'}
+            {isLoading ? 'Carregando...' : 'Atualizar'}
           </button>
         </div>
       </div>
 
-      {/* Filters */}
-      <div className="flex justify-between items-center">
-        <div className="flex gap-2">
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
+        <div className="flex gap-1">
           {(['ALL', 'INFO', 'SUCCESS', 'ERROR'] as const).map((level) => (
             <button
               key={level}
               onClick={() => setFilter(level)}
-              className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+              className={`px-2.5 py-1.5 rounded-md text-[11px] font-medium transition-all ${
                 filter === level
-                  ? level === 'ERROR' ? 'bg-rose-600 text-white' :
-                    level === 'SUCCESS' ? 'bg-emerald-600 text-white' :
-                    'bg-blue-600 text-white'
-                  : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
+                  ? level === 'ERROR' ? 'bg-red-500/15 text-red-400 border border-red-500/30' :
+                    level === 'SUCCESS' ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30' :
+                    'bg-primary/15 text-primary border border-primary/30'
+                  : 'text-muted-foreground hover:text-foreground hover:bg-secondary/60'
               }`}
             >
-              {level}
+              {level === 'ALL' ? 'Todos' : level}
               {level !== 'ALL' && (
-                <span className="ml-2 text-xs opacity-70">
-                  ({logs.filter(l => (level as string) === 'ALL' ? true : getLogLevel(l) === level).length})
+                <span className="ml-1 opacity-60">
+                  ({logs.filter(l => getLogLevel(l) === level).length})
                 </span>
               )}
             </button>
           ))}
         </div>
 
-        <div className="flex gap-2">
+        <div className="flex gap-1">
           <button
             onClick={() => setViewMode('logs')}
-            className={`px-3 py-1 rounded-lg text-sm font-medium transition-all ${
+            className={`px-2.5 py-1.5 rounded-md text-[11px] font-medium transition-all ${
               viewMode === 'logs'
-                ? 'bg-blue-600 text-white'
-                : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
+                ? 'bg-primary/15 text-primary border border-primary/30'
+                : 'text-muted-foreground hover:text-foreground hover:bg-secondary/60'
             }`}
           >
             Logs
           </button>
           <button
             onClick={() => setViewMode('cards')}
-            className={`px-3 py-1 rounded-lg text-sm font-medium transition-all ${
+            className={`px-2.5 py-1.5 rounded-md text-[11px] font-medium transition-all ${
               viewMode === 'cards'
-                ? 'bg-blue-600 text-white'
-                : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
+                ? 'bg-primary/15 text-primary border border-primary/30'
+                : 'text-muted-foreground hover:text-foreground hover:bg-secondary/60'
             }`}
           >
             Cards
@@ -241,65 +224,59 @@ export default function LogsPage() {
         </div>
       </div>
 
-      {/* Logs List / Cards View */}
       {viewMode === 'cards' ? (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
           {filteredLogs.map((log) => (
             <TradeCard key={log.id} trade={log} />
           ))}
         </div>
       ) : (
-        <div className="bg-slate-800/50 rounded-xl border border-slate-700 overflow-hidden">
-        <div className="divide-y divide-slate-700/50">
-          {filteredLogs.length === 0 ? (
-            <div className="p-8 text-center text-slate-500">
-              No logs to display
-            </div>
-          ) : (
-            filteredLogs.map((log) => {
-              const level = getLogLevel(log);
+        <div className="bg-card/60 rounded-lg border border-border/60 overflow-hidden">
+          <div className="divide-y divide-border/20">
+            {filteredLogs.length === 0 ? (
+              <div className="p-8 text-center text-muted-foreground text-xs">
+                Sem logs para exibir
+              </div>
+            ) : (
+              filteredLogs.map((log) => {
+                const level = getLogLevel(log);
+                return (
+                  <div
+                    key={log.id}
+                    className="px-4 py-3 hover:bg-secondary/10 transition-colors flex items-start gap-3"
+                  >
+                    <div className="text-[10px] text-muted-foreground/60 font-mono w-24 flex-shrink-0">
+                      <div>{formatDateUTC(log.timestamp)}</div>
+                      <div>{formatTimeUTC(log.timestamp)}</div>
+                    </div>
 
-              return (
-                <div
-                  key={log.id}
-                  className="p-4 hover:bg-slate-700/30 transition-colors flex items-start gap-4"
-                >
-                  <div className="text-xs text-slate-500 font-mono w-28 flex-shrink-0">
-                    <div>{formatDateUTC(log.timestamp)}</div>
-                    <div>{formatTimeUTC(log.timestamp)} UTC</div>
-                  </div>
+                    <div className="flex-shrink-0">
+                      <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold border ${getLevelStyles(level)}`}>
+                        {level}
+                      </span>
+                    </div>
 
-                  {/* Level Badge */}
-                  <div className="flex-shrink-0">
-                    <span className={`px-2 py-1 rounded text-xs font-bold border ${getLevelBadge(level)}`}>
-                      {level}
-                    </span>
-                  </div>
+                    <div className="text-[10px] text-muted-foreground/50 font-mono w-16 flex-shrink-0 truncate" title={log.strategyId}>
+                      {log.strategyId?.substring(0, 8)}...
+                    </div>
 
-                  {/* Strategy ID */}
-                  <div className="text-xs text-slate-600 font-mono w-24 flex-shrink-0 truncate" title={log.strategyId}>
-                    {log.strategyId?.substring(0, 8)}...
+                    <div className="flex-1 text-xs flex items-center flex-wrap gap-0.5">
+                      {formatLogMessage(log)}
+                    </div>
                   </div>
-
-                  {/* Message */}
-                  <div className="flex-1 text-sm">
-                    {formatLogMessage(log)}
-                  </div>
-                </div>
-              );
-            })
-          )}
-        </div>
+                );
+              })
+            )}
+          </div>
         </div>
       )}
 
-      {/* Stats */}
-      <div className="flex justify-between items-center text-sm text-slate-500">
-        <span>Showing {filteredLogs.length} of {logs.length} logs</span>
+      <div className="flex justify-between items-center text-[10px] text-muted-foreground/60">
+        <span>Exibindo {filteredLogs.length} de {logs.length} logs</span>
         <span>
-          {logs.filter(l => getLogLevel(l) === 'ERROR').length} errors |{' '}
-          {logs.filter(l => getLogLevel(l) === 'SUCCESS').length} successful |{' '}
-          {logs.filter(l => l.status === 'OPEN').length} open
+          {logs.filter(l => getLogLevel(l) === 'ERROR').length} erros |{' '}
+          {logs.filter(l => getLogLevel(l) === 'SUCCESS').length} sucesso |{' '}
+          {logs.filter(l => l.status === 'OPEN').length} abertas
         </span>
       </div>
     </div>

@@ -11,22 +11,22 @@ interface TableProps<T> {
 
 export function Table<T extends { id?: string | number }>({ data, columns }: TableProps<T>) {
   return (
-    <div className="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden">
-      <table className="w-full text-left">
-        <thead className="bg-slate-700/50 text-slate-300">
-          <tr>
+    <div className="overflow-x-auto">
+      <table className="w-full text-left text-sm">
+        <thead>
+          <tr className="border-b border-border/60">
             {columns.map((col, index) => (
-              <th key={index} className={`p-4 ${col.className || ''}`}>
+              <th key={index} className={`px-4 py-3 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground ${col.className || ''}`}>
                 {col.header}
               </th>
             ))}
           </tr>
         </thead>
-        <tbody className="divide-y divide-slate-700 text-slate-300">
+        <tbody>
           {data.map((item, rowIndex) => (
-            <tr key={item.id || rowIndex}>
+            <tr key={item.id || rowIndex} className="border-b border-border/30 hover:bg-secondary/30 transition-colors">
               {columns.map((col, colIndex) => (
-                <td key={colIndex} className="p-4">
+                <td key={colIndex} className="px-4 py-3">
                   {typeof col.accessor === 'function'
                     ? col.accessor(item)
                     : (item[col.accessor] as React.ReactNode)}
