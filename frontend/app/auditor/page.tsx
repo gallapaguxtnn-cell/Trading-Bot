@@ -59,43 +59,139 @@ interface ReconcileResult {
   error?: string;
 }
 
-const SEVERITY_COLORS: Record<string, string> = {
-  INFO: 'bg-blue-500/15 text-blue-400 border-blue-500/30',
-  WARNING: 'bg-yellow-500/15 text-yellow-400 border-yellow-500/30',
-  ERROR: 'bg-red-500/15 text-red-400 border-red-500/30',
-  CRITICAL: 'bg-red-600/20 text-red-300 border-red-600/30',
+const SEVERITY_LABELS: Record<string, string> = {
+  INFO: 'Info',
+  WARNING: 'Aviso',
+  ERROR: 'Erro',
+  CRITICAL: 'Crítico',
 };
 
-const SEVERITY_DOT: Record<string, string> = {
-  INFO: 'bg-blue-400',
-  WARNING: 'bg-yellow-400',
-  ERROR: 'bg-red-400',
-  CRITICAL: 'bg-red-300',
+const SEVERITY_STYLES: Record<string, { bg: string; text: string; border: string; dot: string }> = {
+  INFO: { bg: 'bg-blue-500/10', text: 'text-blue-400', border: 'border-blue-500/20', dot: 'bg-blue-400' },
+  WARNING: { bg: 'bg-yellow-500/10', text: 'text-yellow-400', border: 'border-yellow-500/20', dot: 'bg-yellow-400' },
+  ERROR: { bg: 'bg-red-500/10', text: 'text-red-400', border: 'border-red-500/20', dot: 'bg-red-400' },
+  CRITICAL: { bg: 'bg-red-600/15', text: 'text-red-300', border: 'border-red-600/25', dot: 'bg-red-300' },
 };
 
-const CATEGORY_LABELS: Record<string, string> = {
-  FEE_MISMATCH: 'Fee Mismatch',
-  PRICE_DEVIATION: 'Desvio de Preço',
-  SIGNAL_LATENCY: 'Latência do Sinal',
-  PNL_MISMATCH: 'P&L Divergente',
-  SLIPPAGE: 'Slippage',
-  MISSED_FILL: 'Fill Incompleto',
-  LIQUIDATION_RISK: 'Risco de Liquidação',
-  BACKTEST_DIVERGENCE: 'Divergência Backtest',
-  ORDER_REJECTED: 'Ordem Rejeitada',
+const CATEGORY_INFO: Record<string, { label: string; icon: string; description: string }> = {
+  FEE_MISMATCH: { label: 'Taxas', icon: '$', description: 'Diferença entre taxas registradas e cobradas pela exchange' },
+  PRICE_DEVIATION: { label: 'Desvio de Preço', icon: '⇅', description: 'Preço executado difere do registrado pelo bot' },
+  SIGNAL_LATENCY: { label: 'Latência', icon: '⏱', description: 'Tempo entre o sinal e a execução na exchange' },
+  PNL_MISMATCH: { label: 'P&L Divergente', icon: '≠', description: 'Lucro/prejuízo calculado difere do registrado' },
+  SLIPPAGE: { label: 'Slippage', icon: '↘', description: 'Diferença entre preço esperado e preço executado' },
+  MISSED_FILL: { label: 'Fill Parcial', icon: '⊘', description: 'Ordem não foi totalmente preenchida' },
+  LIQUIDATION_RISK: { label: 'Risco de Liquidação', icon: '⚠', description: 'Trade próximo do preço de liquidação' },
+  BACKTEST_DIVERGENCE: { label: 'Divergência Backtest', icon: '⟷', description: 'Resultado real difere do backtest' },
+  ORDER_REJECTED: { label: 'Ordem Rejeitada', icon: '✕', description: 'Ordem não encontrada ou rejeitada pela exchange' },
 };
 
-const CATEGORY_ICONS: Record<string, string> = {
-  FEE_MISMATCH: '$',
-  PRICE_DEVIATION: '\u21C5',
-  SIGNAL_LATENCY: '\u23F1',
-  PNL_MISMATCH: '\u2260',
-  SLIPPAGE: '\u2198',
-  MISSED_FILL: '\u2298',
-  LIQUIDATION_RISK: '\u26A0',
-  BACKTEST_DIVERGENCE: '\u27F7',
-  ORDER_REJECTED: '\u2715',
-};
+function isKnownLimitation(log: AuditLog): boolean {
+  if (log.category === 'FEE_MISMATCH' && log.message.includes('bot P&L nao desconta taxas')) return true;
+  if (log.category === 'FEE_MISMATCH' && log.message.includes('bot P&L não desconta taxas')) return true;
+  return false;
+}
+
+function getEffectiveSeverity(log: AuditLog): string {
+  if (isKnownLimitation(log)) return 'INFO';
+  return log.severity;
+}
+
+function parseIssueMessage(log: AuditLog): { title: string; detail: string } {
+  const cat = CATEGORY_INFO[log.category];
+  const catLabel = cat?.label || log.category;
+
+  if (isKnownLimitation(log)) {
+    const fees = log.actualValue != null ? `$${Number(log.actualValue).toFixed(4)}` : '';
+    return {
+      title: `Taxas da exchange não descontadas do P&L`,
+      detail: fees ? `Total de taxas cobradas: ${fees}. O bot ainda não desconta taxas do cálculo de P&L — limitação conhecida.` : 'Limitação conhecida: o bot não desconta taxas da exchange no cálculo de P&L.',
+    };
+  }
+
+  switch (log.category) {
+    case 'PRICE_DEVIATION': {
+      const botPrice = log.details?.botPrice != null ? `$${Number(log.details.botPrice).toFixed(4)}` : '';
+      const exchPrice = log.details?.exchangePrice != null ? `$${Number(log.details.exchangePrice).toFixed(4)}` : '';
+      const dev = log.deviation != null ? `${Number(log.deviation).toFixed(4)}%` : '';
+      return {
+        title: `Desvio de preço na entrada`,
+        detail: botPrice && exchPrice ? `Bot: ${botPrice} → Exchange: ${exchPrice} (${dev} de desvio)` : log.message,
+      };
+    }
+    case 'SLIPPAGE': {
+      const type = log.details?.type || '';
+      const botPrice = log.details?.botPrice != null ? `$${Number(log.details.botPrice).toFixed(4)}` : '';
+      const exchPrice = log.details?.exchangePrice != null ? `$${Number(log.details.exchangePrice).toFixed(4)}` : '';
+      const dev = log.deviation != null ? `${Number(log.deviation).toFixed(4)}%` : '';
+      const label = type === 'TAKE_PROFIT_1' ? 'TP1' : type === 'TAKE_PROFIT_2' ? 'TP2' : type === 'TAKE_PROFIT_3' ? 'TP3' : type ? String(type).replace(/_/g, ' ') : 'Execução';
+      return {
+        title: `Slippage em ${label}`,
+        detail: botPrice && exchPrice ? `Bot: ${botPrice} → Exchange: ${exchPrice} (${dev})` : log.message,
+      };
+    }
+    case 'PNL_MISMATCH': {
+      const botPnl = log.details?.botPnl != null ? `$${Number(log.details.botPnl).toFixed(4)}` : '';
+      const calcNet = log.details?.calculatedNet != null ? `$${Number(log.details.calculatedNet).toFixed(4)}` : '';
+      const diff = log.deviation != null ? `$${Number(log.deviation).toFixed(4)}` : '';
+      if (botPnl && calcNet) {
+        return {
+          title: `P&L divergente`,
+          detail: `Bot registrou ${botPnl}, cálculo com taxas resulta em ${calcNet} (diferença: ${diff})`,
+        };
+      }
+      if (log.details?.execPnlSum != null) {
+        return {
+          title: `Soma de execuções difere do total`,
+          detail: `Soma das execuções: $${Number(log.details.execPnlSum).toFixed(4)}, Total do trade: $${Number(log.details.tradePnl).toFixed(4)}`,
+        };
+      }
+      if (log.message.includes('sem preco de saida')) {
+        return { title: 'Trade fechado sem preço de saída', detail: 'O trade foi marcado como fechado mas não tem preço de saída registrado.' };
+      }
+      return { title: catLabel, detail: log.message };
+    }
+    case 'SIGNAL_LATENCY': {
+      const ms = log.deviation != null ? Number(log.deviation) : null;
+      if (ms !== null) {
+        const formatted = ms >= 60000 ? `${(ms / 60000).toFixed(1)} min` : ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`;
+        return {
+          title: `Latência do sinal: ${formatted}`,
+          detail: `Tempo entre o webhook e a execução da ordem na exchange.${ms > 30000 ? ' Valor alto — verifique a conectividade.' : ''}`,
+        };
+      }
+      return { title: catLabel, detail: log.message };
+    }
+    case 'MISSED_FILL': {
+      const expected = log.details?.expected != null ? Number(log.details.expected) : null;
+      const filled = log.details?.filled != null ? Number(log.details.filled) : null;
+      if (expected !== null && filled !== null) {
+        const pct = ((filled / expected) * 100).toFixed(1);
+        return {
+          title: `Fill parcial (${pct}% preenchido)`,
+          detail: `Esperado: ${expected}, Executado: ${filled}`,
+        };
+      }
+      if (log.message.includes('nao preenchida')) {
+        return { title: 'Ordem de entrada não preenchida', detail: log.message };
+      }
+      return { title: catLabel, detail: log.message };
+    }
+    case 'ORDER_REJECTED': {
+      if (log.message.includes('nao encontrada')) {
+        return {
+          title: 'Ordem não encontrada na exchange',
+          detail: `A ordem ${log.details?.orderId || ''} não foi localizada. Pode ter sido cancelada ou expirada.`,
+        };
+      }
+      if (log.message.includes('com erro')) {
+        return { title: 'Trade com erro', detail: String(log.details?.error || log.message) };
+      }
+      return { title: catLabel, detail: log.message };
+    }
+    default:
+      return { title: catLabel, detail: log.message };
+  }
+}
 
 export default function AuditorPage() {
   const [strategies, setStrategies] = useState<Strategy[]>([]);
@@ -107,7 +203,6 @@ export default function AuditorPage() {
   const [loading, setLoading] = useState(false);
   const [reconciling, setReconciling] = useState(false);
   const [reconcileResult, setReconcileResult] = useState<ReconcileResult | null>(null);
-  const [expandedLog, setExpandedLog] = useState<string | null>(null);
   const [expandedTrade, setExpandedTrade] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'logs' | 'reconcile'>('logs');
 
@@ -158,11 +253,19 @@ export default function AuditorPage() {
   }, {});
 
   const worstSeverity = (issues: AuditLog[]) => {
-    if (issues.some(i => i.severity === 'CRITICAL')) return 'CRITICAL';
-    if (issues.some(i => i.severity === 'ERROR')) return 'ERROR';
-    if (issues.some(i => i.severity === 'WARNING')) return 'WARNING';
+    const effective = issues.map(getEffectiveSeverity);
+    if (effective.includes('CRITICAL')) return 'CRITICAL';
+    if (effective.includes('ERROR')) return 'ERROR';
+    if (effective.includes('WARNING')) return 'WARNING';
     return 'INFO';
   };
+
+  const countRealIssues = (issues: AuditLog[]) =>
+    issues.filter(i => !isKnownLimitation(i) && (i.severity === 'ERROR' || i.severity === 'CRITICAL' || i.severity === 'WARNING')).length;
+
+  const totalRealIssues = logs.filter(l => !isKnownLimitation(l) && (l.severity === 'ERROR' || l.severity === 'CRITICAL')).length;
+  const totalWarnings = logs.filter(l => !isKnownLimitation(l) && l.severity === 'WARNING').length;
+  const totalKnown = logs.filter(l => isKnownLimitation(l)).length;
 
   return (
     <div className="space-y-5">
@@ -203,32 +306,54 @@ export default function AuditorPage() {
       </div>
 
       {summary && (
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          <SummaryCard label="Total de Issues" value={summary.total} />
-          {summary.bySeverity.map((s) => (
-            <SummaryCard key={s.severity} label={s.severity} value={parseInt(s.count)} severity={s.severity} />
-          ))}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <div className="glass-card rounded-lg p-3">
+            <div className="text-[10px] text-muted-foreground mb-1">Total de Logs</div>
+            <div className="text-lg font-bold font-mono text-foreground">{summary.total}</div>
+          </div>
+          <div className="glass-card rounded-lg p-3">
+            <div className="text-[10px] text-muted-foreground mb-1">Erros Reais</div>
+            <div className={`text-lg font-bold font-mono ${totalRealIssues > 0 ? 'text-red-400' : 'text-emerald-400'}`}>
+              {totalRealIssues}
+            </div>
+            {totalRealIssues === 0 && <div className="text-[10px] text-emerald-400/60">Tudo OK</div>}
+          </div>
+          <div className="glass-card rounded-lg p-3">
+            <div className="text-[10px] text-muted-foreground mb-1">Avisos</div>
+            <div className={`text-lg font-bold font-mono ${totalWarnings > 0 ? 'text-yellow-400' : 'text-foreground/60'}`}>
+              {totalWarnings}
+            </div>
+          </div>
+          <div className="glass-card rounded-lg p-3">
+            <div className="text-[10px] text-muted-foreground mb-1">Notas Informativas</div>
+            <div className="text-lg font-bold font-mono text-blue-400/70">{totalKnown}</div>
+            <div className="text-[10px] text-muted-foreground/50">Limitações conhecidas</div>
+          </div>
         </div>
       )}
 
       {summary && summary.byCategory.length > 0 && (
         <div className="glass-card rounded-lg p-4">
-          <h3 className="text-[10px] font-semibold mb-2.5 text-muted-foreground uppercase tracking-wider">Issues por Categoria</h3>
+          <h3 className="text-[10px] font-semibold mb-2.5 text-muted-foreground uppercase tracking-wider">Filtrar por Categoria</h3>
           <div className="flex flex-wrap gap-1.5">
-            {summary.byCategory.map((c) => (
-              <button
-                key={c.category}
-                onClick={() => setFilterCategory(filterCategory === c.category ? '' : c.category)}
-                className={`px-2.5 py-1.5 rounded-md text-[10px] font-medium transition border ${
-                  filterCategory === c.category
-                    ? 'bg-primary/15 border-primary/30 text-primary'
-                    : 'bg-secondary/60 border-border/40 text-muted-foreground hover:text-foreground hover:border-border'
-                }`}
-              >
-                <span className="mr-1">{CATEGORY_ICONS[c.category] || '\u2022'}</span>
-                {CATEGORY_LABELS[c.category] || c.category}: <span className="font-bold ml-0.5">{c.count}</span>
-              </button>
-            ))}
+            {summary.byCategory.map((c) => {
+              const cat = CATEGORY_INFO[c.category];
+              return (
+                <button
+                  key={c.category}
+                  onClick={() => setFilterCategory(filterCategory === c.category ? '' : c.category)}
+                  title={cat?.description}
+                  className={`px-2.5 py-1.5 rounded-md text-[10px] font-medium transition border ${
+                    filterCategory === c.category
+                      ? 'bg-primary/15 border-primary/30 text-primary'
+                      : 'bg-secondary/60 border-border/40 text-muted-foreground hover:text-foreground hover:border-border'
+                  }`}
+                >
+                  <span className="mr-1">{cat?.icon || '•'}</span>
+                  {cat?.label || c.category}: <span className="font-bold ml-0.5">{c.count}</span>
+                </button>
+              );
+            })}
           </div>
         </div>
       )}
@@ -242,7 +367,7 @@ export default function AuditorPage() {
               : 'border-transparent text-muted-foreground hover:text-foreground'
           }`}
         >
-          Audit Logs ({logs.length})
+          Histórico ({logs.length})
         </button>
         <button
           onClick={() => setActiveTab('reconcile')}
@@ -267,9 +392,9 @@ export default function AuditorPage() {
             >
               <option value="">Todas Severidades</option>
               <option value="INFO">Info</option>
-              <option value="WARNING">Warning</option>
-              <option value="ERROR">Error</option>
-              <option value="CRITICAL">Critical</option>
+              <option value="WARNING">Aviso</option>
+              <option value="ERROR">Erro</option>
+              <option value="CRITICAL">Crítico</option>
             </select>
             <select
               value={filterCategory}
@@ -277,8 +402,8 @@ export default function AuditorPage() {
               className="bg-secondary/80 border border-border/40 rounded-md px-2 py-1.5 text-[10px] text-foreground focus:border-primary/50 outline-none"
             >
               <option value="">Todas Categorias</option>
-              {Object.entries(CATEGORY_LABELS).map(([k, v]) => (
-                <option key={k} value={k}>{v}</option>
+              {Object.entries(CATEGORY_INFO).map(([k, v]) => (
+                <option key={k} value={k}>{v.label}</option>
               ))}
             </select>
             {(filterSeverity || filterCategory) && (
@@ -289,7 +414,7 @@ export default function AuditorPage() {
                 Limpar
               </button>
             )}
-            <span className="text-[10px] text-muted-foreground/60 ml-auto">{logs.length} logs</span>
+            <span className="text-[10px] text-muted-foreground/60 ml-auto">{logs.length} registros</span>
           </div>
 
           <div className="max-h-[700px] overflow-auto scrollbar-thin">
@@ -308,112 +433,100 @@ export default function AuditorPage() {
                 )}
               </div>
             ) : (
-              Object.entries(groupedLogs).map(([tradeId, tradeLogs]) => (
-                <div key={tradeId} className="border-b border-border/30 last:border-b-0">
-                  <button
-                    onClick={() => setExpandedTrade(expandedTrade === tradeId ? null : tradeId)}
-                    className="w-full flex items-center gap-3 px-4 py-2.5 hover:bg-secondary/20 transition text-left"
-                  >
-                    <span className={`w-2 h-2 rounded-full flex-shrink-0 ${SEVERITY_DOT[worstSeverity(tradeLogs)] || 'bg-muted-foreground'}`} />
-                    <span className="text-[10px] font-mono text-muted-foreground w-20 flex-shrink-0 truncate" title={tradeId}>
-                      {tradeId === 'general' ? 'Geral' : tradeId.slice(0, 8) + '...'}
-                    </span>
-                    <span className="text-xs text-foreground/80 flex-1">
-                      {tradeLogs.length} issue{tradeLogs.length > 1 ? 's' : ''}
-                    </span>
-                    <div className="flex gap-1 flex-shrink-0">
-                      {tradeLogs.some(l => l.severity === 'ERROR' || l.severity === 'CRITICAL') && (
-                        <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-red-500/15 text-red-400 border border-red-500/20">
-                          {tradeLogs.filter(l => l.severity === 'ERROR' || l.severity === 'CRITICAL').length} ERR
-                        </span>
-                      )}
-                      {tradeLogs.some(l => l.severity === 'WARNING') && (
-                        <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-yellow-500/15 text-yellow-400 border border-yellow-500/20">
-                          {tradeLogs.filter(l => l.severity === 'WARNING').length} WARN
-                        </span>
-                      )}
-                    </div>
-                    <span className="text-[10px] text-muted-foreground/60 font-mono">
-                      {new Date(tradeLogs[0].createdAt).toLocaleDateString()}
-                    </span>
-                    <ChevronIcon open={expandedTrade === tradeId} />
-                  </button>
+              Object.entries(groupedLogs).map(([tradeId, tradeLogs]) => {
+                const worst = worstSeverity(tradeLogs);
+                const realCount = countRealIssues(tradeLogs);
+                const knownCount = tradeLogs.filter(isKnownLimitation).length;
+                const sev = SEVERITY_STYLES[worst] || SEVERITY_STYLES.INFO;
 
-                  {expandedTrade === tradeId && (
-                    <div className="bg-secondary/10 border-t border-border/20">
-                      {tradeLogs.map((log) => (
-                        <div key={log.id} className="border-b border-border/10 last:border-b-0">
-                          <button
-                            onClick={() => setExpandedLog(expandedLog === log.id ? null : log.id)}
-                            className="w-full flex items-start gap-2.5 px-6 py-2 hover:bg-secondary/10 transition text-left"
-                          >
-                            <span className={`mt-1 w-1.5 h-1.5 rounded-full flex-shrink-0 ${SEVERITY_DOT[log.severity] || 'bg-muted-foreground'}`} />
-                            <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold border flex-shrink-0 ${SEVERITY_COLORS[log.severity] || ''}`}>
-                              {log.severity}
-                            </span>
-                            <span className="text-[10px] text-muted-foreground font-medium flex-shrink-0 w-24">
-                              {CATEGORY_LABELS[log.category] || log.category}
-                            </span>
-                            <span className="text-[10px] text-foreground/80 flex-1 break-words whitespace-pre-wrap leading-relaxed">
-                              {log.message}
-                            </span>
-                            {(log.deviation !== null || log.expectedValue !== null) && (
-                              <ChevronIcon open={expandedLog === log.id} size={12} />
-                            )}
-                          </button>
+                return (
+                  <div key={tradeId} className="border-b border-border/30 last:border-b-0">
+                    <button
+                      onClick={() => setExpandedTrade(expandedTrade === tradeId ? null : tradeId)}
+                      className="w-full flex items-center gap-3 px-4 py-3 hover:bg-secondary/20 transition text-left"
+                    >
+                      <span className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${sev.dot}`} />
+                      <span className="text-[10px] font-mono text-muted-foreground/60 w-20 flex-shrink-0 truncate" title={tradeId}>
+                        {tradeId === 'general' ? 'Geral' : tradeId.slice(0, 8) + '...'}
+                      </span>
+                      <div className="flex-1 flex items-center gap-2 min-w-0 flex-wrap">
+                        {realCount > 0 ? (
+                          <span className={`px-2 py-0.5 rounded text-[10px] font-bold border ${sev.bg} ${sev.text} ${sev.border}`}>
+                            {realCount} {realCount === 1 ? 'problema' : 'problemas'}
+                          </span>
+                        ) : (
+                          <span className="px-2 py-0.5 rounded text-[10px] font-bold border bg-emerald-500/10 text-emerald-400 border-emerald-500/20">
+                            OK
+                          </span>
+                        )}
+                        {knownCount > 0 && (
+                          <span className="px-2 py-0.5 rounded text-[10px] border bg-blue-500/5 text-blue-400/60 border-blue-500/15">
+                            {knownCount} {knownCount === 1 ? 'nota' : 'notas'}
+                          </span>
+                        )}
+                      </div>
+                      <span className="text-[10px] text-muted-foreground/50 font-mono flex-shrink-0 hidden sm:inline">
+                        {new Date(tradeLogs[0].createdAt).toLocaleDateString()}
+                      </span>
+                      <ChevronIcon open={expandedTrade === tradeId} />
+                    </button>
 
-                          {expandedLog === log.id && (
-                            <div className="px-6 pb-3 pl-14">
-                              <div className="bg-secondary/40 rounded-md border border-border/30 p-3 space-y-2">
-                                <div className="grid grid-cols-2 md:grid-cols-3 gap-3 text-[10px]">
-                                  {log.expectedValue !== null && (
-                                    <div>
-                                      <div className="text-muted-foreground/60 mb-0.5">Valor Esperado</div>
-                                      <div className="font-mono text-emerald-400">{formatNum(log.expectedValue)}</div>
-                                    </div>
-                                  )}
-                                  {log.actualValue !== null && (
-                                    <div>
-                                      <div className="text-muted-foreground/60 mb-0.5">Valor Registrado</div>
-                                      <div className="font-mono text-yellow-400">{formatNum(log.actualValue)}</div>
-                                    </div>
-                                  )}
-                                  {log.deviation !== null && (
-                                    <div>
-                                      <div className="text-muted-foreground/60 mb-0.5">Desvio</div>
-                                      <div className={`font-mono ${Math.abs(log.deviation) > 1 ? 'text-red-400' : 'text-yellow-400'}`}>
-                                        {formatNum(log.deviation)}
-                                      </div>
-                                    </div>
-                                  )}
-                                </div>
-                                {log.details && Object.keys(log.details).length > 0 && (
-                                  <div className="pt-2 border-t border-border/20">
-                                    <div className="text-[9px] uppercase tracking-wider text-muted-foreground/60 mb-1">Detalhes</div>
-                                    <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-[10px]">
-                                      {Object.entries(log.details).map(([k, v]) => (
-                                        <div key={k} className="flex justify-between gap-2">
-                                          <span className="text-muted-foreground/60">{k.replace(/_/g, ' ')}</span>
-                                          <span className="font-mono text-foreground/80 text-right truncate max-w-[180px]" title={String(v)}>
-                                            {typeof v === 'number' ? formatNum(v) : String(v)}
-                                          </span>
-                                        </div>
-                                      ))}
-                                    </div>
+                    {expandedTrade === tradeId && (
+                      <div className="bg-secondary/5 border-t border-border/20 px-4 py-3 space-y-2">
+                        {tradeLogs.map((log) => {
+                          const known = isKnownLimitation(log);
+                          const effSev = getEffectiveSeverity(log);
+                          const style = SEVERITY_STYLES[effSev] || SEVERITY_STYLES.INFO;
+                          const parsed = parseIssueMessage(log);
+
+                          return (
+                            <div
+                              key={log.id}
+                              className={`rounded-lg border p-3 ${known ? 'bg-blue-500/5 border-blue-500/10' : `${style.bg} ${style.border}`}`}
+                            >
+                              <div className="flex items-start gap-2.5">
+                                <span className={`mt-0.5 flex-shrink-0 px-1.5 py-0.5 rounded text-[9px] font-bold border ${style.bg} ${style.text} ${style.border}`}>
+                                  {known ? 'NOTA' : SEVERITY_LABELS[log.severity] || log.severity}
+                                </span>
+                                <div className="flex-1 min-w-0">
+                                  <div className={`text-xs font-medium ${known ? 'text-blue-400/80' : style.text} mb-0.5`}>
+                                    {parsed.title}
                                   </div>
-                                )}
-                                <div className="pt-1 text-[9px] text-muted-foreground/40 font-mono">
-                                  {new Date(log.createdAt).toLocaleString()} | Trade: {log.tradeId.slice(0, 12)}...
+                                  <div className="text-[10px] text-muted-foreground/80 leading-relaxed">
+                                    {parsed.detail}
+                                  </div>
+                                  {log.deviation !== null && !known && (
+                                    <div className="mt-2 flex items-center gap-3 text-[10px]">
+                                      {log.expectedValue !== null && (
+                                        <span className="text-muted-foreground/60">
+                                          Esperado: <span className="font-mono text-emerald-400/80">{formatNum(Number(log.expectedValue))}</span>
+                                        </span>
+                                      )}
+                                      {log.actualValue !== null && (
+                                        <span className="text-muted-foreground/60">
+                                          Real: <span className="font-mono text-yellow-400/80">{formatNum(Number(log.actualValue))}</span>
+                                        </span>
+                                      )}
+                                      <span className="text-muted-foreground/60">
+                                        Desvio: <span className={`font-mono ${Math.abs(Number(log.deviation)) > 1 ? 'text-red-400' : 'text-yellow-400/80'}`}>
+                                          {formatNum(Number(log.deviation))}
+                                        </span>
+                                      </span>
+                                    </div>
+                                  )}
                                 </div>
+                                <span className="text-[9px] text-muted-foreground/30 font-mono flex-shrink-0 hidden sm:inline">
+                                  {CATEGORY_INFO[log.category]?.icon || '•'}
+                                </span>
                               </div>
                             </div>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              ))
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                );
+              })
             )}
           </div>
         </div>
@@ -447,137 +560,173 @@ export default function AuditorPage() {
           {reconcileResult && !reconcileResult.error && (
             <>
               <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-                <SummaryCard label="Trades Auditados" value={reconcileResult.tradesAudited} />
-                <SummaryCard label="Issues" value={reconcileResult.totalIssues} severity={reconcileResult.totalIssues > 0 ? 'WARNING' : undefined} />
-                <SummaryCard label="Slippage Médio" value={`${reconcileResult.avgSlippagePct.toFixed(4)}%`} severity={reconcileResult.avgSlippagePct > 0.1 ? 'WARNING' : undefined} />
-                <SummaryCard label="Latência Média" value={`${reconcileResult.avgSignalLatencyMs.toFixed(0)}ms`} severity={reconcileResult.avgSignalLatencyMs > 5000 ? 'WARNING' : undefined} />
-                <SummaryCard label="Taxas Exchange" value={`$${reconcileResult.totalFeesNotAccountedFor.toFixed(4)}`} severity="WARNING" />
+                <div className="glass-card rounded-lg p-3">
+                  <div className="text-[10px] text-muted-foreground mb-1">Trades Auditados</div>
+                  <div className="text-lg font-bold font-mono text-foreground">{reconcileResult.tradesAudited}</div>
+                </div>
+                <div className="glass-card rounded-lg p-3">
+                  <div className="text-[10px] text-muted-foreground mb-1">Problemas</div>
+                  <div className={`text-lg font-bold font-mono ${reconcileResult.totalIssues > 0 ? 'text-yellow-400' : 'text-emerald-400'}`}>
+                    {reconcileResult.totalIssues}
+                  </div>
+                  {reconcileResult.totalIssues === 0 && <div className="text-[10px] text-emerald-400/60">Tudo limpo</div>}
+                </div>
+                <div className="glass-card rounded-lg p-3">
+                  <div className="text-[10px] text-muted-foreground mb-1">Slippage Médio</div>
+                  <div className={`text-lg font-bold font-mono ${reconcileResult.avgSlippagePct > 0.1 ? 'text-yellow-400' : 'text-foreground/80'}`}>
+                    {reconcileResult.avgSlippagePct.toFixed(4)}%
+                  </div>
+                  <div className="text-[10px] text-muted-foreground/50">{reconcileResult.avgSlippagePct <= 0.1 ? 'Normal' : 'Acima do esperado'}</div>
+                </div>
+                <div className="glass-card rounded-lg p-3">
+                  <div className="text-[10px] text-muted-foreground mb-1">Latência Média</div>
+                  <div className={`text-lg font-bold font-mono ${reconcileResult.avgSignalLatencyMs > 5000 ? 'text-yellow-400' : 'text-foreground/80'}`}>
+                    {reconcileResult.avgSignalLatencyMs >= 1000
+                      ? `${(reconcileResult.avgSignalLatencyMs / 1000).toFixed(1)}s`
+                      : `${reconcileResult.avgSignalLatencyMs.toFixed(0)}ms`}
+                  </div>
+                  <div className="text-[10px] text-muted-foreground/50">webhook → execução</div>
+                </div>
+                <div className="glass-card rounded-lg p-3">
+                  <div className="text-[10px] text-muted-foreground mb-1">Taxas Exchange</div>
+                  <div className="text-lg font-bold font-mono text-yellow-400/80">
+                    ${reconcileResult.totalFeesNotAccountedFor.toFixed(2)}
+                  </div>
+                  <div className="text-[10px] text-muted-foreground/50">Não descontadas do P&L</div>
+                </div>
               </div>
 
               <div className="glass-card rounded-lg">
-                <div className="px-4 py-3 border-b border-border/40">
+                <div className="px-4 py-3 border-b border-border/40 flex items-center justify-between">
                   <h3 className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">Resultado por Trade</h3>
+                  <div className="flex items-center gap-2 text-[10px] text-muted-foreground/50">
+                    <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-emerald-400" /> OK</span>
+                    <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-yellow-400" /> Avisos</span>
+                    <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-red-400" /> Erros</span>
+                  </div>
                 </div>
                 <div className="max-h-[600px] overflow-auto scrollbar-thin">
                   {reconcileResult.trades.length === 0 ? (
                     <div className="p-8 text-center text-muted-foreground text-xs">Nenhum trade fechado encontrado</div>
                   ) : (
-                    reconcileResult.trades.map((tr) => (
-                      <div key={tr.tradeId} className="border-b border-border/30 last:border-b-0">
-                        <button
-                          onClick={() => setExpandedTrade(expandedTrade === `rec-${tr.tradeId}` ? null : `rec-${tr.tradeId}`)}
-                          className="w-full flex items-center gap-3 px-4 py-2.5 hover:bg-secondary/20 transition text-left"
-                        >
-                          <span className={`w-2 h-2 rounded-full flex-shrink-0 ${
-                            tr.issues.length === 0 ? 'bg-emerald-400' :
-                            tr.issues.some(i => i.severity === 'ERROR' || i.severity === 'CRITICAL') ? 'bg-red-400' :
-                            'bg-yellow-400'
-                          }`} />
-                          <span className="text-[10px] font-mono text-muted-foreground w-16 flex-shrink-0">{tr.tradeId.slice(0, 8)}...</span>
+                    reconcileResult.trades.map((tr) => {
+                      const hasRealIssues = tr.issues.filter(i => !isKnownLimitation(i)).length;
+                      const hasErrors = tr.issues.some(i => !isKnownLimitation(i) && (i.severity === 'ERROR' || i.severity === 'CRITICAL'));
+                      const statusDot = hasErrors ? 'bg-red-400' : hasRealIssues > 0 ? 'bg-yellow-400' : 'bg-emerald-400';
+                      const statusLabel = hasErrors ? 'Erro' : hasRealIssues > 0 ? `${hasRealIssues} aviso${hasRealIssues > 1 ? 's' : ''}` : 'OK';
 
-                          <div className="flex items-center gap-3 flex-1 text-[10px] flex-wrap">
-                            <span className="text-muted-foreground font-mono">
-                              Entry: <span className="text-foreground">${tr.botData.entryPrice.toFixed(4)}</span>
-                            </span>
-                            {tr.botData.exitPrice !== null && (
-                              <span className="text-muted-foreground font-mono">
-                                Exit: <span className="text-foreground">${tr.botData.exitPrice.toFixed(4)}</span>
-                              </span>
-                            )}
-                            {tr.botData.pnl !== null && (
-                              <span className={`font-mono font-semibold ${tr.botData.pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                                {tr.botData.pnl >= 0 ? '+' : ''}{tr.botData.pnl.toFixed(4)}
-                              </span>
-                            )}
-                            {tr.slippage !== null && (
-                              <span className={`font-mono ${tr.slippage > 0.1 ? 'text-yellow-400' : 'text-muted-foreground/60'}`}>
-                                Slip: {tr.slippage.toFixed(4)}%
-                              </span>
-                            )}
-                            {tr.signalLatencyMs !== null && (
-                              <span className={`font-mono ${tr.signalLatencyMs > 5000 ? 'text-yellow-400' : 'text-muted-foreground/60'}`}>
-                                {tr.signalLatencyMs}ms
-                              </span>
-                            )}
-                          </div>
+                      return (
+                        <div key={tr.tradeId} className="border-b border-border/30 last:border-b-0">
+                          <button
+                            onClick={() => setExpandedTrade(expandedTrade === `rec-${tr.tradeId}` ? null : `rec-${tr.tradeId}`)}
+                            className="w-full flex items-center gap-3 px-4 py-3 hover:bg-secondary/20 transition text-left"
+                          >
+                            <span className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${statusDot}`} />
 
-                          <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold border flex-shrink-0 ${
-                            tr.issues.length === 0
-                              ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30'
-                              : 'bg-yellow-500/15 text-yellow-400 border-yellow-500/30'
-                          }`}>
-                            {tr.issues.length === 0 ? 'OK' : `${tr.issues.length} issues`}
-                          </span>
-                          <ChevronIcon open={expandedTrade === `rec-${tr.tradeId}`} />
-                        </button>
-
-                        {expandedTrade === `rec-${tr.tradeId}` && (
-                          <div className="bg-secondary/10 border-t border-border/20 px-5 py-4 space-y-3">
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                              <DetailBox title="Dados do Bot">
-                                <div className="grid grid-cols-2 gap-2 text-[10px]">
-                                  <KV label="Entry Price" value={`$${tr.botData.entryPrice.toFixed(8)}`} />
-                                  <KV label="Exit Price" value={tr.botData.exitPrice !== null ? `$${tr.botData.exitPrice.toFixed(8)}` : '-'} />
-                                  <KV label="Quantity" value={String(tr.botData.quantity)} />
-                                  <KV label="P&L" value={tr.botData.pnl !== null ? `$${tr.botData.pnl.toFixed(4)}` : '-'} valueColor={(tr.botData.pnl ?? 0) >= 0 ? 'text-emerald-400' : 'text-red-400'} />
-                                </div>
-                              </DetailBox>
-                              <DetailBox title="Dados da Exchange">
-                                {tr.exchangeData ? (
-                                  <div className="grid grid-cols-2 gap-2 text-[10px]">
-                                    <KV label="Avg Price" value={`$${tr.exchangeData.avgPrice.toFixed(8)}`} />
-                                    <KV label="Filled Qty" value={String(tr.exchangeData.executedQty)} />
-                                    <KV label="Commission" value={`$${tr.exchangeData.commission.toFixed(6)}`} valueColor="text-yellow-400" />
-                                    <KV label="Status" value={tr.exchangeData.status} valueColor={tr.exchangeData.status === 'closed' || tr.exchangeData.status === 'FILLED' ? 'text-emerald-400' : 'text-yellow-400'} />
-                                  </div>
-                                ) : (
-                                  <div className="text-[10px] text-muted-foreground/60">Dados da exchange indisponíveis</div>
+                            <div className="flex items-center gap-3 flex-1 text-[11px] flex-wrap min-w-0">
+                              <span className="font-mono text-muted-foreground/60 w-16 flex-shrink-0">{tr.tradeId.slice(0, 8)}...</span>
+                              <span className="font-mono text-foreground/80">
+                                {formatNum(tr.botData.entryPrice)}
+                                {tr.botData.exitPrice !== null && (
+                                  <span className="text-muted-foreground/40"> → </span>
                                 )}
-                              </DetailBox>
+                                {tr.botData.exitPrice !== null && formatNum(tr.botData.exitPrice)}
+                              </span>
+                              {tr.botData.pnl !== null && (
+                                <span className={`font-mono font-semibold ${tr.botData.pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                                  {tr.botData.pnl >= 0 ? '+' : ''}{tr.botData.pnl.toFixed(2)} USDT
+                                </span>
+                              )}
                             </div>
 
-                            <DetailBox title="Cálculos do Auditor">
-                              <div className="flex flex-wrap gap-4 text-[10px]">
-                                {tr.calculatedPnl !== null && (
-                                  <KV label="P&L Calculado" value={`$${tr.calculatedPnl.toFixed(4)}`} valueColor={tr.calculatedPnl >= 0 ? 'text-emerald-400' : 'text-red-400'} />
-                                )}
-                                <KV label="Taxas Exchange" value={`$${tr.feesFromExchange.toFixed(6)}`} valueColor="text-yellow-400" />
-                                {tr.slippage !== null && (
-                                  <KV label="Slippage" value={`${tr.slippage.toFixed(4)}%`} valueColor={tr.slippage > 0.1 ? 'text-yellow-400' : 'text-foreground/80'} />
-                                )}
-                                {tr.signalLatencyMs !== null && (
-                                  <KV label="Latência" value={`${tr.signalLatencyMs}ms`} valueColor={tr.signalLatencyMs > 5000 ? 'text-yellow-400' : 'text-foreground/80'} />
-                                )}
-                              </div>
-                            </DetailBox>
+                            <span className={`px-2 py-0.5 rounded text-[10px] font-bold border flex-shrink-0 ${
+                              hasErrors
+                                ? 'bg-red-500/10 text-red-400 border-red-500/20'
+                                : hasRealIssues > 0
+                                ? 'bg-yellow-500/10 text-yellow-400 border-yellow-500/20'
+                                : 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
+                            }`}>
+                              {statusLabel}
+                            </span>
+                            <ChevronIcon open={expandedTrade === `rec-${tr.tradeId}`} />
+                          </button>
 
-                            {tr.issues.length > 0 && (
-                              <div>
-                                <div className="text-[9px] uppercase tracking-wider text-muted-foreground/60 mb-1.5">Issues</div>
-                                <div className="space-y-1">
-                                  {tr.issues.map((issue, idx) => (
-                                    <div key={idx} className={`px-3 py-2 rounded-md text-[10px] border ${
-                                      issue.severity === 'ERROR' || issue.severity === 'CRITICAL'
-                                        ? 'bg-red-500/10 border-red-500/15 text-red-300'
-                                        : 'bg-yellow-500/10 border-yellow-500/15 text-yellow-300'
-                                    }`}>
-                                      <span className="font-bold mr-1.5">[{issue.severity}]</span>
-                                      <span className="break-words whitespace-pre-wrap">{issue.message}</span>
+                          {expandedTrade === `rec-${tr.tradeId}` && (
+                            <div className="bg-secondary/5 border-t border-border/20 px-4 py-4 space-y-3">
+                              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                <DetailBox title="Dados do Bot">
+                                  <div className="grid grid-cols-2 gap-3 text-[11px]">
+                                    <KV label="Entrada" value={`$${tr.botData.entryPrice.toFixed(4)}`} />
+                                    <KV label="Saída" value={tr.botData.exitPrice !== null ? `$${tr.botData.exitPrice.toFixed(4)}` : '-'} />
+                                    <KV label="Quantidade" value={String(tr.botData.quantity)} />
+                                    <KV label="P&L" value={tr.botData.pnl !== null ? `$${tr.botData.pnl.toFixed(4)}` : '-'} valueColor={(tr.botData.pnl ?? 0) >= 0 ? 'text-emerald-400' : 'text-red-400'} />
+                                  </div>
+                                </DetailBox>
+                                <DetailBox title="Dados da Exchange">
+                                  {tr.exchangeData ? (
+                                    <div className="grid grid-cols-2 gap-3 text-[11px]">
+                                      <KV label="Preço Médio" value={`$${tr.exchangeData.avgPrice.toFixed(4)}`} />
+                                      <KV label="Qty Executada" value={String(tr.exchangeData.executedQty)} />
+                                      <KV label="Comissão" value={`$${tr.exchangeData.commission.toFixed(4)}`} valueColor="text-yellow-400" />
+                                      <KV label="Status" value={tr.exchangeData.status === 'closed' || tr.exchangeData.status === 'FILLED' ? 'Preenchida' : tr.exchangeData.status} valueColor={tr.exchangeData.status === 'closed' || tr.exchangeData.status === 'FILLED' ? 'text-emerald-400' : 'text-yellow-400'} />
                                     </div>
-                                  ))}
-                                </div>
+                                  ) : (
+                                    <div className="text-[11px] text-muted-foreground/60">Dados da exchange indisponíveis</div>
+                                  )}
+                                </DetailBox>
                               </div>
-                            )}
 
-                            {tr.issues.length === 0 && (
-                              <div className="text-[10px] text-emerald-400/60 text-center py-2">
-                                Nenhum problema encontrado neste trade
-                              </div>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    ))
+                              <DetailBox title="Métricas do Auditor">
+                                <div className="flex flex-wrap gap-4 text-[11px]">
+                                  {tr.calculatedPnl !== null && (
+                                    <KV label="P&L Calculado" value={`$${tr.calculatedPnl.toFixed(4)}`} valueColor={tr.calculatedPnl >= 0 ? 'text-emerald-400' : 'text-red-400'} />
+                                  )}
+                                  <KV label="Taxas Exchange" value={`$${tr.feesFromExchange.toFixed(4)}`} valueColor="text-yellow-400/80" />
+                                  {tr.slippage !== null && (
+                                    <KV label="Slippage" value={`${tr.slippage.toFixed(4)}%`} valueColor={tr.slippage > 0.1 ? 'text-yellow-400' : 'text-foreground/60'} />
+                                  )}
+                                  {tr.signalLatencyMs !== null && (
+                                    <KV label="Latência" value={tr.signalLatencyMs >= 1000 ? `${(tr.signalLatencyMs / 1000).toFixed(1)}s` : `${tr.signalLatencyMs}ms`} valueColor={tr.signalLatencyMs > 5000 ? 'text-yellow-400' : 'text-foreground/60'} />
+                                  )}
+                                </div>
+                              </DetailBox>
+
+                              {tr.issues.length > 0 && (
+                                <div className="space-y-1.5">
+                                  <div className="text-[9px] uppercase tracking-wider text-muted-foreground/50 mb-1">Detalhes</div>
+                                  {tr.issues.map((issue, idx) => {
+                                    const known = isKnownLimitation(issue);
+                                    const effSev = getEffectiveSeverity(issue);
+                                    const style = SEVERITY_STYLES[effSev] || SEVERITY_STYLES.INFO;
+                                    const parsed = parseIssueMessage(issue);
+
+                                    return (
+                                      <div key={idx} className={`rounded-md border p-2.5 ${known ? 'bg-blue-500/5 border-blue-500/10' : `${style.bg} ${style.border}`}`}>
+                                        <div className="flex items-start gap-2">
+                                          <span className={`flex-shrink-0 px-1.5 py-0.5 rounded text-[9px] font-bold border ${style.bg} ${style.text} ${style.border}`}>
+                                            {known ? 'NOTA' : SEVERITY_LABELS[issue.severity] || issue.severity}
+                                          </span>
+                                          <div className="min-w-0">
+                                            <div className={`text-[11px] font-medium ${known ? 'text-blue-400/70' : style.text}`}>{parsed.title}</div>
+                                            <div className="text-[10px] text-muted-foreground/70 mt-0.5">{parsed.detail}</div>
+                                          </div>
+                                        </div>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              )}
+
+                              {tr.issues.length === 0 && (
+                                <div className="text-[11px] text-emerald-400/60 text-center py-2 bg-emerald-500/5 rounded-md border border-emerald-500/10">
+                                  Nenhum problema encontrado neste trade
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })
                   )}
                 </div>
               </div>
@@ -589,20 +738,10 @@ export default function AuditorPage() {
   );
 }
 
-function SummaryCard({ label, value, severity }: { label: string; value: number | string; severity?: string }) {
-  const colorClass = severity ? (SEVERITY_COLORS[severity] || '') : 'text-foreground border-border/60';
-  return (
-    <div className={`glass-card rounded-lg p-3 ${colorClass}`}>
-      <div className="text-[10px] opacity-70 mb-1">{label}</div>
-      <div className="text-lg font-bold font-mono">{value}</div>
-    </div>
-  );
-}
-
 function DetailBox({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <div className="bg-secondary/30 rounded-md border border-border/20 p-3">
-      <div className="text-[9px] uppercase tracking-wider text-muted-foreground/60 mb-2">{title}</div>
+    <div className="bg-secondary/20 rounded-lg border border-border/20 p-3">
+      <div className="text-[9px] uppercase tracking-wider text-muted-foreground/50 mb-2 font-medium">{title}</div>
       {children}
     </div>
   );
@@ -620,7 +759,7 @@ function KV({ label, value, valueColor }: { label: string; value: string; valueC
 function ChevronIcon({ open, size = 14 }: { open: boolean; size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
-      className={`text-muted-foreground/50 flex-shrink-0 transition-transform ${open ? 'rotate-180' : ''}`}>
+      className={`text-muted-foreground/40 flex-shrink-0 transition-transform duration-200 ${open ? 'rotate-180' : ''}`}>
       <path d="M6 9l6 6 6-6" />
     </svg>
   );
