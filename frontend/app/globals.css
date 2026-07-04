@@ -2,40 +2,39 @@
 
 @custom-variant dark (&:is(.dark *));
 
-:root {
-  --background: 240 10% 3.5%;
-  --foreground: 0 0% 98%;
-  --card: 240 10% 5.5%;
-  --card-foreground: 0 0% 98%;
-  --popover: 240 10% 5%;
-  --popover-foreground: 0 0% 98%;
-  --primary: 264 83% 66%;
-  --primary-foreground: 0 0% 100%;
-  --secondary: 240 6% 10%;
-  --secondary-foreground: 0 0% 90%;
-  --muted: 240 6% 11%;
-  --muted-foreground: 240 5% 55%;
-  --accent: 189 94% 55%;
-  --accent-foreground: 240 10% 3.5%;
-  --destructive: 0 84% 60%;
-  --destructive-foreground: 0 0% 98%;
-  --border: 240 6% 14%;
-  --input: 240 6% 12%;
-  --ring: 264 83% 66%;
-  --success: 142 71% 45%;
-  --danger: 0 84% 60%;
-  --chart-1: 264 83% 66%;
-  --chart-2: 189 94% 55%;
-  --chart-3: 142 71% 45%;
-  --chart-4: 38 92% 50%;
-  --chart-5: 0 84% 60%;
-  --radius: 0.625rem;
-  --sidebar-width: 260px;
-  --sidebar-width-collapsed: 64px;
+@theme {
+  --color-background: hsl(240 10% 3.5%);
+  --color-foreground: hsl(0 0% 98%);
+  --color-card: hsl(240 10% 5.5%);
+  --color-card-foreground: hsl(0 0% 98%);
+  --color-popover: hsl(240 10% 5%);
+  --color-popover-foreground: hsl(0 0% 98%);
+  --color-primary: hsl(264 83% 66%);
+  --color-primary-foreground: hsl(0 0% 100%);
+  --color-secondary: hsl(240 6% 10%);
+  --color-secondary-foreground: hsl(0 0% 90%);
+  --color-muted: hsl(240 6% 11%);
+  --color-muted-foreground: hsl(240 5% 55%);
+  --color-accent: hsl(189 94% 55%);
+  --color-accent-foreground: hsl(240 10% 3.5%);
+  --color-destructive: hsl(0 84% 60%);
+  --color-destructive-foreground: hsl(0 0% 98%);
+  --color-border: hsl(240 6% 14%);
+  --color-input: hsl(240 6% 12%);
+  --color-ring: hsl(264 83% 66%);
+  --color-success: hsl(142 71% 45%);
+  --color-danger: hsl(0 84% 60%);
+
+  --radius-sm: calc(0.625rem - 4px);
+  --radius-md: calc(0.625rem - 2px);
+  --radius-lg: 0.625rem;
+
+  --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
 * {
-  border-color: hsl(var(--border));
+  border-color: var(--color-border);
 }
 
 html, body {
@@ -44,9 +43,9 @@ html, body {
 }
 
 body {
-  color: hsl(var(--foreground));
-  background: hsl(var(--background));
-  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  color: var(--color-foreground);
+  background: var(--color-background);
+  font-family: var(--font-sans);
   font-feature-settings: "cv02", "cv03", "cv04", "cv11";
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -55,14 +54,17 @@ body {
     radial-gradient(circle at 80% 90%, hsl(189 94% 25% / 0.08), transparent 40%);
 }
 
-.font-mono {
-  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
-}
-
 .glass {
   background: linear-gradient(180deg, hsl(240 10% 7% / 0.6) 0%, hsl(240 10% 5% / 0.6) 100%);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
+}
+
+.glass-card {
+  background: linear-gradient(135deg, hsl(240 10% 7% / 0.7), hsl(240 10% 5% / 0.5));
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid hsl(240 6% 18% / 0.5);
 }
 
 .glow-primary {
@@ -71,6 +73,14 @@ body {
 
 .glow-accent {
   box-shadow: 0 0 24px hsl(189 94% 55% / 0.2);
+}
+
+.glow-subtle {
+  box-shadow: 0 0 40px hsl(264 83% 66% / 0.08), 0 1px 2px hsl(0 0% 0% / 0.3);
+}
+
+.border-glow {
+  border-image: linear-gradient(135deg, hsl(264 83% 66% / 0.3), hsl(189 94% 55% / 0.15)) 1;
 }
 
 .scrollbar-thin {
@@ -87,6 +97,9 @@ body {
 .scrollbar-thin::-webkit-scrollbar-thumb {
   background: hsl(240 6% 18%);
   border-radius: 3px;
+}
+.scrollbar-thin::-webkit-scrollbar-thumb:hover {
+  background: hsl(240 6% 25%);
 }
 
 .no-scrollbar::-webkit-scrollbar { display: none; }
@@ -113,3 +126,19 @@ body {
   to { transform: rotate(360deg); }
 }
 .animate-spin-slow { animation: spin-slow 2s linear infinite; }
+
+@keyframes float {
+  0%, 100% { transform: translateY(0px); }
+  50% { transform: translateY(-4px); }
+}
+.animate-float { animation: float 3s ease-in-out infinite; }
+
+@keyframes gradient-shift {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+.animate-gradient {
+  background-size: 200% 200%;
+  animation: gradient-shift 4s ease infinite;
+}

@@ -212,7 +212,7 @@ export default function AuditorPage() {
       )}
 
       {summary && summary.byCategory.length > 0 && (
-        <div className="bg-card/60 rounded-lg border border-border/60 p-4">
+        <div className="glass-card rounded-lg p-4">
           <h3 className="text-[10px] font-semibold mb-2.5 text-muted-foreground uppercase tracking-wider">Issues por Categoria</h3>
           <div className="flex flex-wrap gap-1.5">
             {summary.byCategory.map((c) => (
@@ -257,7 +257,7 @@ export default function AuditorPage() {
       </div>
 
       {activeTab === 'logs' && (
-        <div className="bg-card/60 rounded-lg border border-border/60">
+        <div className="glass-card rounded-lg">
           <div className="flex items-center gap-2 p-3 border-b border-border/40 flex-wrap">
             <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">Filtros</span>
             <select
@@ -422,14 +422,14 @@ export default function AuditorPage() {
       {activeTab === 'reconcile' && (
         <div className="space-y-4">
           {!reconcileResult && !reconciling && (
-            <div className="bg-card/60 rounded-lg border border-border/60 p-12 text-center text-muted-foreground">
+            <div className="glass-card rounded-lg p-12 text-center text-muted-foreground">
               <p className="text-sm mb-1">Nenhuma reconciliação executada</p>
               <p className="text-xs text-muted-foreground/60">Selecione uma estratégia e clique em &quot;Reconciliar&quot;</p>
             </div>
           )}
 
           {reconciling && (
-            <div className="bg-card/60 rounded-lg border border-border/60 p-12 text-center">
+            <div className="glass-card rounded-lg p-12 text-center">
               <div className="flex items-center justify-center gap-3 text-foreground/80">
                 <span className="w-5 h-5 border-2 border-primary/30 border-t-primary rounded-full animate-spin" />
                 Reconciliando trades com a exchange...
@@ -454,7 +454,7 @@ export default function AuditorPage() {
                 <SummaryCard label="Taxas Exchange" value={`$${reconcileResult.totalFeesNotAccountedFor.toFixed(4)}`} severity="WARNING" />
               </div>
 
-              <div className="bg-card/60 rounded-lg border border-border/60">
+              <div className="glass-card rounded-lg">
                 <div className="px-4 py-3 border-b border-border/40">
                   <h3 className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">Resultado por Trade</h3>
                 </div>
@@ -590,9 +590,9 @@ export default function AuditorPage() {
 }
 
 function SummaryCard({ label, value, severity }: { label: string; value: number | string; severity?: string }) {
-  const colorClass = severity ? (SEVERITY_COLORS[severity] || '') : 'bg-card/80 text-foreground border-border/60';
+  const colorClass = severity ? (SEVERITY_COLORS[severity] || '') : 'text-foreground border-border/60';
   return (
-    <div className={`rounded-lg border p-3 ${colorClass}`}>
+    <div className={`glass-card rounded-lg p-3 ${colorClass}`}>
       <div className="text-[10px] opacity-70 mb-1">{label}</div>
       <div className="text-lg font-bold font-mono">{value}</div>
     </div>

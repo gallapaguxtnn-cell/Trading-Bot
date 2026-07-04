@@ -114,7 +114,7 @@ export default function Home() {
         </div>
       </div>
 
-      <div className="bg-card/60 rounded-lg border border-red-500/20 p-3">
+      <div className="glass-card rounded-lg border border-red-500/20 p-3">
         <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
           <div className="flex items-center gap-2.5">
             <div className="w-2 h-2 rounded-full bg-red-500 pulse-dot" />
@@ -185,7 +185,7 @@ export default function Home() {
             <span className="w-2 h-2 rounded-full bg-blue-500 pulse-dot" />
             Posições Abertas ({stats.openPositions.length})
           </h3>
-          <div className="bg-card/60 rounded-lg border border-border/60 overflow-hidden">
+          <div className="glass-card rounded-lg overflow-hidden">
             <Table
               data={stats.openPositions}
               columns={[
@@ -324,7 +324,7 @@ export default function Home() {
             ))}
           </div>
         ) : (
-          <div className="bg-card/60 rounded-lg border border-border/60 overflow-hidden">
+          <div className="glass-card rounded-lg overflow-hidden">
             <Table
               data={filteredTrades}
               columns={[

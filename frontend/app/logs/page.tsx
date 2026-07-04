@@ -231,7 +231,7 @@ export default function LogsPage() {
           ))}
         </div>
       ) : (
-        <div className="bg-card/60 rounded-lg border border-border/60 overflow-hidden">
+        <div className="glass-card rounded-lg overflow-hidden">
           <div className="divide-y divide-border/20">
             {filteredLogs.length === 0 ? (
               <div className="p-8 text-center text-muted-foreground text-xs">

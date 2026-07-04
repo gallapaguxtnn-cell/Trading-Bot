@@ -14,7 +14,7 @@ export default function SettingsPage() {
       </div>
 
       <div className="space-y-4 max-w-2xl">
-        <div className="bg-card/60 rounded-lg border border-border/60 backdrop-blur-sm">
+        <div className="glass-card rounded-lg">
           <div className="px-4 py-3 border-b border-border/40">
             <h3 className="text-sm font-semibold text-foreground">Configuração da Exchange</h3>
           </div>
@@ -35,7 +35,7 @@ export default function SettingsPage() {
           </div>
         </div>
 
-        <div className="bg-card/60 rounded-lg border border-border/60 backdrop-blur-sm">
+        <div className="glass-card rounded-lg">
           <div className="px-4 py-3 border-b border-border/40">
             <h3 className="text-sm font-semibold text-foreground">Notificações</h3>
           </div>
@@ -50,7 +50,7 @@ export default function SettingsPage() {
           </div>
         </div>
 
-        <div className="bg-card/60 rounded-lg border border-border/60 backdrop-blur-sm">
+        <div className="glass-card rounded-lg">
           <div className="px-4 py-3 border-b border-border/40">
             <h3 className="text-sm font-semibold text-foreground">Sistema</h3>
           </div>

@@ -232,7 +232,7 @@ export default function StrategiesPage() {
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-5">
-        <div className="bg-card/60 rounded-lg border border-border/60 backdrop-blur-sm">
+        <div className="glass-card rounded-lg">
           <div className="px-4 py-3 border-b border-border/40">
             <h3 className="text-sm font-semibold text-foreground">Estratégias Ativas</h3>
           </div>
@@ -343,7 +343,7 @@ export default function StrategiesPage() {
           </div>
         </div>
 
-        <div className="bg-card/60 rounded-lg border border-border/60 backdrop-blur-sm">
+        <div className="glass-card rounded-lg">
           <div className="px-4 py-3 border-b border-border/40 flex justify-between items-center">
             <h3 className="text-sm font-semibold text-foreground">
               {editingId ? `Editando: ${formData.name}` : 'Nova Estratégia'}

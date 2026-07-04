@@ -39,7 +39,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
         <aside className={`
           fixed lg:static inset-y-0 left-0 z-50
           w-[260px] flex flex-col
-          bg-card/80 backdrop-blur-xl border-r border-border/60
+          glass border-r border-border/60
           transform transition-transform duration-200 ease-out
           ${sidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}
         `}>
@@ -87,7 +87,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
         </aside>
 
         <div className="flex-1 flex flex-col min-w-0">
-          <header className="h-14 flex items-center justify-between px-4 lg:px-6 border-b border-border/40 bg-card/30 backdrop-blur-sm flex-shrink-0">
+          <header className="h-14 flex items-center justify-between px-4 lg:px-6 border-b border-border/40 glass shrink-0">
             <button
               onClick={() => setSidebarOpen(true)}
               className="lg:hidden p-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-secondary/80 transition"

@@ -48,8 +48,16 @@ export function TradeCard({ trade }: TradeCardProps) {
     return trade.timestamp;
   };
 
+  const borderAccent = trade.status === 'OPEN'
+    ? 'border-l-blue-500/50'
+    : trade.status === 'ERROR'
+    ? 'border-l-red-500/50'
+    : totalPnl >= 0
+    ? 'border-l-emerald-500/40'
+    : 'border-l-red-500/40';
+
   return (
-    <div className="bg-card/80 rounded-lg border border-border/60 backdrop-blur-sm hover:border-border transition-all">
+    <div className={`group glass-card rounded-lg border border-border/60 border-l-2 ${borderAccent} hover:border-border transition-all duration-200 hover:translate-y-[-1px] glow-subtle`}>
       <div className="p-4 space-y-3">
         <div className="flex justify-between items-start">
           <div className="flex items-center gap-2">
@@ -108,7 +116,7 @@ export function TradeCard({ trade }: TradeCardProps) {
             className="w-full text-left text-xs text-primary hover:text-primary/80 transition-colors flex items-center justify-between"
           >
             <span className="font-semibold flex items-center gap-1.5">
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className={`transition-transform ${showTimeline ? 'rotate-90' : ''}`}>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className={`transition-transform duration-200 ${showTimeline ? 'rotate-90' : ''}`}>
                 <polyline points="9 18 15 12 9 6" />
               </svg>
               Execution Timeline

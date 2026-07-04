@@ -68,7 +68,7 @@ export default function ChatPage() {
   if (configured === false) {
     return (
       <div className="flex items-center justify-center h-full">
-        <div className="bg-card/80 rounded-lg border border-border/60 p-8 max-w-md text-center backdrop-blur-sm">
+        <div className="glass-card rounded-lg p-8 max-w-md text-center">
           <div className="w-12 h-12 rounded-xl bg-primary/15 border border-primary/20 flex items-center justify-center mx-auto mb-4">
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="text-primary">
               <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z" />
@@ -112,7 +112,7 @@ export default function ChatPage() {
         </div>
       </div>
 
-      <div ref={scrollRef} className="flex-1 overflow-auto bg-card/40 rounded-lg border border-border/40 p-4 space-y-3 mb-3 scrollbar-thin">
+      <div ref={scrollRef} className="flex-1 overflow-auto glass-card rounded-lg p-4 space-y-3 mb-3 scrollbar-thin">
         {messages.length === 0 && !loading && (
           <div className="flex flex-col items-center justify-center h-full text-muted-foreground gap-4">
             <div className="w-14 h-14 rounded-xl bg-primary/10 border border-primary/20 flex items-center justify-center">
