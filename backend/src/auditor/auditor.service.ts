@@ -9,6 +9,7 @@ import { Strategy } from '../strategies/strategy.entity';
 import { ExchangeService } from '../exchange/exchange.service';
 import { EncryptionUtil } from '../utils/encryption.util';
 import Decimal from 'decimal.js';
+import type { Exchange } from 'ccxt';
 
 interface ExchangeOrder {
   orderId: string;
@@ -34,6 +35,7 @@ export interface ReconciliationResult {
   calculatedPnl: number | null;
   feesFromExchange: number;
   feesFromBot: number;
+  fundingFees: number;
   slippage: number | null;
   signalLatencyMs: number | null;
 }
@@ -184,6 +186,10 @@ export class AuditorService {
       ));
     }
 
+    const fundingFees = trade.status === 'CLOSED'
+      ? await this.safelyFetchFunding(strategy, trade)
+      : 0;
+
     let calculatedPnl: number | null = null;
     const useQty = trade.initialQuantity ?? trade.quantity;
     if (trade.status === 'CLOSED' && trade.exitPrice && trade.entryPrice) {
@@ -211,17 +217,18 @@ export class AuditorService {
         }
       }
 
-      const adjustedPnl = calculatedPnl - totalFeesFromExchange;
+      const adjustedPnl = calculatedPnl - totalFeesFromExchange + fundingFees;
       if (trade.pnl !== null) {
         const botPnl = new Decimal(trade.pnl);
         const diff = botPnl.minus(adjustedPnl).abs();
         if (diff.gt(0.01)) {
           issues.push(this.createLog(trade, AuditCategory.PNL_MISMATCH,
             diff.gt(1) ? AuditSeverity.ERROR : AuditSeverity.WARNING,
-            `PnL: bot=$${botPnl.toFixed(4)}, calculado=(${exit.toFixed(4)}-${entry.toFixed(4)})×${qty.toFixed(6)}×${direction}-taxas$${totalFeesFromExchange.toFixed(4)}=$${new Decimal(adjustedPnl).toFixed(4)}, diff=$${diff.toFixed(4)}`,
+            `PnL: bot=$${botPnl.toFixed(4)}, calculado=(${exit.toFixed(4)}-${entry.toFixed(4)})×${qty.toFixed(6)}×${direction}-taxas$${totalFeesFromExchange.toFixed(4)}+funding$${fundingFees.toFixed(4)}=$${new Decimal(adjustedPnl).toFixed(4)}, diff=$${diff.toFixed(4)}`,
             {
               botPnl: Number(trade.pnl), calculatedGross: calculatedPnl,
               calculatedNet: adjustedPnl, fees: totalFeesFromExchange,
+              fundingFees,
               entry: Number(trade.entryPrice), exit: Number(trade.exitPrice),
               qty: Number(useQty), side: trade.side,
             },
@@ -278,6 +285,7 @@ export class AuditorService {
       calculatedPnl,
       feesFromExchange: totalFeesFromExchange,
       feesFromBot: 0,
+      fundingFees,
       slippage: entryOrder
         ? new Decimal(trade.entryPrice).minus(entryOrder.avgPrice).abs().div(entryOrder.avgPrice).times(100).toNumber()
         : null,
@@ -502,6 +510,8 @@ export class AuditorService {
       total_trades?: number;
       total_fees?: number;
     },
+    strategyConfig?: Record<string, unknown>,
+    intrabar?: { lower_tf?: string; requested?: number; resolved?: number },
   ) {
     const TOLERANCE = 0.01;
     const issues: Array<{
@@ -666,10 +676,21 @@ export class AuditorService {
       `[${i.severity}] ${i.message}`,
     ).join('\n');
 
+    const cfg = strategyConfig as {
+      type?: string; leverage?: number; breakeven?: boolean; breakevenTrigger?: number;
+      breakgain?: boolean; trendflip?: boolean; hedge?: boolean; inverted?: boolean;
+    } | undefined;
+    const configLine = cfg
+      ? `\nConfig: type=${cfg.type ?? '?'} lev=${cfg.leverage ?? '?'}x BE=${cfg.breakeven ? `on@TP${cfg.breakevenTrigger ?? 1}` : 'off'} BG=${cfg.breakgain ? 'on' : 'off'} TRENDFLIP=${cfg.trendflip ? 'on' : 'off'} hedge=${cfg.hedge ? 'on' : 'off'} inverted=${cfg.inverted ? 'yes' : 'no'}`
+      : '';
+    const intrabarLine = intrabar?.lower_tf
+      ? `\nIntrabar: ${intrabar.resolved ?? 0}/${intrabar.requested ?? 0} candle(s) ambiguo(s) validados em ${intrabar.lower_tf}`
+      : '';
+
     const aiContext = `BACKTEST AUDIT REPORT
 Trades: ${trades.length} | Errors: ${errors} | Warnings: ${warnings}
 Win rate: ${stats?.win_rate?.toFixed(1) ?? 'N/A'}% | Total PnL: $${stats?.total_pnl_usd?.toFixed(2) ?? 'N/A'}
-Max Drawdown: ${stats?.max_drawdown_pct?.toFixed(1) ?? 'N/A'}%
+Max Drawdown: ${stats?.max_drawdown_pct?.toFixed(1) ?? 'N/A'}%${configLine}${intrabarLine}
 
 ISSUES:
 ${issuesSummary || 'Nenhum problema encontrado.'}
@@ -701,27 +722,96 @@ ${tradesSummary}`;
     }
   }
 
+  private async getExchangeForStrategy(strategy: Strategy): Promise<Exchange> {
+    const apiKey = await EncryptionUtil.decrypt(strategy.apiKey);
+    const apiSecret = await EncryptionUtil.decrypt(strategy.apiSecret);
+    const exchangeId = strategy.exchange as 'binance' | 'bybit';
+    return this.exchangeService.getExchange(exchangeId, apiKey, apiSecret, !!strategy.isTestnet);
+  }
+
   private async fetchExchangeOrder(
     strategy: Strategy,
     symbol: string,
     orderId: string,
   ): Promise<ExchangeOrder | null> {
-    const apiKey = await EncryptionUtil.decrypt(strategy.apiKey);
-    const apiSecret = await EncryptionUtil.decrypt(strategy.apiSecret);
-    const isTestnet = !!strategy.isTestnet;
-    const exchangeId = strategy.exchange as 'binance' | 'bybit';
-    const exchange = await this.exchangeService.getExchange(exchangeId, apiKey, apiSecret, isTestnet);
+    const exchange = await this.getExchangeForStrategy(strategy);
     const order = await exchange.fetchOrder(orderId, symbol);
+    const fills = await this.safelyFetchFills(exchange, symbol, String(order.id));
     return {
       orderId: String(order.id),
       price: order.price ?? 0,
-      avgPrice: order.average ?? order.price ?? 0,
-      executedQty: order.filled ?? 0,
-      commission: order.fee?.cost ?? 0,
-      commissionAsset: order.fee?.currency ?? 'USDT',
+      avgPrice: fills?.avgPrice ?? order.average ?? order.price ?? 0,
+      executedQty: fills?.qty ?? order.filled ?? 0,
+      commission: fills?.fee ?? order.fee?.cost ?? 0,
+      commissionAsset: fills?.feeAsset ?? order.fee?.currency ?? 'USDT',
       status: order.status ?? 'unknown',
       time: order.timestamp ?? 0,
     };
+  }
+
+  private async safelyFetchFills(
+    exchange: Exchange,
+    symbol: string,
+    orderId: string,
+  ): Promise<{ qty: number; avgPrice: number; fee: number; feeAsset: string } | null> {
+    try {
+      const myTrades = await exchange.fetchMyTrades(symbol, undefined, undefined, { orderId });
+      const fills = myTrades.filter(t => String(t.order) === orderId);
+      if (!fills.length) return null;
+      let qty = 0;
+      let notional = 0;
+      let fee = 0;
+      let feeAsset = 'USDT';
+      for (const f of fills) {
+        const amount = f.amount ?? 0;
+        qty += amount;
+        notional += (f.price ?? 0) * amount;
+        fee += f.fee?.cost ?? 0;
+        if (f.fee?.currency) feeAsset = f.fee.currency;
+      }
+      return { qty, avgPrice: qty > 0 ? notional / qty : 0, fee, feeAsset };
+    } catch (err) {
+      this.logger.warn(`Could not fetch fills for order ${orderId}: ${err}`);
+      return null;
+    }
+  }
+
+  private async safelyFetchFunding(strategy: Strategy, trade: Trade): Promise<number> {
+    if (!strategy.apiKey || !strategy.apiSecret) return 0;
+    try {
+      const exchange = await this.getExchangeForStrategy(strategy);
+      if (typeof exchange.fetchFundingHistory !== 'function') return 0;
+      const since = new Date(trade.timestamp).getTime();
+      const end = trade.closedAt ? new Date(trade.closedAt).getTime() : Date.now();
+      const entries = await exchange.fetchFundingHistory(trade.symbol, since, 100);
+      return entries
+        .filter(e => (e.timestamp ?? 0) >= since && (e.timestamp ?? 0) <= end)
+        .reduce((sum, e) => sum + (Number(e.amount) || 0), 0);
+    } catch (err) {
+      this.logger.warn(`Could not fetch funding for trade ${trade.id}: ${err}`);
+      return 0;
+    }
+  }
+
+  async getHealth() {
+    const now = new Date();
+    try {
+      const dayAgo = new Date(Date.now() - 86400000);
+      const [lastLog] = await this.auditRepo.find({ order: { createdAt: 'DESC' }, take: 1 });
+      const logs24h = await this.auditRepo.count({ where: { createdAt: Between(dayAgo, now) } });
+      const errors24h = await this.auditRepo.count({
+        where: { createdAt: Between(dayAgo, now), severity: AuditSeverity.ERROR },
+      });
+      return {
+        status: 'ok',
+        timestamp: now.toISOString(),
+        lastAuditAt: lastLog?.createdAt ?? null,
+        logs24h,
+        errors24h,
+      };
+    } catch (err) {
+      return { status: 'degraded', timestamp: now.toISOString(), error: String(err) };
+    }
   }
 
   private createLog(

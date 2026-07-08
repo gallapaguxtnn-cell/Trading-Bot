@@ -35,6 +35,12 @@ interface AuditBacktestDto {
     total_trades?: number;
     total_fees?: number;
   };
+  strategy?: Record<string, unknown>;
+  intrabar?: {
+    lower_tf?: string;
+    requested?: number;
+    resolved?: number;
+  };
 }
 
 @Controller('auditor')
@@ -71,7 +77,12 @@ export class AuditorController {
 
   @Post('audit-backtest')
   auditBacktest(@Body() body: AuditBacktestDto) {
-    return this.auditorService.auditBacktestData(body.trades, body.stats);
+    return this.auditorService.auditBacktestData(body.trades, body.stats, body.strategy, body.intrabar);
+  }
+
+  @Get('health')
+  async getHealth() {
+    return this.auditorService.getHealth();
   }
 
   @Get('logs')
