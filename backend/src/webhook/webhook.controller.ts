@@ -4,11 +4,10 @@ import {
   Body,
   UnauthorizedException,
   Logger,
-  UseGuards,
   Get,
   BadRequestException
 } from '@nestjs/common';
-import { ThrottlerGuard, Throttle } from '@nestjs/throttler';
+import { SkipThrottle } from '@nestjs/throttler';
 import { WebhookService } from './webhook.service';
 import { ConfigService } from '@nestjs/config';
 import axios from 'axios';
@@ -26,6 +25,7 @@ interface WebhookPayload {
   takeProfit?: number | string;
 }
 
+@SkipThrottle()
 @Controller('webhooks/tradingview')
 export class WebhookController {
   private readonly logger = new Logger(WebhookController.name);
@@ -62,8 +62,6 @@ export class WebhookController {
   }
 
   @Post()
-  @UseGuards(ThrottlerGuard)
-  @Throttle({ default: { limit: 10, ttl: 60000 } })
   async handleSignal(@Body() payload: WebhookPayload) {
     // Validate payload exists
     if (!payload || typeof payload !== 'object') {

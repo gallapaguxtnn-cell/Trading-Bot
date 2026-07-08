@@ -1,7 +1,8 @@
 import { Module } from '@nestjs/common';
+import { APP_GUARD } from '@nestjs/core';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ConfigModule, ConfigService } from '@nestjs/config';
-import { ThrottlerModule } from '@nestjs/throttler';
+import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { EventEmitterModule } from '@nestjs/event-emitter';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
@@ -24,7 +25,7 @@ import { AiChatModule } from './ai-chat/ai-chat.module';
     EventEmitterModule.forRoot(),
     ThrottlerModule.forRoot([{
       ttl: 60000,
-      limit: 20,
+      limit: 100,
     }]),
     TypeOrmModule.forRootAsync({
       imports: [ConfigModule],
@@ -70,6 +71,9 @@ import { AiChatModule } from './ai-chat/ai-chat.module';
     AiChatModule,
   ],
   controllers: [AppController],
-  providers: [AppService],
+  providers: [
+    AppService,
+    { provide: APP_GUARD, useClass: ThrottlerGuard },
+  ],
 })
 export class AppModule {}
