@@ -12,6 +12,7 @@ import { EncryptionUtil } from '../utils/encryption.util';
 import { RateLimiterUtil } from '../utils/rate-limiter.util';
 import { ExchangeCacheUtil } from '../utils/exchange-cache.util';
 import { BinanceWebSocketService } from '../binance-ws/binance-ws.service';
+import { SignalLogService } from './signal-log.service';
 import { BinanceRequestUtil } from '../utils/binance-request.util';
 import axios from 'axios';
 import * as crypto from 'crypto';
@@ -90,7 +91,8 @@ export class WebhookService {
     private readonly bybitClient: BybitClientService,
     private readonly strategiesService: StrategiesService,
     private readonly tradesService: TradesService,
-    private readonly binanceWs: BinanceWebSocketService
+    private readonly binanceWs: BinanceWebSocketService,
+    private readonly signalLog: SignalLogService
   ) {}
 
   private sleep(ms: number): Promise<void> {
@@ -1996,10 +1998,16 @@ export class WebhookService {
     this.activeSignalsTimestamps.set(signalKey, Date.now());
     this.logger.log(`[MUTEX] Request ${requestId} | Acquired lock for ${signalKey}`);
 
+    const signalLogId = this.signalLog.record(signal as unknown as Record<string, unknown>);
+
     try {
       const result = await this._processSignalInternal(signal);
+      this.signalLog.decideFromResult(signalLogId, result as unknown as { status?: string; message?: string; trade?: { id?: string } });
       this.logger.log(`[MUTEX] Request ${requestId} | Releasing lock for ${signalKey}`);
       return result;
+    } catch (error) {
+      this.signalLog.decide(signalLogId, 'error', (error as Error)?.message ?? null);
+      throw error;
     } finally {
       this.activeSignals.delete(signalKey);
       this.activeSignalsTimestamps.delete(signalKey);

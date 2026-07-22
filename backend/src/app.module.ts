@@ -18,6 +18,7 @@ import { WebSocketModule } from './websocket/websocket.module';
 import { BinanceWebSocketModule } from './binance-ws/binance-ws.module';
 import { AuditorModule } from './auditor/auditor.module';
 import { AiChatModule } from './ai-chat/ai-chat.module';
+import { ValidationReportsModule } from './validation-reports/validation-reports.module';
 
 @Module({
   imports: [
@@ -69,6 +70,7 @@ import { AiChatModule } from './ai-chat/ai-chat.module';
     WebSocketModule,
     AuditorModule,
     AiChatModule,
+    ValidationReportsModule,
   ],
   controllers: [AppController],
   providers: [
