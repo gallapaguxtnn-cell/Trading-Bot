@@ -6,16 +6,16 @@ export class ValidationReport {
   id: string;
 
   @Index()
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', nullable: true })
   strategyId: string | null;
 
   @Column({ type: 'jsonb' })
   report: Record<string, unknown>;
 
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', nullable: true })
   configHash: string | null;
 
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', nullable: true })
   engineVersion: string | null;
 
   @CreateDateColumn({ type: 'timestamptz' })

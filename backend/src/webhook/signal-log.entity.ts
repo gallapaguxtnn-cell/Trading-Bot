@@ -15,13 +15,13 @@ export class SignalLog {
   id: string;
 
   @Index()
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', nullable: true })
   strategyId: string | null;
 
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', nullable: true })
   symbol: string | null;
 
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', nullable: true })
   action: string | null;
 
   @Column({ type: 'timestamptz', default: () => 'now()' })
@@ -30,12 +30,12 @@ export class SignalLog {
   @Column({ type: 'jsonb', nullable: true })
   payload: Record<string, unknown> | null;
 
-  @Column({ default: 'error' })
+  @Column({ type: 'varchar', default: 'error' })
   decision: string;
 
   @Column({ type: 'text', nullable: true })
   decisionReason: string | null;
 
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', nullable: true })
   tradeId: string | null;
 }
