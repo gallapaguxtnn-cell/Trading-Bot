@@ -5,6 +5,11 @@ import { SignalLogService } from './signal-log.service';
 export class SignalLogController {
   constructor(private readonly signalLogService: SignalLogService) {}
 
+  @Get('range')
+  async range(@Query('strategyId') strategyId?: string) {
+    return this.signalLogService.range(strategyId);
+  }
+
   @Get()
   async list(
     @Query('strategyId') strategyId?: string,

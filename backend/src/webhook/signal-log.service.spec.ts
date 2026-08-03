@@ -78,6 +78,35 @@ describe('SignalLogService (append-only, nunca bloqueia o webhook)', () => {
     await flush();
   });
 
+  function makeQb(agg: any, syms: any[]) {
+    const qb: any = {};
+    qb.select = jest.fn(() => qb);
+    qb.addSelect = jest.fn(() => qb);
+    qb.where = jest.fn(() => qb);
+    qb.getRawOne = jest.fn().mockResolvedValue(agg);
+    qb.getRawMany = jest.fn().mockResolvedValue(syms);
+    return qb;
+  }
+
+  it('range sem sinais → first/last null, count 0, symbols []', async () => {
+    const repo = makeRepo({ createQueryBuilder: jest.fn(() => makeQb({ first: null, last: null, count: '0' }, [])) });
+    const svc = new SignalLogService(repo);
+    const r = await svc.range('s1');
+    expect(r).toEqual({ first: null, last: null, count: 0, symbols: [] });
+  });
+
+  it('range com sinais → limites ISO, contagem e símbolos distintos', async () => {
+    const first = '2026-07-23T03:00:00.000Z';
+    const last = '2026-07-23T09:30:00.000Z';
+    const repo = makeRepo({ createQueryBuilder: jest.fn(() => makeQb({ first, last, count: '5' }, [{ symbol: 'DOGEUSDT' }, { symbol: 'BTCUSDT' }])) });
+    const svc = new SignalLogService(repo);
+    const r = await svc.range('s1');
+    expect(r.first).toBe(first);
+    expect(r.last).toBe(last);
+    expect(r.count).toBe(5);
+    expect(r.symbols).toEqual(['DOGEUSDT', 'BTCUSDT']);
+  });
+
   it('query filtra por período e limita a 2000', async () => {
     const repo = makeRepo();
     const svc = new SignalLogService(repo);

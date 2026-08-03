@@ -85,6 +85,27 @@ export class SignalLogService {
     this.decide(id, decision, reason, tradeId);
   }
 
+  async range(strategyId?: string): Promise<{ first: string | null; last: string | null; count: number; symbols: string[] }> {
+    const aggQb = this.repo.createQueryBuilder('s')
+      .select('MIN(s.receivedAt)', 'first')
+      .addSelect('MAX(s.receivedAt)', 'last')
+      .addSelect('COUNT(*)', 'count');
+    if (strategyId) aggQb.where('s.strategyId = :strategyId', { strategyId });
+    const agg = await aggQb.getRawOne();
+
+    const symQb = this.repo.createQueryBuilder('s').select('DISTINCT s.symbol', 'symbol');
+    if (strategyId) symQb.where('s.strategyId = :strategyId AND s.symbol IS NOT NULL', { strategyId });
+    else symQb.where('s.symbol IS NOT NULL');
+    const symRows = await symQb.getRawMany();
+
+    return {
+      first: agg?.first ? new Date(agg.first).toISOString() : null,
+      last: agg?.last ? new Date(agg.last).toISOString() : null,
+      count: Number(agg?.count) || 0,
+      symbols: symRows.map((r) => r.symbol).filter(Boolean),
+    };
+  }
+
   async query(params: { strategyId?: string; from?: Date; to?: Date; limit?: number }): Promise<SignalLog[]> {
     const where: Record<string, unknown> = {};
     if (params.strategyId) where.strategyId = params.strategyId;
