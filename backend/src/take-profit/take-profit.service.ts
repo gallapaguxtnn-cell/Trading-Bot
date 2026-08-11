@@ -6,7 +6,7 @@ import { Repository } from 'typeorm';
 import { Trade, CloseReason } from '../strategies/trade.entity';
 import { TradesService } from '../trades/trades.service';
 import { ExecutionType } from '../trades/trade-execution.entity';
-import { OrderFill, mapBybitFill, mapBinanceFill, weightedAvgPrice, tpPnl, latestUpdatedAt } from './fill.util';
+import { OrderFill, mapBybitFill, mapBinanceFill, mapCcxtFill, weightedAvgPrice, tpPnl, latestUpdatedAt } from './fill.util';
 import { StrategiesService } from '../strategies/strategies.service';
 import { ExchangeService } from '../exchange/exchange.service';
 import { BybitClientService } from '../exchange/bybit-client.service';
@@ -669,19 +669,29 @@ export class TakeProfitService implements OnModuleInit {
     exchange: Exchange,
     apiKey: string,
     apiSecret: string,
-    isTestnet: boolean
+    isTestnet: boolean,
+    orderId?: string
   ): Promise<void> {
-    const exitPrice = await this.getLastTradePrice(trade.symbol, exchange, apiKey, apiSecret, isTestnet);
-    const currentPrice = exitPrice || await this.getCurrentPrice(trade, { exchange, isTestnet } as any);
+    let fill: OrderFill | null = null;
+    if (orderId) {
+      fill = await this.fetchOrderFill(orderId, trade.symbol, exchange, apiKey, apiSecret, isTestnet);
+    }
 
-    const pnl = this.calculatePnL(trade, currentPrice, 1.0);
+    const lastPrice = await this.getLastTradePrice(trade.symbol, exchange, apiKey, apiSecret, isTestnet);
+    const marketPrice = lastPrice || await this.getCurrentPrice(trade, { exchange, isTestnet } as any);
+
+    const exitPrice = fill?.avgPrice ?? marketPrice;
+    const closeQty = fill?.executedQty ?? parseFloat(trade.quantity as any);
+    const pnl = fill?.avgPrice != null
+      ? tpPnl(trade.side, parseFloat(trade.entryPrice as any), exitPrice, closeQty, fill?.fee).net
+      : this.calculatePnL(trade, exitPrice, 1.0);
     const totalPnl = (parseFloat(trade.pnl as any) || 0) + pnl;
 
     trade.status = 'CLOSED';
-    trade.exitPrice = currentPrice as any;
+    trade.exitPrice = exitPrice as any;
     trade.pnl = totalPnl as any;
     trade.closeReason = reason;
-    trade.closedAt = new Date();
+    trade.closedAt = fill?.updatedAt ?? new Date();
     trade.binancePositionAmt = 0 as any;
 
     await this.tradesRepository.save(trade);
@@ -804,6 +814,7 @@ export class TakeProfitService implements OnModuleInit {
       const closeSide = trade.side === 'BUY' ? 'SELL' : 'BUY';
       const quantity = parseFloat(trade.quantity as any);
       let closeQuantity = quantity * closePercent;
+      let ccxtFill: OrderFill | null = null;
 
       if (exchange === Exchange.BYBIT) {
         // Get symbol rules to validate quantity
@@ -909,13 +920,18 @@ export class TakeProfitService implements OnModuleInit {
           ccxtParams.positionSide = positionSide;
         }
 
-        await exchangeInstance.createMarketOrder(trade.symbol, closeSide.toLowerCase(), closeQuantity, ccxtParams);
+        const closeOrder = await exchangeInstance.createMarketOrder(trade.symbol, closeSide.toLowerCase(), closeQuantity, ccxtParams);
+        ccxtFill = mapCcxtFill(closeOrder as unknown as Record<string, unknown>);
         this.logger.log(`[CLOSED ${(closePercent * 100).toFixed(0)}%] ${trade.symbol} via ${reason}`);
       }
 
-      const pnl = this.calculatePnL(trade, exitPrice, closePercent);
+      const fillPrice = ccxtFill?.avgPrice ?? exitPrice;
+      const fillQty = ccxtFill?.executedQty ?? closeQuantity;
+      const pnl = ccxtFill?.avgPrice != null
+        ? tpPnl(trade.side, parseFloat(trade.entryPrice as any), fillPrice, fillQty, ccxtFill?.fee).net
+        : this.calculatePnL(trade, exitPrice, closePercent);
+      const closedAtReal = ccxtFill?.updatedAt ?? new Date();
 
-      // Save execution record
       const executionType = reason === 'TAKE_PROFIT_1' ? ExecutionType.TAKE_PROFIT_1 :
                            reason === 'TAKE_PROFIT_2' ? ExecutionType.TAKE_PROFIT_2 :
                            ExecutionType.TAKE_PROFIT_3;
@@ -923,33 +939,33 @@ export class TakeProfitService implements OnModuleInit {
       await this.tradesService.createExecution({
         tradeId: trade.id,
         type: executionType,
-        price: exitPrice,
-        quantity: closeQuantity,
+        price: fillPrice,
+        quantity: fillQty,
         pnl: pnl,
         percentOfPosition: closePercent * 100,
         exchangeOrderId: undefined
-      });
+      } as any);
 
       if (closePercent >= 1.0) {
         trade.status = 'CLOSED';
-        trade.exitPrice = exitPrice as any;
+        trade.exitPrice = fillPrice as any;
         trade.pnl = pnl as any;
         trade.closeReason = reason;
-        trade.closedAt = new Date();
+        trade.closedAt = closedAtReal;
         trade.binancePositionAmt = 0 as any;
 
         await this.tradesRepository.save(trade);
 
         await this.cancelTradeStopLoss(trade, exchange, apiKey, apiSecret, strategy.isTestnet);
 
-        this.logger.log(`├─ Closed: ${this.formatQuantityWithUsdt(closeQuantity, exitPrice)} (100%)`);
+        this.logger.log(`├─ Closed: ${this.formatQuantityWithUsdt(fillQty, fillPrice)} (100%)`);
         this.logger.log(`└─ P&L: ${pnl > 0 ? '+' : ''}${pnl.toFixed(2)} USDT`);
       } else {
         const remainingQuantity = quantity * (1 - closePercent);
         trade.quantity = remainingQuantity as any;
         const currentPnl = parseFloat(trade.pnl as any) || 0;
         trade.pnl = (currentPnl + pnl) as any;
-        trade.exitPrice = exitPrice as any;  // IMPORTANT: Update exitPrice to latest execution price
+        trade.exitPrice = fillPrice as any;
         trade.binancePositionAmt = remainingQuantity as any;
 
         await this.tradesRepository.save(trade);

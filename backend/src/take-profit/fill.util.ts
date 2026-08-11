@@ -43,6 +43,18 @@ export function mapBinanceFill(d: Record<string, unknown> | null | undefined): O
   };
 }
 
+export function mapCcxtFill(order: Record<string, unknown> | null | undefined): OrderFill | null {
+  if (!order) return null;
+  const fee = order.fee as Record<string, unknown> | undefined;
+  return {
+    status: (order.status as string) ?? null,
+    avgPrice: toPos(order.average),
+    executedQty: toPos(order.filled),
+    fee: fee ? toNum(fee.cost) : null,
+    updatedAt: toDate(order.lastUpdateTimestamp ?? order.timestamp),
+  };
+}
+
 export function weightedAvgPrice(fills: Array<OrderFill | null | undefined>): number | null {
   let num = 0;
   let den = 0;

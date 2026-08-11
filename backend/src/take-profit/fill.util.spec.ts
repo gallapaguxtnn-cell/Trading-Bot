@@ -95,3 +95,24 @@ describe('FASE 2: preço/PnL/hora reais no fechamento por TP (caso real)', () =>
     expect(latestUpdatedAt([{ status: 'New', avgPrice: null, executedQty: null, fee: null, updatedAt: null }])).toBeNull();
   });
 });
+
+describe('FASE 3: mapCcxtFill (retorno de createMarketOrder)', () => {
+  const { mapCcxtFill } = require('./fill.util');
+
+  it('mapeia average/filled/fee.cost/timestamp', () => {
+    const f = mapCcxtFill({ status: 'closed', average: 3.892, filled: 7.9, fee: { cost: 0.0031 }, timestamp: 1730000000000 });
+    expect(f).toEqual({ status: 'closed', avgPrice: 3.892, executedQty: 7.9, fee: 0.0031, updatedAt: new Date(1730000000000) });
+  });
+
+  it('prefere lastUpdateTimestamp quando presente', () => {
+    const f = mapCcxtFill({ average: 3.9, filled: 1, timestamp: 1, lastUpdateTimestamp: 1730000009000 });
+    expect(f.updatedAt).toEqual(new Date(1730000009000));
+  });
+
+  it('order null → null; sem average → avgPrice null (cai no preço de gatilho)', () => {
+    expect(mapCcxtFill(null)).toBeNull();
+    const f = mapCcxtFill({ status: 'open', filled: 0 });
+    expect(f.avgPrice).toBeNull();
+    expect(f.fee).toBeNull();
+  });
+});
