@@ -6,6 +6,7 @@ import { Repository } from 'typeorm';
 import { Trade, CloseReason } from '../strategies/trade.entity';
 import { TradesService } from '../trades/trades.service';
 import { ExecutionType } from '../trades/trade-execution.entity';
+import { OrderFill, mapBybitFill, mapBinanceFill } from './fill.util';
 import { StrategiesService } from '../strategies/strategies.service';
 import { ExchangeService } from '../exchange/exchange.service';
 import { BybitClientService } from '../exchange/bybit-client.service';
@@ -580,14 +581,14 @@ export class TakeProfitService implements OnModuleInit {
     }
   }
 
-  private async checkOrderStatus(
+  private async fetchOrderFill(
     orderId: string,
     symbol: string,
     exchange: Exchange,
     apiKey: string,
     apiSecret: string,
     isTestnet: boolean
-  ): Promise<string | null> {
+  ): Promise<OrderFill | null> {
     try {
       if (exchange === Exchange.BYBIT) {
         let orderInfo = await this.bybitClient.getOrderInfo(apiKey, apiSecret, isTestnet, symbol, orderId);
@@ -596,7 +597,7 @@ export class TakeProfitService implements OnModuleInit {
           orderInfo = await this.bybitClient.getOrderHistory(apiKey, apiSecret, isTestnet, symbol, orderId);
         }
 
-        return orderInfo?.orderStatus || null;
+        return mapBybitFill(orderInfo as unknown as Record<string, unknown> | null);
       }
 
       const baseUrl = isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
@@ -609,11 +610,22 @@ export class TakeProfitService implements OnModuleInit {
         { headers: { 'X-MBX-APIKEY': apiKey } }
       );
 
-      return response.data.status;
+      return mapBinanceFill(response.data as Record<string, unknown>);
     } catch (error) {
-      this.logger.error(`Failed to check order status: ${error.message}`);
+      this.logger.warn(`Failed to fetch order fill (${orderId}): ${error.message}`);
       return null;
     }
+  }
+
+  private async checkOrderStatus(
+    orderId: string,
+    symbol: string,
+    exchange: Exchange,
+    apiKey: string,
+    apiSecret: string,
+    isTestnet: boolean
+  ): Promise<string | null> {
+    return (await this.fetchOrderFill(orderId, symbol, exchange, apiKey, apiSecret, isTestnet))?.status ?? null;
   }
 
   private async markTradeAsClosed(

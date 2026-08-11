@@ -30,6 +30,8 @@ export interface BybitOrderInfo {
   orderStatus: string;
   avgPrice: string;
   cumExecQty: string;
+  cumExecFee?: string;
+  updatedTime?: string;
 }
 
 export interface BybitTradeHistory {
