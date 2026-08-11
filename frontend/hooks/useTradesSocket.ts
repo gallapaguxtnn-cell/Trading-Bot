@@ -14,6 +14,7 @@ interface Trade {
   pnl?: number;
   status: 'OPEN' | 'CLOSED' | 'SIMULATED' | 'ERROR';
   closeReason?: string;
+  closeDetail?: string | null;
   closedAt?: string;
   timestamp: string;
 }

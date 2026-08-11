@@ -6,7 +6,7 @@ import { Repository } from 'typeorm';
 import { Trade, CloseReason } from '../strategies/trade.entity';
 import { TradesService } from '../trades/trades.service';
 import { ExecutionType } from '../trades/trade-execution.entity';
-import { OrderFill, mapBybitFill, mapBinanceFill } from './fill.util';
+import { OrderFill, mapBybitFill, mapBinanceFill, weightedAvgPrice, tpPnl, latestUpdatedAt } from './fill.util';
 import { StrategiesService } from '../strategies/strategies.service';
 import { ExchangeService } from '../exchange/exchange.service';
 import { BybitClientService } from '../exchange/bybit-client.service';
@@ -172,24 +172,29 @@ export class TakeProfitService implements OnModuleInit {
     const tp2Qty = strategy.takeProfitQuantity2 || 33;
 
     const filledLevels = new Set<number>();
+    const fillsByLevel = new Map<number, OrderFill>();
+    const orderIdByLevel = new Map<number, string>();
     let anyActive = false;
     let allDone = true;
 
     for (const entry of entries) {
       const [levelStr, orderId] = entry.split(':');
       const level = parseInt(levelStr);
+      orderIdByLevel.set(level, orderId);
 
       if ((trade.lastTpLevel || 0) >= level) {
         filledLevels.add(level);
         continue;
       }
 
-      const status = await this.checkOrderStatus(orderId, trade.symbol, exchange, apiKey, apiSecret, strategy.isTestnet);
+      const fill = await this.fetchOrderFill(orderId, trade.symbol, exchange, apiKey, apiSecret, strategy.isTestnet);
+      const status = fill?.status ?? null;
 
       this.logger.log(`[TP${level}] Order status for ${orderId}: ${status}`);
 
       if (status === 'FILLED' || status === 'Filled') {
         filledLevels.add(level);
+        if (fill) fillsByLevel.set(level, fill);
         this.logger.log(`[TP${level}] Exchange order filled for ${trade.symbol} (orderId: ${orderId})`);
       } else if (status === 'NEW' || status === 'New' || status === 'PartiallyFilled') {
         anyActive = true;
@@ -230,14 +235,36 @@ export class TakeProfitService implements OnModuleInit {
           .filter(lvl => lvl >= l)
           .reduce((sum, lvl) => sum + (lvl === 1 ? tp1Qty : lvl === 2 ? tp2Qty : (strategy.takeProfitQuantity3 || 34)), 0);
         const closePercent = sumRemaining > 0 ? pct / sumRemaining : pct / 100;
-        const closedQty = newQty * closePercent;
-        const fillPrice = tpPrice || currentPrice;
-        const pnl = trade.side === 'BUY' ? (fillPrice - entryPrice) * closedQty : (entryPrice - fillPrice) * closedQty;
-        accumulatedPnl += pnl;
+        const proportionalQty = newQty * closePercent;
+
+        const fill = fillsByLevel.get(l);
+        const priceSource = fill?.avgPrice != null ? 'exchange' : (tpPrice ? 'theoretical' : 'market');
+        const fillPrice = (fill?.avgPrice ?? tpPrice ?? currentPrice) as number;
+        const closedQty = fill?.executedQty ?? proportionalQty;
+        const { net } = tpPnl(trade.side, entryPrice, fillPrice, closedQty, fill?.fee);
+        accumulatedPnl += net;
         newQty -= closedQty;
         highestProcessed = l;
 
-        this.logger.log(`├─ TP${l} closed: ${this.formatQuantityWithUsdt(closedQty, fillPrice)} | P&L: ${pnl > 0 ? '+' : ''}${pnl.toFixed(2)} USDT`);
+        if (priceSource !== 'exchange') {
+          this.logger.warn(`[TP${l}] sem preço da corretora, usando ${priceSource} (${fillPrice})`);
+        }
+
+        try {
+          await this.tradesService.createExecution({
+            tradeId: trade.id,
+            type: l === 1 ? ExecutionType.TAKE_PROFIT_1 : l === 2 ? ExecutionType.TAKE_PROFIT_2 : ExecutionType.TAKE_PROFIT_3,
+            price: fillPrice,
+            quantity: closedQty,
+            pnl: net,
+            percentOfPosition: closePercent * 100,
+            exchangeOrderId: orderIdByLevel.get(l),
+          } as any);
+        } catch (e) {
+          this.logger.warn(`[TP${l}] falha ao gravar execução: ${e.message}`);
+        }
+
+        this.logger.log(`├─ TP${l} closed: ${this.formatQuantityWithUsdt(closedQty, fillPrice)} | P&L: ${net > 0 ? '+' : ''}${net.toFixed(4)} USDT`);
       }
 
       const totalConfiguredLevels = entries.length;
@@ -247,11 +274,19 @@ export class TakeProfitService implements OnModuleInit {
       this.logger.log(`[TP CHECK] Filled levels: ${Array.from(filledLevels).join(',')}, Total levels: ${totalConfiguredLevels}, Position closed: ${positionFullyClosed}`);
 
       if (allLevelsFilled || positionFullyClosed) {
+        const filledFills = newlyFilled.map(l => fillsByLevel.get(l));
+        const realExit = weightedAvgPrice(filledFills);
+        const realClosedAt = latestUpdatedAt(filledFills);
+
         trade.status = 'CLOSED';
-        trade.exitPrice = currentPrice as any;
+        trade.exitPrice = (realExit ?? currentPrice) as any;
         trade.pnl = accumulatedPnl as any;
         trade.closeReason = `TAKE_PROFIT_${highestProcessed}` as any;
-        trade.closedAt = new Date();
+        trade.closedAt = realClosedAt ?? new Date();
+        if (newlyFilled.length > 1) {
+          const when = (realClosedAt ?? new Date()).toISOString().slice(11, 19);
+          trade.closeDetail = `${newlyFilled.map(l => `TP${l}`).join('+')} @${when}` as any;
+        }
         trade.binancePositionAmt = 0 as any;
         trade.lastTpLevel = highestProcessed;
         await this.tradesRepository.save(trade);

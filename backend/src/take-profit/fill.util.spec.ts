@@ -1,4 +1,4 @@
-import { mapBybitFill, mapBinanceFill } from './fill.util';
+import { mapBybitFill, mapBinanceFill, weightedAvgPrice, tpPnl, latestUpdatedAt } from './fill.util';
 
 describe('FASE 1: mapeamento de fill da corretora', () => {
   it('Bybit com avgPrice/cumExecQty/cumExecFee/updatedTime → objeto correto', () => {
@@ -50,5 +50,48 @@ describe('FASE 1: mapeamento de fill da corretora', () => {
     expect(f?.executedQty).toBeNull();
     expect(f?.fee).toBeNull();
     expect(f?.updatedAt).toBeNull();
+  });
+});
+
+describe('FASE 2: preço/PnL/hora reais no fechamento por TP (caso real)', () => {
+  const fills = [
+    { status: 'Filled', avgPrice: 3.893, executedQty: 2.6, fee: 0.0011, updatedAt: new Date(1730000000000) },
+    { status: 'Filled', avgPrice: 3.891, executedQty: 2.6, fee: 0.0011, updatedAt: new Date(1730000005000) },
+    { status: 'Filled', avgPrice: 3.8925, executedQty: 2.7, fee: 0.0011, updatedAt: new Date(1730000002000) },
+  ];
+
+  it('exitPrice = média ponderada Σ(preço×qtd)/Σqtd', () => {
+    const expected = (3.893 * 2.6 + 3.891 * 2.6 + 3.8925 * 2.7) / (2.6 + 2.6 + 2.7);
+    expect(weightedAvgPrice(fills)).toBeCloseTo(expected, 10);
+    expect(weightedAvgPrice(fills)).toBeCloseTo(3.8921708861, 9);
+  });
+
+  it('closedAt = maior updatedAt entre os fills (não o do cron)', () => {
+    expect(latestUpdatedAt(fills)).toEqual(new Date(1730000005000));
+  });
+
+  it('pnl total = soma dos líquidos por nível (LONG, líquido de taxa)', () => {
+    const entry = 3.88;
+    const total = fills.reduce((s, f) => s + tpPnl('BUY', entry, f.avgPrice, f.executedQty, f.fee).net, 0);
+    const expected =
+      ((3.893 - 3.88) * 2.6 - 0.0011) +
+      ((3.891 - 3.88) * 2.6 - 0.0011) +
+      ((3.8925 - 3.88) * 2.7 - 0.0011);
+    expect(total).toBeCloseTo(expected, 10);
+  });
+
+  it('SHORT inverte o sinal (entrada − saída)', () => {
+    const { gross, net } = tpPnl('SELL', 3.90, 3.893, 2.6, 0.001);
+    expect(gross).toBeCloseTo((3.90 - 3.893) * 2.6, 10);
+    expect(net).toBeCloseTo((3.90 - 3.893) * 2.6 - 0.001, 10);
+  });
+
+  it('fee ausente (null) não quebra o PnL líquido', () => {
+    expect(tpPnl('BUY', 3.88, 3.893, 2.6, null).net).toBeCloseTo((3.893 - 3.88) * 2.6, 10);
+  });
+
+  it('nenhum fill com preço → weightedAvgPrice null (cai no fallback de mercado)', () => {
+    expect(weightedAvgPrice([{ status: 'Filled', avgPrice: null, executedQty: null, fee: null, updatedAt: null }])).toBeNull();
+    expect(latestUpdatedAt([{ status: 'New', avgPrice: null, executedQty: null, fee: null, updatedAt: null }])).toBeNull();
   });
 });
