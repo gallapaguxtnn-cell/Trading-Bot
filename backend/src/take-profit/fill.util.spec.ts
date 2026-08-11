@@ -116,3 +116,20 @@ describe('FASE 3: mapCcxtFill (retorno de createMarketOrder)', () => {
     expect(f.fee).toBeNull();
   });
 });
+
+describe('FASE 4: sumCommission (taxa Binance via userTrades)', () => {
+  const { sumCommission } = require('./fill.util');
+
+  it('soma commission de múltiplos fills do mesmo orderId', () => {
+    expect(sumCommission([{ commission: '0.0011' }, { commission: '0.0011' }, { commission: '0.0012' }])).toBeCloseTo(0.0034, 10);
+  });
+
+  it('vazio/null → null (mantém fee null, sem forçar 0)', () => {
+    expect(sumCommission([])).toBeNull();
+    expect(sumCommission(null)).toBeNull();
+  });
+
+  it('valores não numéricos são ignorados', () => {
+    expect(sumCommission([{ commission: 'abc' }, { commission: '0.002' }])).toBeCloseTo(0.002, 10);
+  });
+});

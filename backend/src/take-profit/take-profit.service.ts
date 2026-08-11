@@ -6,7 +6,7 @@ import { Repository } from 'typeorm';
 import { Trade, CloseReason } from '../strategies/trade.entity';
 import { TradesService } from '../trades/trades.service';
 import { ExecutionType } from '../trades/trade-execution.entity';
-import { OrderFill, mapBybitFill, mapBinanceFill, mapCcxtFill, weightedAvgPrice, tpPnl, latestUpdatedAt } from './fill.util';
+import { OrderFill, mapBybitFill, mapBinanceFill, mapCcxtFill, weightedAvgPrice, tpPnl, latestUpdatedAt, sumCommission } from './fill.util';
 import { StrategiesService } from '../strategies/strategies.service';
 import { ExchangeService } from '../exchange/exchange.service';
 import { BybitClientService } from '../exchange/bybit-client.service';
@@ -645,9 +645,39 @@ export class TakeProfitService implements OnModuleInit {
         { headers: { 'X-MBX-APIKEY': apiKey } }
       );
 
-      return mapBinanceFill(response.data as Record<string, unknown>);
+      const fill = mapBinanceFill(response.data as Record<string, unknown>);
+      if (fill && fill.fee == null && fill.status && /FILLED/i.test(fill.status)) {
+        const fee = await this.fetchBinanceCommission(orderId, symbol, apiKey, apiSecret, isTestnet);
+        if (fee != null) fill.fee = fee;
+      }
+      return fill;
     } catch (error) {
       this.logger.warn(`Failed to fetch order fill (${orderId}): ${error.message}`);
+      return null;
+    }
+  }
+
+  private async fetchBinanceCommission(
+    orderId: string,
+    symbol: string,
+    apiKey: string,
+    apiSecret: string,
+    isTestnet: boolean
+  ): Promise<number | null> {
+    try {
+      const baseUrl = isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
+      const timestamp = Date.now();
+      const queryString = `symbol=${symbol}&orderId=${orderId}&timestamp=${timestamp}`;
+      const signature = crypto.createHmac('sha256', apiSecret).update(queryString).digest('hex');
+
+      const response = await BinanceRequestUtil.get(
+        `${baseUrl}/fapi/v1/userTrades?${queryString}&signature=${signature}`,
+        { headers: { 'X-MBX-APIKEY': apiKey } }
+      );
+
+      return sumCommission(response.data as Array<Record<string, unknown>>);
+    } catch (error) {
+      this.logger.warn(`Failed to fetch Binance commission (${orderId}): ${error.message}`);
       return null;
     }
   }

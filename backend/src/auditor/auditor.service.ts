@@ -4,7 +4,7 @@ import { Repository, Between } from 'typeorm';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { AuditLog, AuditCategory, AuditSeverity } from './audit-log.entity';
 import { Trade } from '../strategies/trade.entity';
-import { TradeExecution } from '../trades/trade-execution.entity';
+import { TradeExecution, ExecutionType } from '../trades/trade-execution.entity';
 import { Strategy } from '../strategies/strategy.entity';
 import { ExchangeService } from '../exchange/exchange.service';
 import { EncryptionUtil } from '../utils/encryption.util';
@@ -706,6 +706,99 @@ ${tradesSummary}`;
       issues,
       aiContext,
     };
+  }
+
+  async backfillTrade(tradeId: string) {
+    const trade = await this.tradeRepo.findOne({ where: { id: tradeId } });
+    if (!trade) throw new Error(`Trade ${tradeId} not found`);
+
+    const strategy = await this.strategyRepo
+      .createQueryBuilder('strategy')
+      .addSelect(['strategy.apiKey', 'strategy.apiSecret'])
+      .where('strategy.id = :id', { id: trade.strategyId })
+      .getOne();
+    if (!strategy) throw new Error(`Strategy ${trade.strategyId} not found`);
+
+    const closers: Array<{ level: number; order: ExchangeOrder }> = [];
+    if (trade.takeProfitOrderId && trade.takeProfitOrderId.includes(':')) {
+      for (const e of trade.takeProfitOrderId.split('|')) {
+        const [lvlStr, oid] = e.split(':');
+        if (!oid) continue;
+        const order = await this.safelyFetchOrder(strategy, trade.symbol, oid);
+        if (order && order.executedQty > 0 && order.avgPrice > 0) closers.push({ level: parseInt(lvlStr) || 0, order });
+      }
+    }
+    if (trade.closeReason === 'STOP_LOSS' && trade.stopLossOrderId) {
+      const slOrder = await this.safelyFetchOrder(strategy, trade.symbol, trade.stopLossOrderId);
+      if (slOrder && slOrder.executedQty > 0 && slOrder.avgPrice > 0) closers.push({ level: 0, order: slOrder });
+    }
+
+    if (!closers.length) {
+      return { updated: false, reason: 'Nenhuma ordem de fechamento com preenchimento encontrada na corretora.' };
+    }
+
+    const entryPrice = Number(trade.entryPrice);
+    let qtySum = 0;
+    let notional = 0;
+    let feeSum = 0;
+    let latestTime = 0;
+    let netPnl = 0;
+    for (const { order } of closers) {
+      qtySum += order.executedQty;
+      notional += order.avgPrice * order.executedQty;
+      feeSum += order.commission || 0;
+      latestTime = Math.max(latestTime, order.time || 0);
+      const gross = (trade.side === 'BUY' ? order.avgPrice - entryPrice : entryPrice - order.avgPrice) * order.executedQty;
+      netPnl += gross - (order.commission || 0);
+    }
+    const exitPrice = qtySum > 0 ? notional / qtySum : Number(trade.exitPrice);
+    const closedAt = latestTime > 0 ? new Date(latestTime) : trade.closedAt;
+
+    const existing = await this.execRepo.find({ where: { tradeId } });
+    const haveType = new Set(existing.map(e => e.type));
+    const executionsCreated: string[] = [];
+    for (const { level, order } of closers) {
+      const type = level === 1 ? ExecutionType.TAKE_PROFIT_1
+        : level === 2 ? ExecutionType.TAKE_PROFIT_2
+        : level === 3 ? ExecutionType.TAKE_PROFIT_3
+        : ExecutionType.STOP_LOSS;
+      if (haveType.has(type)) continue;
+      const gross = (trade.side === 'BUY' ? order.avgPrice - entryPrice : entryPrice - order.avgPrice) * order.executedQty;
+      await this.execRepo.save({
+        tradeId,
+        type,
+        price: order.avgPrice,
+        quantity: order.executedQty,
+        pnl: gross - (order.commission || 0),
+        percentOfPosition: null,
+        exchangeOrderId: order.orderId,
+      } as Partial<TradeExecution>);
+      executionsCreated.push(type);
+    }
+
+    const before = { exitPrice: trade.exitPrice, pnl: trade.pnl, closedAt: trade.closedAt };
+    trade.exitPrice = exitPrice as any;
+    trade.pnl = netPnl as any;
+    trade.closedAt = closedAt;
+    if (closers.length > 1) {
+      const when = (closedAt ?? new Date()).toISOString().slice(11, 19);
+      trade.closeDetail = `${closers.map(c => (c.level ? `TP${c.level}` : 'SL')).join('+')} @${when}` as any;
+    }
+    await this.tradeRepo.save(trade);
+
+    const log = this.createLog(
+      trade,
+      AuditCategory.PNL_MISMATCH,
+      AuditSeverity.INFO,
+      'Backfill manual: exitPrice/pnl/closedAt corrigidos a partir das ordens reais da corretora.',
+      { before, after: { exitPrice, pnl: netPnl, closedAt }, executionsCreated, exchangeFees: feeSum },
+      Number(before.pnl) || 0,
+      netPnl,
+      Math.abs((Number(before.pnl) || 0) - netPnl),
+    );
+    await this.auditRepo.save(log);
+
+    return { updated: true, before, after: { exitPrice, pnl: netPnl, closedAt }, executionsCreated, exchangeFees: feeSum };
   }
 
   private async safelyFetchOrder(

@@ -73,6 +73,16 @@ export function tpPnl(side: string, entryPrice: number, fillPrice: number, close
   return { gross, net };
 }
 
+export function sumCommission(rows: Array<Record<string, unknown>> | null | undefined): number | null {
+  if (!Array.isArray(rows) || rows.length === 0) return null;
+  let fee = 0;
+  for (const r of rows) {
+    const c = parseFloat(String(r?.commission));
+    if (Number.isFinite(c)) fee += c;
+  }
+  return fee;
+}
+
 export function latestUpdatedAt(fills: Array<OrderFill | null | undefined>): Date | null {
   let latest: Date | null = null;
   for (const f of fills) {
