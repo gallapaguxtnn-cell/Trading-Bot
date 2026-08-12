@@ -15,6 +15,7 @@ interface Trade {
   quantity: number | string;
   pnl?: number | string | null;
   closeReason?: string;
+  closeDetail?: string | null;
   timestamp: string;
   closedAt?: string;
   error?: string;
@@ -105,7 +106,10 @@ export function TradeCard({ trade }: TradeCardProps) {
           <div className="border-t border-border/30 pt-2">
             <div className="flex items-center justify-between text-xs">
               <span className="text-muted-foreground">Motivo:</span>
-              <span className="font-semibold text-foreground">{formatCloseReason(trade.closeReason)}</span>
+              <span className="font-semibold text-foreground">
+                {formatCloseReason(trade.closeReason)}
+                {trade.closeDetail && <span className="ml-1 text-[11px] font-normal text-muted-foreground">({trade.closeDetail})</span>}
+              </span>
             </div>
           </div>
         )}

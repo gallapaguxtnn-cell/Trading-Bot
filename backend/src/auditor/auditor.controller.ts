@@ -65,6 +65,11 @@ export class AuditorController {
     );
   }
 
+  @Post('backfill/trade/:tradeId')
+  async backfillTrade(@Param('tradeId') tradeId: string) {
+    return this.auditorService.backfillTrade(tradeId);
+  }
+
   @Post('compare-backtest')
   async compareBacktest(@Body() body: CompareBacktestDto) {
     return this.auditorService.compareBacktestVsBot(

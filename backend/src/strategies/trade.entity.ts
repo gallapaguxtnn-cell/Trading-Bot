@@ -47,6 +47,9 @@ export class Trade {
   @Column({ type: 'text', nullable: true })
   closeReason: CloseReason | null;
 
+  @Column({ type: 'text', nullable: true })
+  closeDetail: string | null;
+
   @Column({ type: 'timestamp', nullable: true })
   closedAt: Date | null;
 
