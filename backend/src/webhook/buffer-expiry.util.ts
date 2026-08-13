@@ -49,6 +49,27 @@ export function computeBufferExpiry(receivedAt: Date, timeframe: string, candles
   return new Date(base + (n - 1) * tfMs);
 }
 
+export type LimitSyncAction = 'keep' | 'expire' | 'protect' | 'none';
+
+export function decideLimitSyncAction(params: {
+  orderStatus: string | null | undefined;
+  pendingExpiresAt: Date | number | null | undefined;
+  hasProtection: boolean;
+  now: number;
+}): LimitSyncAction {
+  const status = (params.orderStatus || '').toLowerCase();
+  const isPending = status === 'new' || status === 'partiallyfilled' || status === 'partially_filled';
+  const isFilled = status === 'filled';
+  if (isFilled) return params.hasProtection ? 'none' : 'protect';
+  if (isPending) {
+    if (params.pendingExpiresAt == null) return 'keep';
+    const t = params.pendingExpiresAt instanceof Date ? params.pendingExpiresAt.getTime() : Number(params.pendingExpiresAt);
+    if (Number.isFinite(t) && params.now >= t) return 'expire';
+    return 'keep';
+  }
+  return 'none';
+}
+
 export function fillMonitorAttempts(
   pendingExpiresAt: Date | number | null | undefined,
   now: number,

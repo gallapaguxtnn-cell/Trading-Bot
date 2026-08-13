@@ -1,4 +1,4 @@
-import { normalizeTimeframe, resolveTimeframe, computeBufferExpiry, fillMonitorAttempts } from './buffer-expiry.util';
+import { normalizeTimeframe, resolveTimeframe, computeBufferExpiry, fillMonitorAttempts, decideLimitSyncAction } from './buffer-expiry.util';
 
 describe('normalizeTimeframe', () => {
   it('maps TradingView numeric intervals', () => {
@@ -87,5 +87,35 @@ describe('fillMonitorAttempts', () => {
 
   it('never returns less than one attempt for an already-passed expiry', () => {
     expect(fillMonitorAttempts(new Date(now - 60 * 1000), now)).toBe(1);
+  });
+});
+
+describe('decideLimitSyncAction', () => {
+  const now = Date.UTC(2026, 7, 12, 23, 0, 0);
+
+  it('expires a pending order whose validity has already passed', () => {
+    expect(decideLimitSyncAction({ orderStatus: 'New', pendingExpiresAt: new Date(now - 1000), hasProtection: false, now })).toBe('expire');
+    expect(decideLimitSyncAction({ orderStatus: 'PartiallyFilled', pendingExpiresAt: new Date(now - 1000), hasProtection: false, now })).toBe('expire');
+  });
+
+  it('keeps a pending order whose validity has not passed', () => {
+    expect(decideLimitSyncAction({ orderStatus: 'New', pendingExpiresAt: new Date(now + 60 * 1000), hasProtection: false, now })).toBe('keep');
+  });
+
+  it('keeps a pending order without a persisted expiry (current behavior)', () => {
+    expect(decideLimitSyncAction({ orderStatus: 'New', pendingExpiresAt: null, hasProtection: false, now })).toBe('keep');
+  });
+
+  it('requests protection for a filled order without SL/TP', () => {
+    expect(decideLimitSyncAction({ orderStatus: 'Filled', pendingExpiresAt: null, hasProtection: false, now })).toBe('protect');
+  });
+
+  it('does nothing for a filled order that already has protection', () => {
+    expect(decideLimitSyncAction({ orderStatus: 'Filled', pendingExpiresAt: null, hasProtection: true, now })).toBe('none');
+  });
+
+  it('does nothing for cancelled/rejected/unknown statuses', () => {
+    expect(decideLimitSyncAction({ orderStatus: 'Cancelled', pendingExpiresAt: new Date(now - 1000), hasProtection: false, now })).toBe('none');
+    expect(decideLimitSyncAction({ orderStatus: null, pendingExpiresAt: null, hasProtection: false, now })).toBe('none');
   });
 });

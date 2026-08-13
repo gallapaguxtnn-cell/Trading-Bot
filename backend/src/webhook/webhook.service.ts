@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
+import { OnEvent } from '@nestjs/event-emitter';
 import { TradingviewSignalDto, OrderType } from './dto/tradingview-signal.dto';
 import { ExchangeService } from '../exchange/exchange.service';
 import { BybitClientService } from '../exchange/bybit-client.service';
@@ -84,6 +85,7 @@ export class WebhookService {
 
   private readonly activeSignals = new Set<string>();
   private readonly activeSignalsTimestamps = new Map<string, number>();
+  private readonly resumingProtection = new Set<string>();
   private readonly SIGNAL_TIMEOUT_MS = 5 * 60 * 1000;
   private readonly rateLimiter = RateLimiterUtil.getInstance(); // 5 minutes
 
@@ -1773,6 +1775,39 @@ export class WebhookService {
     };
 
     run().catch(err => this.logger.error(`[BYBIT LIMIT SL/TP] Critical background error: ${err.message}`));
+  }
+
+  @OnEvent('limit.protection.resume')
+  async handleResumeProtection(payload: { tradeId: string }): Promise<void> {
+    await this.resumeLimitProtection(payload?.tradeId);
+  }
+
+  async resumeLimitProtection(tradeId: string): Promise<void> {
+    if (!tradeId || this.resumingProtection.has(tradeId)) return;
+
+    const trade = await this.tradesService.findById(tradeId);
+    if (!trade || trade.status !== 'OPEN' || trade.type !== 'LIMIT' || !trade.exchangeOrderId) return;
+    if (trade.stopLossOrderId && trade.takeProfitOrderId) return;
+
+    const strategy = await this.strategiesService.findOne(trade.strategyId);
+    if (!strategy || !strategy.apiKey || !strategy.apiSecret) return;
+
+    this.resumingProtection.add(tradeId);
+    try {
+      const decryptedKey = (await EncryptionUtil.decrypt(strategy.apiKey)).trim();
+      const decryptedSecret = (await EncryptionUtil.decrypt(strategy.apiSecret)).trim();
+
+      if (strategy.exchange === Exchange.BINANCE) {
+        this.scheduleProtectionOrders(trade.id, trade.symbol, trade.side, strategy, decryptedKey, decryptedSecret);
+      } else if (strategy.exchange === Exchange.BYBIT) {
+        this.scheduleBybitProtectionOrders(trade.id, trade.symbol, trade.side, strategy, decryptedKey, decryptedSecret, Number(trade.quantity));
+      }
+      this.logger.log(`[RESUME PROTECTION] Re-scheduled protection for trade ${tradeId}`);
+    } catch (err: any) {
+      this.logger.warn(`[RESUME PROTECTION] Failed for trade ${tradeId}: ${err.message}`);
+    } finally {
+      setTimeout(() => this.resumingProtection.delete(tradeId), 5 * 60 * 1000);
+    }
   }
 
   /**

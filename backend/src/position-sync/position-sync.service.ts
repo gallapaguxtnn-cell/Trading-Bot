@@ -1,6 +1,7 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
-import { OnEvent } from '@nestjs/event-emitter';
+import { OnEvent, EventEmitter2 } from '@nestjs/event-emitter';
+import { decideLimitSyncAction } from '../webhook/buffer-expiry.util';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Trade } from '../strategies/trade.entity';
@@ -87,6 +88,7 @@ export class PositionSyncService implements OnModuleInit {
     private readonly bybitClient: BybitClientService,
     private readonly tradesService: TradesService,
     private readonly binanceWs: BinanceWebSocketService,
+    private readonly eventEmitter: EventEmitter2,
   ) {
     this.fallbackEnabled = process.env.BINANCE_WS_FALLBACK_ENABLED !== 'false';
   }
@@ -298,10 +300,31 @@ export class PositionSyncService implements OnModuleInit {
             strategy.isTestnet
           );
 
-          // Don't close if order is still pending (Binance: NEW/PARTIALLY_FILLED, Bybit: New/PartiallyFilled)
-          if (orderStatus === 'NEW' || orderStatus === 'New' ||
-              orderStatus === 'PARTIALLY_FILLED' || orderStatus === 'PartiallyFilled') {
+          const hasProtection = !!trade.stopLossOrderId && !!trade.takeProfitOrderId;
+          const action = decideLimitSyncAction({
+            orderStatus,
+            pendingExpiresAt: trade.pendingExpiresAt,
+            hasProtection,
+            now: Date.now(),
+          });
+
+          if (action === 'keep') {
             this.logger.debug(`[SYNC] Trade ${trade.id} has pending LIMIT order (${orderStatus}), keeping open`);
+            continue;
+          }
+
+          if (action === 'expire') {
+            await this.cancelLimitEntryOrder(trade, exchange, apiKey, apiSecret, strategy.isTestnet);
+            trade.status = 'ERROR';
+            trade.error = 'Ordem com buffer expirou no fechamento do candle seguinte sem ser preenchida';
+            await this.tradesRepository.save(trade);
+            this.logger.log(`[SYNC] Expired buffer LIMIT order for trade ${trade.id} (${trade.symbol})`);
+            continue;
+          }
+
+          if (action === 'protect') {
+            this.logger.log(`[SYNC] Trade ${trade.id} filled without protection, requesting protection creation`);
+            this.eventEmitter.emit('limit.protection.resume', { tradeId: trade.id });
             continue;
           }
 
@@ -443,6 +466,33 @@ export class PositionSyncService implements OnModuleInit {
     } catch (error) {
       this.logger.error(`Failed to check order status for ${orderId}: ${error.message}`);
       return null;
+    }
+  }
+
+  private async cancelLimitEntryOrder(
+    trade: Trade,
+    exchange: Exchange,
+    apiKey: string,
+    apiSecret: string,
+    isTestnet: boolean
+  ): Promise<void> {
+    if (!trade.exchangeOrderId) return;
+    try {
+      if (exchange === Exchange.BYBIT) {
+        await this.bybitClient.cancelOrder(apiKey, apiSecret, isTestnet, trade.symbol, trade.exchangeOrderId);
+      } else {
+        const baseUrl = isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
+        const timestamp = Date.now();
+        const queryString = `symbol=${trade.symbol}&orderId=${trade.exchangeOrderId}&timestamp=${timestamp}`;
+        const signature = crypto.createHmac('sha256', apiSecret).update(queryString).digest('hex');
+        await BinanceRequestUtil.delete(
+          `${baseUrl}/fapi/v1/order?${queryString}&signature=${signature}`,
+          { headers: { 'X-MBX-APIKEY': apiKey } }
+        );
+      }
+      this.logger.log(`[SYNC] Cancelled expired buffer order ${trade.exchangeOrderId} for ${trade.symbol}`);
+    } catch (error: any) {
+      this.logger.warn(`[SYNC] Failed to cancel expired buffer order ${trade.exchangeOrderId}: ${error.message}`);
     }
   }
 
