@@ -53,6 +53,9 @@ export class Trade {
   @Column({ type: 'timestamp', nullable: true })
   closedAt: Date | null;
 
+  @Column({ type: 'timestamptz', nullable: true })
+  pendingExpiresAt: Date | null;
+
   @Column("decimal", { precision: 18, scale: 8, nullable: true })
   binancePositionAmt: number | null;
 
