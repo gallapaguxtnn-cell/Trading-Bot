@@ -104,6 +104,12 @@ export class Strategy {
   @Column({ type: 'float', nullable: true })
   bufferPercentage: number;
 
+  @Column({ type: 'varchar', nullable: true })
+  timeframe: string | null;
+
+  @Column({ type: 'int', default: 1 })
+  bufferExpiryCandles: number;
+
   @Column({ default: false })
   useAccountPercentage: boolean;
 

@@ -25,6 +25,8 @@ const DEFAULT_FORM_DATA = {
   defaultQuantity: 0.002,
   bufferEntry: false,
   bufferPercentage: 0.2,
+  timeframe: '',
+  bufferExpiryCandles: 1,
   useAccountPercentage: false,
   accountPercentage: 10,
   takeProfitQuantity1: 33,
@@ -81,6 +83,8 @@ export default function StrategiesPage() {
       defaultQuantity: strategy.defaultQuantity || 0.002,
       bufferEntry: strategy.bufferEntry || false,
       bufferPercentage: strategy.bufferPercentage || 0.2,
+      timeframe: strategy.timeframe || '',
+      bufferExpiryCandles: strategy.bufferExpiryCandles ?? 1,
       useAccountPercentage: strategy.useAccountPercentage || false,
       accountPercentage: strategy.accountPercentage || 10,
       takeProfitQuantity1: strategy.takeProfitQuantity1 || 33,
@@ -133,6 +137,8 @@ export default function StrategiesPage() {
       defaultQuantity: Number(formData.defaultQuantity),
       bufferEntry: formData.bufferEntry,
       bufferPercentage: formData.bufferEntry ? Number(formData.bufferPercentage) : null,
+      timeframe: formData.bufferEntry && formData.timeframe ? formData.timeframe : null,
+      bufferExpiryCandles: formData.bufferEntry ? Number(formData.bufferExpiryCandles) || 1 : 1,
       useAccountPercentage: formData.useAccountPercentage,
       accountPercentage: formData.useAccountPercentage ? Number(formData.accountPercentage) : null,
       takeProfitQuantity1: Number(formData.takeProfitQuantity1),
@@ -411,6 +417,22 @@ export default function StrategiesPage() {
                       <label className="text-[10px] text-accent">Entry Offset (%)</label>
                       <input type="number" step="0.01" name="bufferPercentage" className={inputClass} value={formData.bufferPercentage} onChange={handleChange} />
                       <p className="text-[9px] text-muted-foreground/60">Long: Price - Offset | Short: Price + Offset</p>
+                      <label className="text-[10px] text-accent">Timeframe do gráfico</label>
+                      <select name="timeframe" className={selectClass} value={formData.timeframe} onChange={handleChange}>
+                        <option value="">Sem timeframe (expira em 5 min)</option>
+                        <option value="1m">1m</option>
+                        <option value="3m">3m</option>
+                        <option value="5m">5m</option>
+                        <option value="15m">15m</option>
+                        <option value="30m">30m</option>
+                        <option value="1h">1h</option>
+                        <option value="2h">2h</option>
+                        <option value="4h">4h</option>
+                        <option value="1d">1d</option>
+                      </select>
+                      <label className="text-[10px] text-accent">Validade da ordem com buffer (candles)</label>
+                      <input type="number" min="1" step="1" name="bufferExpiryCandles" className={inputClass} value={formData.bufferExpiryCandles} onChange={handleChange} />
+                      <p className="text-[9px] text-muted-foreground/60">Sem timeframe, a ordem expira em 5 minutos.</p>
                     </div>
                   )}
                 </div>

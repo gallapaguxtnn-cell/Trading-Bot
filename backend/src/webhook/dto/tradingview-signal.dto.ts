@@ -33,6 +33,10 @@ export class TradingviewSignalDto {
   @IsOptional()
   strategyId?: string;
 
+  @IsString()
+  @IsOptional()
+  timeframe?: string;
+
   @Transform(({ value }) => typeof value === 'string' ? parseFloat(value) : value)
   @IsOptional()
   stopLoss?: number;
