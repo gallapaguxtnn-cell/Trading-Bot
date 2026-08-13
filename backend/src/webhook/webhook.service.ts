@@ -13,7 +13,7 @@ import { RateLimiterUtil } from '../utils/rate-limiter.util';
 import { ExchangeCacheUtil } from '../utils/exchange-cache.util';
 import { BinanceWebSocketService } from '../binance-ws/binance-ws.service';
 import { SignalLogService } from './signal-log.service';
-import { resolveTimeframe, computeBufferExpiry } from './buffer-expiry.util';
+import { resolveTimeframe, computeBufferExpiry, fillMonitorAttempts } from './buffer-expiry.util';
 import { BinanceRequestUtil } from '../utils/binance-request.util';
 import axios from 'axios';
 import * as crypto from 'crypto';
@@ -1168,11 +1168,20 @@ export class WebhookService {
     decryptedSecret: string,
   ): void {
     const run = async () => {
-      const maxAttempts = 30;
       const delayMs = 10000;
+      const protectionBudgetMs = 300000;
       const baseURL = strategy.isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
 
+      const initialTrade = await this.tradesService.findById(tradeId);
+      const pendingExpiresAt = initialTrade?.pendingExpiresAt
+        ? new Date(initialTrade.pendingExpiresAt).getTime()
+        : null;
+      const maxAttempts = fillMonitorAttempts(pendingExpiresAt, Date.now(), delayMs, protectionBudgetMs);
+      let sawFill = false;
+      let protectionDeadline = 0;
+
       for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        if (sawFill && Date.now() > protectionDeadline) break;
         await new Promise(r => setTimeout(r, delayMs));
 
         try {
@@ -1227,6 +1236,11 @@ export class WebhookService {
           }
 
           this.logger.log(`[LIMIT SL/TP] Order filled: ${symbol} qty=${actualQty} avgPrice=${actualEntryPrice}`);
+
+          if (!sawFill) {
+            sawFill = true;
+            protectionDeadline = Date.now() + protectionBudgetMs;
+          }
 
           let slOrderId: string | null = trade.stopLossOrderId || null;
 
@@ -1386,11 +1400,27 @@ export class WebhookService {
 
           this.logger.log(`[BINANCE LIMIT EMERGENCY] Position closed successfully`);
         } else {
-          this.logger.log(`[BINANCE LIMIT SL/TP] No open position found, marking trade as ERROR`);
-          await this.tradesService.updateTrade(tradeId, {
-            status: 'ERROR',
-            error: 'LIMIT order monitoring timeout - could not verify order status or create protection'
-          });
+          this.logger.log(`[BINANCE LIMIT SL/TP] No open position found. Cancelling pending LIMIT order...`);
+
+          if (trade.exchangeOrderId) {
+            try {
+              await this.cancelBinanceSingleOrder(symbol, trade.exchangeOrderId, decryptedKey, decryptedSecret, strategy.isTestnet);
+              this.logger.log(`[BINANCE LIMIT SL/TP] Cancelled pending order ${trade.exchangeOrderId}`);
+            } catch (cancelError: any) {
+              this.logger.warn(`[BINANCE LIMIT SL/TP] Failed to cancel order ${trade.exchangeOrderId}: ${cancelError.message}`);
+            }
+          }
+
+          if (pendingExpiresAt !== null) {
+            const expiredMessage = 'Ordem com buffer expirou no fechamento do candle seguinte sem ser preenchida';
+            await this.tradesService.updateTrade(tradeId, { status: 'ERROR', error: expiredMessage });
+            this.signalLog.markByTrade(tradeId, 'skipped_buffer_expired', expiredMessage);
+          } else {
+            await this.tradesService.updateTrade(tradeId, {
+              status: 'ERROR',
+              error: 'LIMIT order monitoring timeout - could not verify order status or create protection'
+            });
+          }
         }
       } catch (emergencyError: any) {
         this.logger.error(`[BINANCE LIMIT EMERGENCY] Failed to handle unprotected position: ${emergencyError.message}`);
@@ -1410,10 +1440,19 @@ export class WebhookService {
     orderQuantity: number,
   ): void {
     const run = async () => {
-      const maxAttempts = 30;
       const delayMs = 10000;
+      const protectionBudgetMs = 300000;
+
+      const initialTrade = await this.tradesService.findById(tradeId);
+      const pendingExpiresAt = initialTrade?.pendingExpiresAt
+        ? new Date(initialTrade.pendingExpiresAt).getTime()
+        : null;
+      const maxAttempts = fillMonitorAttempts(pendingExpiresAt, Date.now(), delayMs, protectionBudgetMs);
+      let sawFill = false;
+      let protectionDeadline = 0;
 
       for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        if (sawFill && Date.now() > protectionDeadline) break;
         await new Promise(r => setTimeout(r, delayMs));
 
         try {
@@ -1470,6 +1509,11 @@ export class WebhookService {
           }
 
           this.logger.log(`[BYBIT LIMIT SL/TP] Order filled: ${symbol} qty=${actualQty} avgPrice=${actualEntryPrice}`);
+
+          if (!sawFill) {
+            sawFill = true;
+            protectionDeadline = Date.now() + protectionBudgetMs;
+          }
 
           const bybitSide = side === 'BUY' ? 'Buy' : 'Sell';
           const positionConfirmed = await this.bybitClient.waitForPosition(
@@ -1712,10 +1756,16 @@ export class WebhookService {
             }
           }
 
-          await this.tradesService.updateTrade(tradeId, {
-            status: 'ERROR',
-            error: 'LIMIT order monitoring timeout - order cancelled to prevent orphan positions'
-          });
+          if (pendingExpiresAt !== null) {
+            const expiredMessage = 'Ordem com buffer expirou no fechamento do candle seguinte sem ser preenchida';
+            await this.tradesService.updateTrade(tradeId, { status: 'ERROR', error: expiredMessage });
+            this.signalLog.markByTrade(tradeId, 'skipped_buffer_expired', expiredMessage);
+          } else {
+            await this.tradesService.updateTrade(tradeId, {
+              status: 'ERROR',
+              error: 'LIMIT order monitoring timeout - order cancelled to prevent orphan positions'
+            });
+          }
         }
       } catch (emergencyError: any) {
         this.logger.error(`[BYBIT LIMIT EMERGENCY] Failed to handle unprotected position: ${emergencyError.message}`);

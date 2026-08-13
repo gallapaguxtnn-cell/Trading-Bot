@@ -85,6 +85,14 @@ export class SignalLogService {
     this.decide(id, decision, reason, tradeId);
   }
 
+  markByTrade(tradeId: string, decision: SignalDecision, reason?: string | null): void {
+    if (!tradeId) return;
+    this.repo
+      .update({ tradeId }, { decision, decisionReason: reason ?? null })
+      .then(() => undefined)
+      .catch(() => undefined);
+  }
+
   async range(strategyId?: string): Promise<{ first: string | null; last: string | null; count: number; symbols: string[] }> {
     const aggQb = this.repo.createQueryBuilder('s')
       .select('MIN(s.receivedAt)', 'first')

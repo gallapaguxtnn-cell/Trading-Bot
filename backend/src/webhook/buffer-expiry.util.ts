@@ -48,3 +48,22 @@ export function computeBufferExpiry(receivedAt: Date, timeframe: string, candles
   const base = Math.ceil(receivedAt.getTime() / tfMs) * tfMs;
   return new Date(base + (n - 1) * tfMs);
 }
+
+export function fillMonitorAttempts(
+  pendingExpiresAt: Date | number | null | undefined,
+  now: number,
+  delayMs = 10_000,
+  defaultMs = 300_000,
+  maxAheadMs = 26 * 60 * 60 * 1000,
+): number {
+  const cap = now + maxAheadMs;
+  let deadline =
+    pendingExpiresAt == null
+      ? now + defaultMs
+      : pendingExpiresAt instanceof Date
+        ? pendingExpiresAt.getTime()
+        : Number(pendingExpiresAt);
+  if (!Number.isFinite(deadline)) deadline = now + defaultMs;
+  if (deadline > cap) deadline = cap;
+  return Math.max(1, Math.ceil((deadline - now) / delayMs));
+}
