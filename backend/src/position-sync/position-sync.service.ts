@@ -1,7 +1,7 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { OnEvent, EventEmitter2 } from '@nestjs/event-emitter';
-import { decideLimitSyncAction } from '../webhook/buffer-expiry.util';
+import { decideLimitSyncAction, shouldCancelPendingForStrategy } from '../webhook/buffer-expiry.util';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Trade } from '../strategies/trade.entity';
@@ -145,6 +145,12 @@ export class PositionSyncService implements OnModuleInit {
         } catch (error) {
           this.logger.error(`Failed to sync strategy ${strategy.name}: ${error.message}`);
         }
+      }
+
+      try {
+        await this.cancelPendingOrdersForInactiveStrategies();
+      } catch (error: any) {
+        this.logger.error(`Failed to cancel pending orders for inactive strategies: ${error.message}`);
       }
 
       this.lastSyncTime = new Date();
@@ -416,6 +422,52 @@ export class PositionSyncService implements OnModuleInit {
       }
       this.logger.error(`Failed to fetch Bybit positions: ${error.message}`);
       throw error;
+    }
+  }
+
+  private async cancelPendingOrdersForInactiveStrategies(): Promise<void> {
+    const pendingLimitTrades = await this.tradesRepository.find({
+      where: { status: 'OPEN', type: 'LIMIT' },
+    });
+    if (!pendingLimitTrades.length) return;
+
+    const strategyCache = new Map<string, Strategy | null>();
+    for (const trade of pendingLimitTrades) {
+      if (!trade.exchangeOrderId) continue;
+
+      let strategy: Strategy | null;
+      if (strategyCache.has(trade.strategyId)) {
+        strategy = strategyCache.get(trade.strategyId) as Strategy | null;
+      } else {
+        strategy = await this.strategiesRepository.findOne({
+          where: { id: trade.strategyId },
+          select: ['id', 'name', 'exchange', 'isTestnet', 'isActive', 'pauseNewOrders', 'apiKey', 'apiSecret'],
+        });
+        strategyCache.set(trade.strategyId, strategy);
+      }
+
+      if (!strategy) continue;
+      if (!shouldCancelPendingForStrategy(strategy)) continue;
+      if (!strategy.apiKey || !strategy.apiSecret) continue;
+
+      try {
+        const exchange = strategy.exchange || Exchange.BINANCE;
+        const { apiKey, apiSecret } = await this.decryptCredentials(strategy);
+        const orderStatus = await this.checkOrderStatus(trade.exchangeOrderId, trade.symbol, exchange, apiKey, apiSecret, strategy.isTestnet);
+        const s = (orderStatus || '').toLowerCase();
+        const isPending = s === 'new' || s === 'partiallyfilled' || s === 'partially_filled';
+        if (!isPending) continue;
+
+        await this.cancelLimitEntryOrder(trade, exchange, apiKey, apiSecret, strategy.isTestnet);
+        trade.status = 'ERROR';
+        trade.error = 'Ordem cancelada: estratégia pausada/desativada';
+        trade.closeReason = 'SIGNAL';
+        await this.tradesRepository.save(trade);
+        this.eventEmitter.emit('signal.mark', { tradeId: trade.id, decision: 'cancelled_strategy_paused', reason: trade.error });
+        this.logger.log(`[SYNC] Cancelled pending LIMIT order ${trade.exchangeOrderId} for trade ${trade.id} - strategy paused/disabled`);
+      } catch (error: any) {
+        this.logger.warn(`[SYNC] Failed to cancel pending order for paused strategy (trade ${trade.id}): ${error.message}`);
+      }
     }
   }
 

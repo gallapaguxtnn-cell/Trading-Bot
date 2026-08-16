@@ -11,3 +11,10 @@ export function decideLimitSyncAction(params: {
   if (isPending) return 'keep';
   return 'none';
 }
+
+export function shouldCancelPendingForStrategy(
+  strategy: { isActive?: boolean; pauseNewOrders?: boolean } | null | undefined,
+): boolean {
+  if (!strategy) return true;
+  return !strategy.isActive || !!strategy.pauseNewOrders;
+}

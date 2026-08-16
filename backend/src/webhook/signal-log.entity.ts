@@ -7,6 +7,7 @@ export type SignalDecision =
   | 'skipped_single_mode'
   | 'skipped_new_orders_paused'
   | 'skipped_buffer_expired'
+  | 'cancelled_strategy_paused'
   | 'error';
 
 @Entity('signal_log')

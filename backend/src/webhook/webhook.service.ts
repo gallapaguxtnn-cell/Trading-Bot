@@ -14,6 +14,7 @@ import { RateLimiterUtil } from '../utils/rate-limiter.util';
 import { ExchangeCacheUtil } from '../utils/exchange-cache.util';
 import { BinanceWebSocketService } from '../binance-ws/binance-ws.service';
 import { SignalLogService } from './signal-log.service';
+import { SignalDecision } from './signal-log.entity';
 import { BinanceRequestUtil } from '../utils/binance-request.util';
 import axios from 'axios';
 import * as crypto from 'crypto';
@@ -1724,6 +1725,12 @@ export class WebhookService {
   @OnEvent('limit.protection.resume')
   async handleResumeProtection(payload: { tradeId: string }): Promise<void> {
     await this.resumeLimitProtection(payload?.tradeId);
+  }
+
+  @OnEvent('signal.mark')
+  handleSignalMark(payload: { tradeId: string; decision: SignalDecision; reason?: string | null }): void {
+    if (!payload?.tradeId) return;
+    this.signalLog.markByTrade(payload.tradeId, payload.decision, payload.reason ?? null);
   }
 
   async resumeLimitProtection(tradeId: string): Promise<void> {

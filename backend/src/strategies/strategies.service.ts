@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Strategy, Exchange } from './strategy.entity';
+import { Trade } from './trade.entity';
 import { EncryptionUtil } from '../utils/encryption.util';
 import { BinanceRequestUtil } from '../utils/binance-request.util';
 import { BybitClientService } from '../exchange/bybit-client.service';
@@ -17,6 +18,8 @@ export class StrategiesService {
   constructor(
     @InjectRepository(Strategy)
     private strategiesRepository: Repository<Strategy>,
+    @InjectRepository(Trade)
+    private tradesRepository: Repository<Trade>,
     private readonly bybitClient: BybitClientService,
   ) {}
 
@@ -148,7 +151,48 @@ export class StrategiesService {
   }
 
   async remove(id: string): Promise<void> {
+    await this.cancelPendingLimitOrders(id);
     await this.strategiesRepository.delete(id);
+  }
+
+  private async cancelPendingLimitOrders(id: string): Promise<void> {
+    try {
+      const strategy = await this.findOne(id);
+      if (!strategy || !strategy.apiKey || !strategy.apiSecret) return;
+
+      const pendingTrades = await this.tradesRepository.find({
+        where: { strategyId: id, status: 'OPEN', type: 'LIMIT' },
+      });
+      if (!pendingTrades.length) return;
+
+      const apiKey = (await EncryptionUtil.decrypt(strategy.apiKey)).trim();
+      const apiSecret = (await EncryptionUtil.decrypt(strategy.apiSecret)).trim();
+      const exchange = strategy.exchange || Exchange.BINANCE;
+
+      for (const trade of pendingTrades) {
+        if (!trade.exchangeOrderId) continue;
+        try {
+          if (exchange === Exchange.BYBIT) {
+            await this.bybitClient.cancelOrder(apiKey, apiSecret, strategy.isTestnet, trade.symbol, trade.exchangeOrderId);
+          } else {
+            const baseUrl = strategy.isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
+            const ts = Date.now();
+            const qs = `symbol=${trade.symbol}&orderId=${trade.exchangeOrderId}&timestamp=${ts}`;
+            const sig = crypto.createHmac('sha256', apiSecret).update(qs).digest('hex');
+            await BinanceRequestUtil.delete(`${baseUrl}/fapi/v1/order?${qs}&signature=${sig}`, { headers: { 'X-MBX-APIKEY': apiKey } });
+          }
+          await this.tradesRepository.update(trade.id, {
+            status: 'ERROR',
+            error: 'Ordem cancelada: estratégia pausada/desativada',
+          });
+          this.logger.log(`[STRATEGY DELETE] Cancelled pending LIMIT order ${trade.exchangeOrderId} for trade ${trade.id}`);
+        } catch (e: any) {
+          this.logger.warn(`[STRATEGY DELETE] Failed to cancel pending order ${trade.exchangeOrderId}: ${e.message}`);
+        }
+      }
+    } catch (e: any) {
+      this.logger.warn(`[STRATEGY DELETE] Failed to cancel pending orders for strategy ${id}: ${e.message}`);
+    }
   }
 
   async updateCredentials(id: string, apiKey: string, apiSecret: string): Promise<{ success: boolean; message: string }> {

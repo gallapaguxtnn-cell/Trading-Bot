@@ -3,11 +3,12 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { StrategiesController } from './strategies.controller';
 import { StrategiesService } from './strategies.service';
 import { Strategy } from './strategy.entity';
+import { Trade } from './trade.entity';
 import { ExchangeModule } from '../exchange/exchange.module';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Strategy]),
+    TypeOrmModule.forFeature([Strategy, Trade]),
     ExchangeModule
   ],
   controllers: [StrategiesController],
