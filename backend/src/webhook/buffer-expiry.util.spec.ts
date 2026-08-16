@@ -1,4 +1,4 @@
-import { normalizeTimeframe, resolveTimeframe, computeBufferExpiry, fillMonitorAttempts, decideLimitSyncAction } from './buffer-expiry.util';
+import { normalizeTimeframe, resolveTimeframe, computeBufferExpiry, decideLimitSyncAction } from './buffer-expiry.util';
 
 describe('normalizeTimeframe', () => {
   it('maps TradingView numeric intervals', () => {
@@ -67,26 +67,6 @@ describe('computeBufferExpiry', () => {
   it('returns null for an unknown timeframe', () => {
     const received = new Date('2026-08-12T22:00:03.000Z');
     expect(computeBufferExpiry(received, '7m', 1)).toBeNull();
-  });
-});
-
-describe('fillMonitorAttempts', () => {
-  const now = Date.UTC(2026, 7, 12, 22, 0, 3);
-
-  it('matches the legacy 5 minute budget when there is no expiry', () => {
-    expect(fillMonitorAttempts(null, now)).toBe(30);
-  });
-
-  it('extends the number of attempts to the pending expiry', () => {
-    expect(fillMonitorAttempts(new Date(now + 40 * 60 * 1000), now)).toBe(240);
-  });
-
-  it('caps a far-away expiry at 26h', () => {
-    expect(fillMonitorAttempts(new Date(now + 48 * 60 * 60 * 1000), now)).toBe(9360);
-  });
-
-  it('never returns less than one attempt for an already-passed expiry', () => {
-    expect(fillMonitorAttempts(new Date(now - 60 * 1000), now)).toBe(1);
   });
 });
 
