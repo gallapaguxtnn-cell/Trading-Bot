@@ -14,7 +14,7 @@ import { RateLimiterUtil } from '../utils/rate-limiter.util';
 import { ExchangeCacheUtil } from '../utils/exchange-cache.util';
 import { BinanceWebSocketService } from '../binance-ws/binance-ws.service';
 import { SignalLogService } from './signal-log.service';
-import { resolveTimeframe, computeBufferExpiry, fillMonitorAttempts } from './buffer-expiry.util';
+import { fillMonitorAttempts } from './buffer-expiry.util';
 import { BinanceRequestUtil } from '../utils/binance-request.util';
 import axios from 'axios';
 import * as crypto from 'crypto';
@@ -2584,15 +2584,10 @@ export class WebhookService {
       // For LIMIT orders: position won't exist until the order fills.
       // Schedule SL/TP creation in background and return immediately.
       if (isLimitOrder) {
-        const bufferTimeframe = resolveTimeframe(signal.timeframe, strategy.timeframe);
-        const pendingExpiresAt = bufferTimeframe
-          ? computeBufferExpiry(new Date(), bufferTimeframe, strategy.bufferExpiryCandles ?? 1)
-          : null;
-
         await this.tradesService.updateTrade(savedTrade.id, {
           entryPrice: tradeData.entryPrice,
           exchangeOrderId: tradeData.exchangeOrderId,
-          pendingExpiresAt,
+          pendingExpiresAt: null,
         });
 
         if (exchange === Exchange.BINANCE) {

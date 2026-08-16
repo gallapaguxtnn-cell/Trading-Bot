@@ -1,117 +1,103 @@
-# PLANO_FIX_BUFFER_EXPIRACAO — Ordem com buffer vive até o fechamento do candle seguinte
+# PLANO_FIX_BUFFER — Remover a expiração: ordem com buffer só morre por sinal contrário
 
-Bug comprovado (SUIUSDT, buffer 0,30%, SHORT): sinal com `price = 0.69040` → limite correto em `0.69040 × 1.003 = 0.6924712` (a direção do buffer está certa). O candle seguinte abriu em ~0,6890 e subiu até ~0,6952, cruzando o limite — mas a ordem **já tinha sido cancelada**, porque o monitor só espera `30 tentativas × 10s = 5 minutos` e então cancela ("LIMIT order monitoring timeout - order cancelled to prevent orphan positions").
+**MUDANÇA DE REGRA.** As FASES 1-4 do plano anterior (expiração no fechamento do candle seguinte) **já foram executadas** — commits `9b9c9f3`, `6b09c84`, `89cbd33`, `971a60d`. O cliente reviu a decisão: a ordem LIMIT com buffer deve permanecer viva **até preencher ou até chegar um sinal contrário**, exatamente como o backtester faz. Este plano **desfaz a expiração** e mantém o resto da infraestrutura (que está boa e continua útil).
 
-**Regra nova (decisão do cliente):** a ordem limit com buffer vive até o **fechamento do candle seguinte ao sinal**, configurável em N candles (default 1).
+Caso que motivou (SUIUSDT, buffer 0,30%, SHORT): limite correto em `0.69040 × 1.003 = 0.6924712`; o preço cruzou dentro da hora seguinte, mas a ordem já tinha sido cancelada.
 
 ## REGRAS
 
 1. Sem comentários em código. `npm run build` + testes verdes ao final de cada fase.
-2. **Compatibilidade obrigatória:** estratégia SEM timeframe configurado mantém EXATAMENTE o comportamento atual (5 min). A regra nova só entra quando houver timeframe — evita mudar silenciosamente o comportamento de estratégias em produção.
-3. Não alterar a lógica de cálculo do preço do buffer (está correta) nem o cancelamento por sinal oposto (`[BUFFER CANCEL]`, correto).
-4. A proteção contra posição órfã (SL/TP após o fill) continua curta e agressiva — só a espera PELO FILL muda.
-5. Nada no `singularity` é tocado nas Fases 1-4. A Fase 5 espelha a regra no backtester.
+2. **Não mudar** o cálculo do preço do buffer nem os parâmetros enviados à corretora.
+3. **Não mexer** no `[BUFFER CANCEL]` por sinal contrário — está correto.
+4. **Manter** o fechamento de emergência quando existir POSIÇÃO ABERTA sem proteção.
+5. **Não remover colunas do banco.** `trade.pendingExpiresAt`, `strategy.timeframe` e `strategy.bufferExpiryCandles` permanecem (migração destrutiva é risco desnecessário). `timeframe` continua útil para o backtester; os outros dois ficam sem uso.
+6. O backtester **não muda** — ele já mantém `pendings[side]` vivo até sinal oposto.
 
 ---
 
-## CAUSA RAIZ (confirmada)
+## ESTADO ATUAL DO CÓDIGO (verificado)
 
-`webhook.service.ts`, duas funções gêmeas (Binance ~1170, Bybit ~1412):
+| Onde | O que existe hoje |
+|---|---|
+| `webhook/buffer-expiry.util.ts` | `TF_MS`, `normalizeTimeframe`, `resolveTimeframe`, `computeBufferExpiry`, `decideLimitSyncAction` (com ramo `'expire'`), `fillMonitorAttempts` |
+| `webhook.service.ts` ~2587 | calcula `pendingExpiresAt` via `computeBufferExpiry` e grava no trade |
+| `webhook.service.ts` ~1178 e ~1449 | `maxAttempts = fillMonitorAttempts(pendingExpiresAt, ...)` — o laço dura até a expiração |
+| `webhook.service.ts` ~1416 e ~1761 | ao esgotar: cancela a ordem e marca `ERROR` com `'Ordem com buffer expirou...'` + `signalLog.markByTrade(..., 'skipped_buffer_expired', ...)` |
+| `position-sync.service.ts` ~304 | `decideLimitSyncAction` → ramo `'expire'` cancela a ordem e marca ERROR |
 
-```ts
-const maxAttempts = 30;
-const delayMs = 10000;          // 30 × 10s = 300s = 5 minutos
-for (let attempt = 0; attempt < maxAttempts; attempt++) { ... }
-// ao fim, sem fill e sem posição → cancela a ordem + status ERROR
-```
-
-O loop tem DOIS papéis misturados: (a) esperar o fill da entrada e (b) criar a proteção depois do fill. O prazo de 5 min é adequado para (b) e completamente inadequado para (a), porque um buffer de 0,30% num gráfico de 1h costuma levar dezenas de minutos para ser atingido.
-
-Agravante: o loop é um `setTimeout` em memória — um restart do Railway mata o monitor e a ordem fica órfã no book. Por isso a expiração precisa ser persistida e verificada pelo cron.
-
-Base já existente e reaproveitável: `position-sync.service.ts` roda `@Cron('*/5 * * * *')` e **já** identifica ordens LIMIT pendentes (mantém o trade aberto quando o status é `New`/`PartiallyFilled`, linhas ~291-304).
+O que **fica como está** (já correto e necessário): o handoff para o `position-sync`, o ramo `'protect'` (cria SL/TP quando preenche após restart), o tratamento de `Cancelled`/`Rejected` da corretora, e o `signal_log`.
 
 ---
 
-## FASE 1 — CONFIGURAÇÃO: TIMEFRAME E VALIDADE
+## FASE 1 — DESLIGAR A EXPIRAÇÃO NA ORIGEM
 
-1. `strategies/strategy.entity.ts` — colunas aditivas, nullable (migração aditiva, `type` explícito, mesmo padrão de `closeDetail`):
-   - `timeframe: string | null` — TF do gráfico do TradingView onde o alerta foi criado (`'1m'|'3m'|'5m'|'15m'|'30m'|'1h'|'2h'|'4h'|'1d'`). Default `null`.
-   - `bufferExpiryCandles: number` — default `1`.
-2. `webhook/dto/tradingview-signal.dto.ts` — campo opcional `timeframe?: string` (o usuário pode mandar `"timeframe": "{{interval}}"` no JSON do alerta). Quando presente, **tem precedência** sobre o da estratégia; normalizar os formatos do TradingView (`"60"` → `1h`, `"240"` → `4h`, `"D"` → `1d`, `"15"` → `15m`).
-3. Frontend do bot: select de timeframe e campo "validade da ordem com buffer (candles)" na tela de edição da estratégia, visíveis apenas quando `bufferEntry` estiver ligado. Aviso ao lado: "sem timeframe, a ordem expira em 5 minutos".
-4. Novo util `webhook/buffer-expiry.util.ts`:
-   - `TF_MS` (mesma tabela do backtester).
-   - `resolveTimeframe(signal, strategy): string | null` — precedência sinal → estratégia → `null`.
-   - `computeBufferExpiry(receivedAt: Date, timeframe: string, candles = 1): Date` → `ceil(receivedAt / tfMs) * tfMs + (candles - 1) * tfMs`. Como o webhook chega logo após o fechamento do candle do sinal, o `ceil` cai exatamente no fechamento do candle SEGUINTE.
-   - Sem timeframe → retorna `null` (o chamador mantém os 5 min atuais).
-5. Testes `buffer-expiry.util.spec.ts` (derivados à mão): sinal recebido 22:00:03 num TF de 1h → expira 23:00:00; recebido 22:59:58 → expira 23:00:00 (borda); `candles = 2` → 00:00:00; TF `15m` recebido 10:16:04 → 10:30:00; normalização `"60"`/`"D"`/`"240"`; sem TF → `null`.
+`webhook.service.ts` (~2587-2595):
 
-## FASE 2 — PERSISTIR A VALIDADE NO TRADE
+1. Parar de calcular a expiração: remover a chamada a `computeBufferExpiry` e gravar `pendingExpiresAt: null` ao criar o trade da ordem LIMIT com buffer.
+2. Remover o import de `computeBufferExpiry` (e de `resolveTimeframe`, se ficar sem uso neste arquivo).
+3. `strategy.timeframe` e `strategy.bufferExpiryCandles` deixam de influenciar a execução. Não remover as colunas.
 
-1. `strategies/trade.entity.ts` — coluna aditiva nullable: `pendingExpiresAt: Date | null` (timestamptz). É o que permite ao cron cobrar a expiração após um restart.
-2. `webhook.service.ts`, no ponto em que a ordem LIMIT com buffer é criada: calcular `computeBufferExpiry(...)` e gravar em `pendingExpiresAt` junto com o trade. Se `null` (sem TF), gravar `null` → comportamento atual.
-3. Nenhuma mudança nos parâmetros enviados à corretora. A ordem continua sendo criada exatamente como hoje (GTC).
+## FASE 2 — MONITOR EM MEMÓRIA NÃO CANCELA MAIS
 
-## FASE 3 — MONITOR: ESPERAR O FILL ATÉ A EXPIRAÇÃO
+Nas duas funções gêmeas (Binance ~1178/1416 e Bybit ~1449/1761):
 
-Nas duas funções (Binance e Bybit), substituir o `for` de 30 tentativas por um laço guiado pelo relógio, mantendo o resto do corpo intacto:
+1. `maxAttempts`: substituir `fillMonitorAttempts(pendingExpiresAt, ...)` por uma janela fixa de acompanhamento próximo — `const maxAttempts = 360` com `delayMs = 10000` (60 minutos, polling de 10s). Isso **não é expiração**: é só até quando o processo acompanha de perto antes de passar o bastão ao cron.
+2. Ao esgotar o laço **sem fill**: **não cancelar a ordem e não marcar `ERROR`**. Substituir todo o bloco atual (cancelamento + os dois ramos de mensagem em ~1416/~1761) por um log único:
+   `[BUFFER] Ordem ainda pendente após 60min — acompanhamento transferido para o position-sync`.
+   O trade permanece `OPEN` com a ordem viva na corretora.
+3. **Manter intacto** o bloco de emergência para POSIÇÃO ABERTA sem proteção (fecha a posição) — é outro cenário e continua correto.
+4. Manter o tratamento de `Cancelled`/`Rejected` vindos da corretora (marca ERROR, correto).
+5. `fillMonitorAttempts` fica sem uso → remover a função e o seu teste, ou mantê-la apenas se algum outro ponto a usar (verificar antes).
 
-1. `const deadline = trade.pendingExpiresAt ?? (agora + 5 min)` — sem `pendingExpiresAt`, comportamento idêntico ao atual.
-2. Enquanto `Date.now() < deadline`: aguarda `delayMs` (10s) e repete a verificação de status já existente. Teto de segurança: se `deadline - agora > 26h`, cortar em 26h (protege contra TF inválido).
-3. Ao detectar `Filled` → segue exatamente o fluxo atual de criação de SL/TP (nada muda ali).
-4. Ao vencer o `deadline` sem fill:
-   - Cancelar a ordem (mesma chamada de hoje) e marcar o trade com `status: 'ERROR'` e mensagem específica: `Ordem com buffer expirou no fechamento do candle seguinte sem ser preenchida` — distinta do timeout de proteção, para você diferenciar no log os dois motivos (hoje os dois caem na mesma frase).
-   - Registrar no `signal_log` a decisão correspondente (`skipped_buffer_expired`), para a validação webhook×backtester não contar esse sinal como "só no bot".
-5. A criação de proteção após o fill continua com o limite curto atual (30 × 10s) — esse prazo é o correto para (b) e não muda.
+## FASE 3 — POSITION-SYNC: REMOVER O RAMO DE EXPIRAÇÃO
 
-## FASE 4 — POSITION-SYNC COMO GARANTIA (sobrevive a restart)
+1. `buffer-expiry.util.ts` → `decideLimitSyncAction`: remover o ramo `'expire'`. Ordem pendente (`New`/`PartiallyFilled`) retorna **sempre** `'keep'`, independentemente de `pendingExpiresAt`. Simplificar a assinatura removendo o parâmetro `pendingExpiresAt` e atualizar o tipo `LimitSyncAction` para `'keep' | 'protect' | 'none'`.
+2. `position-sync.service.ts` (~304): remover o bloco `if (action === 'expire')` (o `cancelLimitEntryOrder` daquele caminho) e ajustar a chamada sem `pendingExpiresAt`. Manter `'protect'` e `'keep'` como estão.
+3. `computeBufferExpiry` fica sem uso → remover a função e seus casos de teste em `buffer-expiry.util.spec.ts`. Manter `TF_MS`, `normalizeTimeframe` e `resolveTimeframe` se ainda houver uso; se não houver, remover também (verificar antes com busca).
+4. Atualizar `buffer-expiry.util.spec.ts`: remover os testes de expiração e adicionar `decideLimitSyncAction` com ordem pendente antiga → `'keep'`.
 
-`position-sync/position-sync.service.ts` (cron a cada 5 min), no trecho que já trata `trade.type === 'LIMIT' && trade.exchangeOrderId`:
+## FASE 4 — CANCELAMENTOS LEGÍTIMOS (o que deve cancelar de verdade)
 
-1. Se o status na corretora for `Filled` e o trade ainda não tiver SL/TP → disparar a mesma rotina de criação de proteção usada pelo webhook (extrair para um método público reutilizável, sem duplicar lógica).
-2. Se o status for `New`/`PartiallyFilled` **e** `trade.pendingExpiresAt` já passou → cancelar a ordem e marcar como expirada (mesma mensagem da Fase 3).
-3. Se `pendingExpiresAt` for `null` → não faz nada de novo (comportamento atual).
-4. Testes: mock de trade pendente expirado → cancela; pendente não expirado → mantém; filled sem proteção → cria; sem `pendingExpiresAt` → intocado.
+1. **Sinal contrário** — já implementado (`[BUFFER CANCEL]`). Não mexer.
+2. **Sinal do mesmo lado com ordem pendente**: garantir que, com `allowAveraging = false`, o segundo sinal seja ignorado sem criar uma segunda ordem pendente do mesmo lado; com `allowAveraging = true`, permitir (mesma semântica já usada para posições).
+3. **Estratégia pausada / `isActive = false` / `pauseNewOrders` / deletada** → cancelar as ordens LIMIT pendentes daquela estratégia. **Isto é novo e agora é essencial**: sem expiração, uma ordem esquecida pode preencher dias depois; pausar a estratégia precisa realmente desligá-la. Implementar no `position-sync` (que já itera estratégias e trades) com motivo `'Ordem cancelada: estratégia pausada/desativada'`.
+4. Registrar no `signal_log` a decisão correspondente em cada caso.
 
-## FASE 5 — ESPELHAR A REGRA NO BACKTESTER (repo `singularity`)
+## FASE 5 — TESTES E ACEITE
 
-Hoje o backtester **nunca** expira a ordem pendente (`pendings[side]` só morre com sinal oposto) — o oposto do bot. Alinhar:
-
-1. `src/lib/engine/backtest-engine.js`: novo campo `strategy.bufferExpiryCandles` (default 1). Ao criar `pendings[side]`, gravar `expiresIdx = i + bufferExpiryCandles + 1`. No loop de preenchimento, descartar o pendente quando `i > expiresIdx`, registrando um `warning` do tipo `BUFFER_EXPIRED` para aparecer na auditoria.
-2. `src/lib/mirror-config.js`: mapear `bufferExpiryCandles` do bot (defeito #4 do PLANO_IMPORTAR_DO_BOT_V7 já previa o buffer; incluir também a validade).
-3. UI (`ManualParams.jsx`): campo "validade da ordem (candles)" ao lado do buffer; exibir em `BacktestParams.jsx`.
-4. Testes `buffer-expiry.test.js`: limite não tocado dentro de N candles → nenhuma entrada + warning; tocado no candle seguinte → entra; `bufferExpiryCandles = 2` → janela maior; buffer 0 → sem mudança de comportamento.
-
-## FASE 6 — VERIFICAÇÃO E ACEITE
-
-1. `npm run build` + testes verdes nos dois repos. Revisar o diff garantindo que **nenhum parâmetro de criação de ordem mudou** — só o tempo de espera e o cancelamento.
-2. Aceite:
-   - [ ] Configurar o timeframe na estratégia SUIUSDT (1h) e reproduzir o cenário: sinal → ordem viva até o fechamento do candle seguinte → preenche quando o preço cruza o buffer.
-   - [ ] Ordem não preenchida dentro do candle → cancelada com a mensagem nova de expiração (não a genérica).
-   - [ ] Sinal oposto durante a espera → `[BUFFER CANCEL]` como hoje.
-   - [ ] Reiniciar o serviço com ordem pendente → o position-sync assume e cancela/protege corretamente.
-   - [ ] Estratégia sem timeframe → comportamento idêntico ao atual (5 min).
-   - [ ] Backtester com a mesma config reproduz a mesma entrada do bot.
+1. Testes (jest, clientes mockados):
+   - Ordem pendente ao fim das 360 tentativas → **não** é cancelada; trade continua `OPEN`; nenhum `updateTrade` com `ERROR`.
+   - `decideLimitSyncAction` com ordem `New` e `pendingExpiresAt` antigo → `'keep'` (garante que a expiração morreu).
+   - `position-sync` com `Filled` sem proteção → `'protect'` cria SL/TP.
+   - Ordem `Cancelled` na corretora → trade vira ERROR com o motivo real.
+   - Sinal contrário com ordem pendente → cancela (comportamento preservado).
+   - Estratégia pausada com ordem pendente → cancelada (novo).
+2. `npm run build` + suíte verde. Revisar o diff confirmando que **nenhum parâmetro de criação de ordem mudou** — só quem cancela e quando.
+3. Aceite prático:
+   - [ ] Caso SUI: sinal → ordem viva além de 5 min → preenche ao cruzar o buffer → SL/TP criados.
+   - [ ] Sinal contrário durante a espera → `[BUFFER CANCEL]`.
+   - [ ] Restart do serviço com ordem pendente → position-sync mantém e protege ao preencher.
+   - [ ] Pausar a estratégia com ordem pendente → ordem cancelada.
+   - [ ] Nenhum trade novo com o erro "expirou no fechamento do candle seguinte".
 
 ---
 
-## OBSERVAÇÃO IMPORTANTE
+## RISCOS QUE VOCÊ ESTÁ ACEITANDO
 
-Esta mudança **altera o ciclo de vida de ordens em produção** (dinheiro real). Recomendo: aplicar, subir, e configurar o timeframe em **uma** estratégia primeiro, observar alguns sinais, e só então preencher o timeframe nas demais. Enquanto o campo estiver vazio, a estratégia opera exatamente como hoje.
+1. **Entrada tardia**: a ordem pode preencher horas ou dias depois, fora do contexto do sinal. É exatamente o comportamento do backtester — a vantagem é que os dois passam a concordar. Se incomodar, dá para religar a expiração depois (a infraestrutura fica no banco).
+2. **Até ~5 min sem proteção** se o fill ocorrer depois que o monitor em memória saiu (>60 min) — o cron do position-sync cobre no ciclo seguinte.
+3. **Ordens acumuladas no book** consumindo margem reservada. Acompanhar na corretora nas primeiras semanas. A Fase 4.3 (pausar cancela) é a válvula de escape.
 
 ## PROMPT PARA O CLAUDE CODE CLI
 
 ```
-# Sessão 1 — repo Trading-Bot
-Leia PLANO_FIX_BUFFER_EXPIRACAO.md na raiz e execute as FASES 1 a 4, uma por commit.
-REGRAS CRÍTICAS: não mudar o cálculo do preço do buffer nem os parâmetros enviados
-à corretora; estratégia sem timeframe DEVE manter o comportamento atual de 5 minutos;
-a criação de proteção após o fill continua com o prazo curto atual. Sem comentários
-em código. npm run build + testes verdes por fase. Liste mudanças por arquivo.
-
-# Sessão 2 — repo singularity
-Leia PLANO_FIX_BUFFER_EXPIRACAO.md na raiz e execute a FASE 5.
-Não regredir nada do engine (parciais, RMA, paridade, sessões, intrabar, HTF).
-npm run build && npx vitest run verdes. Liste mudanças por arquivo.
+Leia PLANO_FIX_BUFFER_EXPIRACAO.md na raiz e execute as FASES 1 a 5, uma por commit.
+CONTEXTO: as fases do plano ANTERIOR (expiração por candle) já foram executadas nos
+commits 9b9c9f3, 6b09c84, 89cbd33, 971a60d — este plano DESFAZ a expiração, não a
+implementa. REGRAS CRÍTICAS: a ordem LIMIT com buffer NUNCA pode ser cancelada por
+tempo; só por sinal contrário, por cancelamento na própria corretora, ou por
+estratégia pausada/desativada. Não remover colunas do banco. Não mudar o cálculo do
+preço do buffer nem os parâmetros enviados à corretora. Manter o fechamento de
+emergência quando houver POSIÇÃO ABERTA sem proteção. Sem comentários em código.
+npm run build + testes verdes por fase. Liste mudanças por arquivo.
 ```
