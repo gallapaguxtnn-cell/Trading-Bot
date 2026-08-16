@@ -301,24 +301,10 @@ export class PositionSyncService implements OnModuleInit {
           );
 
           const hasProtection = !!trade.stopLossOrderId && !!trade.takeProfitOrderId;
-          const action = decideLimitSyncAction({
-            orderStatus,
-            pendingExpiresAt: trade.pendingExpiresAt,
-            hasProtection,
-            now: Date.now(),
-          });
+          const action = decideLimitSyncAction({ orderStatus, hasProtection });
 
           if (action === 'keep') {
             this.logger.debug(`[SYNC] Trade ${trade.id} has pending LIMIT order (${orderStatus}), keeping open`);
-            continue;
-          }
-
-          if (action === 'expire') {
-            await this.cancelLimitEntryOrder(trade, exchange, apiKey, apiSecret, strategy.isTestnet);
-            trade.status = 'ERROR';
-            trade.error = 'Ordem com buffer expirou no fechamento do candle seguinte sem ser preenchida';
-            await this.tradesRepository.save(trade);
-            this.logger.log(`[SYNC] Expired buffer LIMIT order for trade ${trade.id} (${trade.symbol})`);
             continue;
           }
 
