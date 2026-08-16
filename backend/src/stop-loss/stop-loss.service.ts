@@ -14,6 +14,7 @@ import { EncryptionUtil } from '../utils/encryption.util';
 import { BinanceRequestUtil } from '../utils/binance-request.util';
 import { BinanceWebSocketService } from '../binance-ws/binance-ws.service';
 import { OrderUpdateEvent } from '../binance-ws/dto/binance-ws-events.dto';
+import { isPendingLimitEntry } from '../utils/trade-guards.util';
 import axios from 'axios';
 import * as crypto from 'crypto';
 
@@ -104,6 +105,8 @@ export class StopLossService implements OnModuleInit {
   }
 
   private async checkStopLoss(trade: Trade) {
+    if (isPendingLimitEntry(trade)) return;
+
     const strategy = await this.strategiesService.findOne(trade.strategyId);
     if (!strategy) return;
 
