@@ -1,4 +1,5 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import axios, { AxiosInstance } from 'axios';
 import * as crypto from 'crypto';
 
@@ -43,7 +44,7 @@ export interface BybitTradeHistory {
 }
 
 @Injectable()
-export class BybitClientService {
+export class BybitClientService implements OnModuleInit {
   private readonly logger = new Logger(BybitClientService.name);
 
   private readonly MAINNET_URL = 'https://api.bybit.com';
@@ -52,6 +53,20 @@ export class BybitClientService {
 
   // Proxy configuration (set via environment variables)
   private readonly HTTP_PROXY = process.env.HTTP_PROXY || process.env.HTTPS_PROXY;
+
+  private readonly siteId: string | null;
+
+  constructor(private readonly configService: ConfigService) {
+    this.siteId = this.configService.get<string>('BYBIT_SITE_ID') || process.env.BYBIT_SITE_ID || null;
+  }
+
+  onModuleInit() {
+    if (this.siteId) {
+      this.logger.log(`[BYBIT] site-id ativo: ${this.siteId}`);
+    } else {
+      this.logger.log('[BYBIT] sem site-id (conta padrão)');
+    }
+  }
 
   private getBaseUrl(isTestnet: boolean): string {
     return isTestnet ? this.TESTNET_URL : this.MAINNET_URL;
@@ -95,6 +110,14 @@ export class BybitClientService {
     return false;
   }
 
+  private formatRetMsg(retCode: number | undefined, retMsg: string | undefined): string {
+    const message = retMsg || 'Unknown error';
+    if (retCode === 10003) {
+      return `${message} — API key inválida. Se a conta é internacional (Brasil/Argentina), verifique se BYBIT_SITE_ID/bybitSiteId está configurado — a Bybit exige o header x-site-id para essas contas.`;
+    }
+    return message;
+  }
+
   private generateSignature(
     timestamp: string,
     apiKey: string,
@@ -110,13 +133,19 @@ export class BybitClientService {
     const timestamp = Date.now().toString();
     const signature = this.generateSignature(timestamp, apiKey, apiSecret, params);
 
-    return {
+    const headers: Record<string, string> = {
       'X-BAPI-API-KEY': apiKey,
       'X-BAPI-SIGN': signature,
       'X-BAPI-TIMESTAMP': timestamp,
       'X-BAPI-RECV-WINDOW': this.RECV_WINDOW,
       'Content-Type': 'application/json',
     };
+
+    if (this.siteId) {
+      headers['x-site-id'] = this.siteId;
+    }
+
+    return headers;
   }
 
   async createOrder(
@@ -177,7 +206,7 @@ export class BybitClientService {
       const response = await axios.post(`${baseUrl}${endpoint}`, body, axiosConfig);
 
       if (response.data.retCode !== 0) {
-        throw new Error(`Bybit API Error: ${response.data.retMsg}`);
+        throw new Error(`Bybit API Error: ${this.formatRetMsg(response.data.retCode, response.data.retMsg)}`);
       }
 
       this.logger.log(`[BYBIT] Order created: ${response.data.result.orderId}`);
@@ -298,7 +327,7 @@ export class BybitClientService {
       const response = await axios.get(`${baseUrl}${endpoint}?${queryString}`, axiosConfig);
 
       if (response.data.retCode !== 0) {
-        throw new Error(`Bybit API Error: ${response.data.retMsg}`);
+        throw new Error(`Bybit API Error: ${this.formatRetMsg(response.data.retCode, response.data.retMsg)}`);
       }
 
       return response.data.result.list || [];
@@ -562,7 +591,7 @@ export class BybitClientService {
         response = await axios.get(`${baseUrl}${endpoint}?${queryString}`, contractAxiosConfig);
 
         if (response.data.retCode !== 0) {
-          throw new Error(`Bybit API Error: ${response.data.retMsg}`);
+          throw new Error(`Bybit API Error: ${this.formatRetMsg(response.data.retCode, response.data.retMsg)}`);
         }
       }
 
@@ -682,9 +711,9 @@ export class BybitClientService {
           `  7. Check if your Bybit account has Unified Trading Account (UTA) enabled\n` +
           `  8. Verify your local server time is synchronized (check logs above for time sync)\n` +
           `\n` +
-          `  Error Details: ${retMsg || error.message}`
+          `  Error Details: ${this.formatRetMsg(retCode, retMsg || error.message)}`
         );
-        throw new Error(`Bybit API Error: ${retMsg || error.message}`);
+        throw new Error(`Bybit API Error: ${this.formatRetMsg(retCode, retMsg || error.message)}`);
       }
 
       this.logger.error(`[BYBIT] Failed to get wallet balance: ${retMsg || error.message}`);
@@ -845,7 +874,7 @@ export class BybitClientService {
       const response = await axios.post(`${baseUrl}${endpoint}`, body, axiosConfig);
 
       if (response.data.retCode !== 0) {
-        throw new Error(`Bybit API Error: ${response.data.retMsg}`);
+        throw new Error(`Bybit API Error: ${this.formatRetMsg(response.data.retCode, response.data.retMsg)}`);
       }
 
       this.logger.log(`[BYBIT] Stop Loss order created: ${response.data.result.orderId} at trigger ${triggerPrice}`);
@@ -973,7 +1002,7 @@ export class BybitClientService {
       const response = await axios.get(`${baseUrl}${endpoint}?${queryString}`, axiosConfig);
 
       if (response.data.retCode !== 0) {
-        throw new Error(`Bybit API Error: ${response.data.retMsg}`);
+        throw new Error(`Bybit API Error: ${this.formatRetMsg(response.data.retCode, response.data.retMsg)}`);
       }
 
       return response.data.result.list || [];
