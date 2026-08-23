@@ -1,4 +1,4 @@
-import { mapBybitFill, mapBinanceFill, weightedAvgPrice, tpPnl, latestUpdatedAt } from './fill.util';
+import { mapBybitFill, mapBinanceFill, weightedAvgPrice, tpPnl, latestUpdatedAt, actualPercentOfPosition } from './fill.util';
 
 describe('FASE 1: mapeamento de fill da corretora', () => {
   it('Bybit com avgPrice/cumExecQty/cumExecFee/updatedTime → objeto correto', () => {
@@ -131,5 +131,19 @@ describe('FASE 4: sumCommission (taxa Binance via userTrades)', () => {
 
   it('valores não numéricos são ignorados', () => {
     expect(sumCommission([{ commission: 'abc' }, { commission: '0.002' }])).toBeCloseTo(0.002, 10);
+  });
+});
+
+describe('FASE 5: actualPercentOfPosition (caso real: 890 de 895 executados)', () => {
+  it('deriva o percentual real da quantidade fechada, não do percentual configurado', () => {
+    expect(actualPercentOfPosition(890, 895, 50)).toBeCloseTo(99.4413, 3);
+  });
+
+  it('quando a quantidade fechada bate com a configurada, resultado e o mesmo', () => {
+    expect(actualPercentOfPosition(50, 100, 50)).toBeCloseTo(50, 10);
+  });
+
+  it('qtyBeforeClose 0 (posicao ja zerada) cai no percentual configurado (fallback)', () => {
+    expect(actualPercentOfPosition(0, 0, 50)).toBe(50);
   });
 });

@@ -10,6 +10,8 @@ import { StrategiesService } from '../strategies/strategies.service';
 import { ExchangeService } from '../exchange/exchange.service';
 import { BybitClientService, BybitPosition } from '../exchange/bybit-client.service';
 import { TradesService } from '../trades/trades.service';
+import { ExecutionType } from '../trades/trade-execution.entity';
+import { resolveManualCloseOutcome } from './manual-close.util';
 import { EncryptionUtil } from '../utils/encryption.util';
 import { BinanceRequestUtil } from '../utils/binance-request.util';
 import { BinanceWebSocketService } from '../binance-ws/binance-ws.service';
@@ -633,17 +635,35 @@ export class PositionSyncService implements OnModuleInit {
     const entryPrice = parseFloat(trade.entryPrice as any);
     const quantity = parseFloat(trade.quantity as any);
 
-    let pnl: number;
+    let segmentPnl: number;
     if (trade.side === 'BUY') {
-      pnl = (currentPrice - entryPrice) * quantity;
+      segmentPnl = (currentPrice - entryPrice) * quantity;
     } else {
-      pnl = (entryPrice - currentPrice) * quantity;
+      segmentPnl = (entryPrice - currentPrice) * quantity;
+    }
+
+    const priorExecutions = await this.tradesService.findExecutions(trade.id);
+    const { totalPnl, closeReason } = resolveManualCloseOutcome(priorExecutions, segmentPnl);
+
+    if (quantity > 0) {
+      try {
+        await this.tradesService.createExecution({
+          tradeId: trade.id,
+          type: ExecutionType.MANUAL_CLOSE,
+          price: currentPrice,
+          quantity,
+          pnl: segmentPnl,
+          percentOfPosition: 100,
+        });
+      } catch (e: any) {
+        this.logger.warn(`[SYNC] Falha ao gravar execucao de fechamento (trade ${trade.id}): ${e.message}`);
+      }
     }
 
     trade.status = 'CLOSED';
     trade.exitPrice = currentPrice as any;
-    trade.pnl = pnl as any;
-    trade.closeReason = 'MANUAL';
+    trade.pnl = totalPnl as any;
+    trade.closeReason = closeReason;
     trade.closedAt = new Date();
     trade.binancePositionAmt = 0 as any;
     trade.stopLossOrderId = null;

@@ -6,7 +6,7 @@ import { Repository } from 'typeorm';
 import { Trade, CloseReason } from '../strategies/trade.entity';
 import { TradesService } from '../trades/trades.service';
 import { ExecutionType } from '../trades/trade-execution.entity';
-import { OrderFill, mapBybitFill, mapBinanceFill, mapCcxtFill, weightedAvgPrice, tpPnl, latestUpdatedAt, sumCommission } from './fill.util';
+import { OrderFill, mapBybitFill, mapBinanceFill, mapCcxtFill, weightedAvgPrice, tpPnl, latestUpdatedAt, sumCommission, actualPercentOfPosition } from './fill.util';
 import { StrategiesService } from '../strategies/strategies.service';
 import { ExchangeService } from '../exchange/exchange.service';
 import { BybitClientService } from '../exchange/bybit-client.service';
@@ -244,6 +244,7 @@ export class TakeProfitService implements OnModuleInit {
         const priceSource = fill?.avgPrice != null ? 'exchange' : (tpPrice ? 'theoretical' : 'market');
         const fillPrice = (fill?.avgPrice ?? tpPrice ?? currentPrice) as number;
         const closedQty = fill?.executedQty ?? proportionalQty;
+        const qtyBeforeThisClose = newQty;
         const { net } = tpPnl(trade.side, entryPrice, fillPrice, closedQty, fill?.fee);
         accumulatedPnl += net;
         newQty -= closedQty;
@@ -260,7 +261,7 @@ export class TakeProfitService implements OnModuleInit {
             price: fillPrice,
             quantity: closedQty,
             pnl: net,
-            percentOfPosition: closePercent * 100,
+            percentOfPosition: actualPercentOfPosition(closedQty, qtyBeforeThisClose, closePercent * 100),
             exchangeOrderId: orderIdByLevel.get(l),
           } as any);
         } catch (e) {
@@ -975,7 +976,7 @@ export class TakeProfitService implements OnModuleInit {
         price: fillPrice,
         quantity: fillQty,
         pnl: pnl,
-        percentOfPosition: closePercent * 100,
+        percentOfPosition: actualPercentOfPosition(fillQty, quantity, closePercent * 100),
         exchangeOrderId: undefined
       } as any);
 

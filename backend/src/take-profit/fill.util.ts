@@ -83,6 +83,10 @@ export function sumCommission(rows: Array<Record<string, unknown>> | null | unde
   return fee;
 }
 
+export function actualPercentOfPosition(closedQty: number, qtyBeforeClose: number, fallbackPercent: number): number {
+  return qtyBeforeClose > 0 ? (closedQty / qtyBeforeClose) * 100 : fallbackPercent;
+}
+
 export function latestUpdatedAt(fills: Array<OrderFill | null | undefined>): Date | null {
   let latest: Date | null = null;
   for (const f of fills) {
