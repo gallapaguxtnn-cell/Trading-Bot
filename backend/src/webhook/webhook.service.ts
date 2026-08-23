@@ -745,6 +745,40 @@ export class WebhookService {
     await this.bybitClient.setLeverage(apiKey, apiSecret, isTestnet, symbol, leverage);
   }
 
+  private async getBybitActualFillPrice(
+    apiKey: string,
+    apiSecret: string,
+    isTestnet: boolean,
+    symbol: string,
+    orderId: string,
+    side: 'Buy' | 'Sell'
+  ): Promise<number | undefined> {
+    const maxRetries = 3;
+    const retryDelayMs = 300;
+
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      const orderInfo = await this.bybitClient.getOrderInfo(apiKey, apiSecret, isTestnet, symbol, orderId);
+      const avgPrice = parseFloat(orderInfo?.avgPrice || '0');
+      if (avgPrice > 0) {
+        return avgPrice;
+      }
+      if (attempt < maxRetries) {
+        await new Promise(resolve => setTimeout(resolve, retryDelayMs));
+      }
+    }
+
+    const historyInfo = await this.bybitClient.getOrderHistory(apiKey, apiSecret, isTestnet, symbol, orderId);
+    const historyAvgPrice = parseFloat(historyInfo?.avgPrice || '0');
+    if (historyAvgPrice > 0) {
+      return historyAvgPrice;
+    }
+
+    const positions = await this.bybitClient.getPositions(apiKey, apiSecret, isTestnet, symbol);
+    const position = positions.find(pos => pos.side === side && parseFloat(pos.size || '0') > 0);
+    const positionAvgPrice = parseFloat(position?.avgPrice || '0');
+    return positionAvgPrice > 0 ? positionAvgPrice : undefined;
+  }
+
   private async createBinanceOrder(
     params: URLSearchParams,
     apiKey: string,
@@ -2608,6 +2642,30 @@ export class WebhookService {
             trade: savedTrade,
           };
         }
+      } else if (exchange === Exchange.BYBIT && !isLimitOrder) {
+        const bybitSideForFill = side === 'BUY' ? 'Buy' : 'Sell';
+        try {
+          actualEntryPrice = await this.getBybitActualFillPrice(
+            decryptedKey,
+            decryptedSecret,
+            strategy.isTestnet,
+            normalizedSymbol,
+            tradeDetails.id,
+            bybitSideForFill
+          );
+
+          if (actualEntryPrice) {
+            this.logger.log(`[ENTRY PRICE] Using actual entry price from Bybit order: ${actualEntryPrice} (signal was ${signal.price})`);
+          } else {
+            this.logger.warn(
+              `[PROTECTION ORDERS] Preço real de execução indisponível — TP/SL calculados sobre o preço do sinal`
+            );
+          }
+        } catch (fillError: any) {
+          this.logger.warn(
+            `[PROTECTION ORDERS] Preço real de execução indisponível — TP/SL calculados sobre o preço do sinal (erro: ${fillError.message})`
+          );
+        }
       }
 
       // --- STOP LOSS & TAKE PROFIT CREATION WITH ROLLBACK ---
@@ -2618,7 +2676,7 @@ export class WebhookService {
         // - Averaging entry: ALWAYS use signal price (NOT the average position price)
         //   Example: First entry $100, second entry $110 → position avg is $105
         //   But we want TPs for second entry based on $110, not $105!
-        const priceForProtectionOrders = (exchange === Exchange.BINANCE && !isLimitOrder && actualEntryPrice && !isAveragingTrade)
+        const priceForProtectionOrders = (!isLimitOrder && actualEntryPrice && !isAveragingTrade)
           ? actualEntryPrice  // First entry MARKET: use real execution price
           : entryPrice;       // Averaging or LIMIT: use signal price
 
@@ -2628,8 +2686,9 @@ export class WebhookService {
             `  Slippage: ${((priceForProtectionOrders - entryPrice) / entryPrice * 100).toFixed(4)}%`
           );
         } else if (isAveragingTrade && actualEntryPrice) {
-          this.logger.log(
-            `[PROTECTION ORDERS] Averaging mode: Using signal price ${entryPrice} (NOT position average ${actualEntryPrice})`
+          this.logger.warn(
+            `[PROTECTION ORDERS] Averaging mode: Using signal price ${entryPrice} (NOT position average ${actualEntryPrice}) — ` +
+            `preço médio pós-merge não é usado propositalmente (cada entrada mantém SL/TP independentes com base no seu próprio preço)`
           );
         }
 
@@ -2950,7 +3009,7 @@ export class WebhookService {
       }
 
       // Update trade with actual entry price (not signal price) for MARKET orders
-      const finalEntryPrice = (exchange === Exchange.BINANCE && !isLimitOrder && actualEntryPrice)
+      const finalEntryPrice = (!isLimitOrder && actualEntryPrice)
         ? actualEntryPrice
         : tradeData.entryPrice;
 
