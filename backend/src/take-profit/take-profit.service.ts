@@ -7,6 +7,7 @@ import { Trade, CloseReason } from '../strategies/trade.entity';
 import { TradesService } from '../trades/trades.service';
 import { ExecutionType } from '../trades/trade-execution.entity';
 import { OrderFill, mapBybitFill, mapBinanceFill, mapCcxtFill, weightedAvgPrice, tpPnl, latestUpdatedAt, sumCommission, actualPercentOfPosition } from './fill.util';
+import { decideTakeProfitClose } from './close-decision.util';
 import { StrategiesService } from '../strategies/strategies.service';
 import { ExchangeService } from '../exchange/exchange.service';
 import { BybitClientService } from '../exchange/bybit-client.service';
@@ -52,6 +53,24 @@ export class TakeProfitService implements OnModuleInit {
   private formatQuantityWithUsdt(quantity: number, price: number): string {
     const usdt = quantity * price;
     return `${quantity.toFixed(4)} (~${usdt.toFixed(2)} USDT)`;
+  }
+
+  private async getMinQtyForSymbol(symbol: string, isTestnet: boolean, exchange: Exchange): Promise<number> {
+    try {
+      if (exchange === Exchange.BYBIT) {
+        const rules = await this.bybitClient.getSymbolRules(isTestnet, symbol);
+        return parseFloat(rules.minQty) || 0;
+      }
+
+      const baseURL = isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
+      const response = await axios.get(`${baseURL}/fapi/v1/exchangeInfo`);
+      const symbolInfo = response.data.symbols.find((s: any) => s.symbol === symbol);
+      const lotSizeFilter = symbolInfo?.filters.find((f: any) => f.filterType === 'LOT_SIZE');
+      return lotSizeFilter ? parseFloat(lotSizeFilter.minQty) : 0;
+    } catch (error: any) {
+      this.logger.warn(`[TP] Failed to fetch minQty for ${symbol}: ${error.message}`);
+      return 0;
+    }
   }
 
   @OnEvent('binance.order.update')
@@ -277,27 +296,67 @@ export class TakeProfitService implements OnModuleInit {
 
       this.logger.log(`[TP CHECK] Filled levels: ${Array.from(filledLevels).join(',')}, Total levels: ${totalConfiguredLevels}, Position closed: ${positionFullyClosed}`);
 
-      if (allLevelsFilled || positionFullyClosed) {
-        const filledFills = newlyFilled.map(l => fillsByLevel.get(l));
-        const realExit = weightedAvgPrice(filledFills);
-        const realClosedAt = latestUpdatedAt(filledFills);
+      let shouldClose = allLevelsFilled;
+      let confirmedRemainingQty: number | null = null;
 
-        trade.status = 'CLOSED';
-        trade.exitPrice = (realExit ?? currentPrice) as any;
-        trade.pnl = accumulatedPnl as any;
-        trade.closeReason = `TAKE_PROFIT_${highestProcessed}` as any;
-        trade.closedAt = realClosedAt ?? new Date();
-        if (newlyFilled.length > 1) {
-          const when = (realClosedAt ?? new Date()).toISOString().slice(11, 19);
-          trade.closeDetail = `${newlyFilled.map(l => `TP${l}`).join('+')} @${when}` as any;
+      if (!allLevelsFilled && positionFullyClosed) {
+        const minQty = await this.getMinQtyForSymbol(trade.symbol, strategy.isTestnet, exchange);
+        const exchangePositionSize = await this.positionSyncService.getPositionSize(
+          exchange, trade.symbol, trade.side, apiKey, apiSecret, strategy.isTestnet
+        );
+        const decision = decideTakeProfitClose({ exchangePositionSize, minQty });
+        shouldClose = decision.shouldClose;
+
+        if (decision.reason === 'POSITION_STILL_OPEN') {
+          confirmedRemainingQty = exchangePositionSize;
+          this.logger.warn(
+            `[TP] Posição ainda aberta na corretora (${exchangePositionSize} ${trade.symbol}) — trade mantido aberto (residual de arredondamento)`
+          );
+        } else if (decision.reason === 'QUERY_FAILED_FALLBACK_CLOSE') {
+          this.logger.warn(
+            `[TP] Falha ao confirmar posição de ${trade.symbol} na corretora — fechando com base no cálculo local (comportamento atual)`
+          );
         }
-        trade.binancePositionAmt = 0 as any;
-        trade.lastTpLevel = highestProcessed;
-        await this.tradesRepository.save(trade);
-        this.logger.log(`└─ Trade fully closed via TP${highestProcessed} | Total P&L: ${accumulatedPnl > 0 ? '+' : ''}${accumulatedPnl.toFixed(2)} USDT`);
+      }
 
-        await this.cancelTradeStopLoss(trade, exchange, apiKey, apiSecret, strategy.isTestnet);
-        await this.cancelRemainingTpOrders(trade, filledLevels, exchange, apiKey, apiSecret, strategy.isTestnet);
+      if (allLevelsFilled || positionFullyClosed) {
+        if (shouldClose) {
+          const filledFills = newlyFilled.map(l => fillsByLevel.get(l));
+          const realExit = weightedAvgPrice(filledFills);
+          const realClosedAt = latestUpdatedAt(filledFills);
+
+          trade.status = 'CLOSED';
+          trade.exitPrice = (realExit ?? currentPrice) as any;
+          trade.pnl = accumulatedPnl as any;
+          trade.closeReason = `TAKE_PROFIT_${highestProcessed}` as any;
+          trade.closedAt = realClosedAt ?? new Date();
+          if (newlyFilled.length > 1) {
+            const when = (realClosedAt ?? new Date()).toISOString().slice(11, 19);
+            trade.closeDetail = `${newlyFilled.map(l => `TP${l}`).join('+')} @${when}` as any;
+          }
+          trade.binancePositionAmt = 0 as any;
+          trade.lastTpLevel = highestProcessed;
+          await this.tradesRepository.save(trade);
+          this.logger.log(`└─ Trade fully closed via TP${highestProcessed} | Total P&L: ${accumulatedPnl > 0 ? '+' : ''}${accumulatedPnl.toFixed(2)} USDT`);
+
+          await this.cancelTradeStopLoss(trade, exchange, apiKey, apiSecret, strategy.isTestnet);
+          await this.cancelRemainingTpOrders(trade, filledLevels, exchange, apiKey, apiSecret, strategy.isTestnet);
+        } else {
+          const realQty = confirmedRemainingQty ?? newQty;
+          trade.quantity = realQty as any;
+          trade.lastTpLevel = highestProcessed;
+          trade.pnl = accumulatedPnl as any;
+          trade.binancePositionAmt = realQty as any;
+          await this.tradesRepository.save(trade);
+
+          if (strategy.moveSLToBreakeven || strategy.breakAgain) {
+            await this.positionSyncService.checkBreakAgain(trade, undefined, strategy, apiKey, apiSecret);
+          }
+
+          if (exchange === Exchange.BINANCE && trade.stopLossOrderId) {
+            await this.adjustStopLossForRemainingQty(trade, strategy, exchange, apiKey, apiSecret, realQty);
+          }
+        }
       } else {
         trade.quantity = newQty as any;
         trade.lastTpLevel = highestProcessed;

@@ -336,6 +336,26 @@ export class PositionSyncService implements OnModuleInit {
     return { synced, closed, imported, consolidated };
   }
 
+  async getPositionSize(
+    exchange: Exchange,
+    symbol: string,
+    side: 'BUY' | 'SELL',
+    apiKey: string,
+    apiSecret: string,
+    isTestnet: boolean
+  ): Promise<number | null> {
+    try {
+      const positions = exchange === Exchange.BYBIT
+        ? await this.fetchBybitPositions(apiKey, apiSecret, isTestnet)
+        : await this.fetchBinancePositions(apiKey, apiSecret, isTestnet);
+      const position = positions.find(p => p.symbol === symbol && p.side === side);
+      return position ? position.size : 0;
+    } catch (error: any) {
+      this.logger.warn(`[SYNC] Failed to fetch position size for ${symbol}: ${error.message}`);
+      return null;
+    }
+  }
+
   private async fetchBinancePositions(
     apiKey: string,
     apiSecret: string,
