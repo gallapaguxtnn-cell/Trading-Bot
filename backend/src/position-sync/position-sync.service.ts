@@ -630,6 +630,7 @@ export class PositionSyncService implements OnModuleInit {
       trade.stopLossOrderId = null;
       trade.takeProfitOrderId = null;
       trade.error = 'Duplicate trade consolidated into primary trade';
+      trade.excludeFromStats = true;
       await this.tradesRepository.save(trade);
 
       this.logger.debug(`[CONSOLIDATE] Consolidated duplicate trade ${trade.id} into ${primaryTrade.id} for ${trade.symbol}`);

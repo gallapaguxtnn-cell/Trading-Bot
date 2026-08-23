@@ -426,7 +426,7 @@ export class AuditorService {
     from?: Date,
     to?: Date,
   ) {
-    const where: Record<string, unknown> = { strategyId, status: 'CLOSED' };
+    const where: Record<string, unknown> = { strategyId, status: 'CLOSED', excludeFromStats: false };
     if (from && to) where.closedAt = Between(from, to);
 
     const botTrades = await this.tradeRepo.find({

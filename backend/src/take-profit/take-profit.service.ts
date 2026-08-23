@@ -942,6 +942,7 @@ export class TakeProfitService implements OnModuleInit {
               closeReason: 'DUST_AMOUNT' as any,
               closedAt: new Date(),
               quantity: 0 as any,
+              excludeFromStats: true,
             });
 
             this.logger.log(`[BYBIT TP] Trade ${trade.id.substring(0, 8)} closed due to dust amount (< minQty)`);

@@ -77,6 +77,9 @@ export class Trade {
   @Column({ type: 'text', nullable: true })
   origin: 'IMPORTED' | 'SIGNAL' | null;
 
+  @Column({ default: false })
+  excludeFromStats: boolean;
+
   @CreateDateColumn()
   timestamp: Date;
 }

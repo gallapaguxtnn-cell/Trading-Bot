@@ -151,13 +151,16 @@ export class TradesService {
         })
       ]);
 
-      const realizedPnL = this.calculateTotalPnL(closedTrades);
-      const unrealizedPnL = this.calculateTotalPnL(openTrades);
+      const statsOpenTrades = openTrades.filter(t => !t.excludeFromStats);
+      const statsClosedTrades = closedTrades.filter(t => !t.excludeFromStats);
+
+      const realizedPnL = this.calculateTotalPnL(statsClosedTrades);
+      const unrealizedPnL = this.calculateTotalPnL(statsOpenTrades);
       const totalPnL = realizedPnL + unrealizedPnL;
 
-      const wins = this.countWins(closedTrades);
-      const losses = this.countLosses(closedTrades);
-      const winRate = this.calculateWinRate(wins, closedTrades.length);
+      const wins = this.countWins(statsClosedTrades);
+      const losses = this.countLosses(statsClosedTrades);
+      const winRate = this.calculateWinRate(wins, statsClosedTrades.length);
 
       const allTrades = [...openTrades, ...closedTrades, ...errorTrades]
         .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
@@ -169,7 +172,7 @@ export class TradesService {
         unrealizedPnL,
         activePositions: openTrades.length,
         winRate,
-        totalTrades: closedTrades.length,
+        totalTrades: statsClosedTrades.length,
         wins,
         losses,
         recentSignals: allTrades.map(this.normalizeTrade),
