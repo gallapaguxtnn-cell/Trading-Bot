@@ -74,6 +74,9 @@ export class Trade {
   @Column("decimal", { precision: 18, scale: 8, nullable: true })
   initialQuantity: number | null;
 
+  @Column({ type: 'text', nullable: true })
+  origin: 'IMPORTED' | 'SIGNAL' | null;
+
   @CreateDateColumn()
   timestamp: Date;
 }

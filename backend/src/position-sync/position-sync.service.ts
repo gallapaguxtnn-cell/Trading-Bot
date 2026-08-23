@@ -3,7 +3,7 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 import { OnEvent, EventEmitter2 } from '@nestjs/event-emitter';
 import { decideLimitSyncAction, shouldCancelPendingForStrategy } from '../webhook/buffer-expiry.util';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, MoreThan } from 'typeorm';
 import { Trade } from '../strategies/trade.entity';
 import { Strategy, Exchange } from '../strategies/strategy.entity';
 import { StrategiesService } from '../strategies/strategies.service';
@@ -12,6 +12,7 @@ import { BybitClientService, BybitPosition } from '../exchange/bybit-client.serv
 import { TradesService } from '../trades/trades.service';
 import { ExecutionType } from '../trades/trade-execution.entity';
 import { resolveManualCloseOutcome } from './manual-close.util';
+import { findResidualTradeMatch, isDustByNotional } from './orphan-import.util';
 import { EncryptionUtil } from '../utils/encryption.util';
 import { BinanceRequestUtil } from '../utils/binance-request.util';
 import { BinanceWebSocketService } from '../binance-ws/binance-ws.service';
@@ -63,6 +64,8 @@ export class PositionSyncService implements OnModuleInit {
   private lastSyncTime: Date | null = null;
   private syncInProgress = false;
   private readonly fallbackEnabled: boolean;
+  private readonly orphanMinNotionalUsdt: number;
+  private readonly RESIDUAL_TRADE_LOOKBACK_MS = 24 * 60 * 60 * 1000;
 
   /**
    * Format price with appropriate decimal places based on the price magnitude
@@ -93,6 +96,7 @@ export class PositionSyncService implements OnModuleInit {
     private readonly eventEmitter: EventEmitter2,
   ) {
     this.fallbackEnabled = process.env.BINANCE_WS_FALLBACK_ENABLED !== 'false';
+    this.orphanMinNotionalUsdt = parseFloat(process.env.ORPHAN_MIN_NOTIONAL_USDT || '1') || 1;
   }
 
   onModuleInit() {
@@ -234,6 +238,38 @@ export class PositionSyncService implements OnModuleInit {
             );
             continue;
           }
+        }
+
+        if (isDustByNotional(position.size, position.markPrice, this.orphanMinNotionalUsdt)) {
+          this.logger.warn(
+            `[SYNC] Orphan position detected but notional ${(position.size * position.markPrice).toFixed(4)} USDT ` +
+            `< ${this.orphanMinNotionalUsdt} USDT. This is dust from closed position. Ignoring.`
+          );
+          continue;
+        }
+
+        const recentlyClosed = await this.tradesRepository.find({
+          where: {
+            strategyId: strategy.id,
+            symbol: position.symbol,
+            side: position.side,
+            status: 'CLOSED',
+            closedAt: MoreThan(new Date(Date.now() - this.RESIDUAL_TRADE_LOOKBACK_MS)),
+          },
+          order: { closedAt: 'DESC' },
+        });
+
+        const residualMatch = findResidualTradeMatch(
+          recentlyClosed.map(t => ({ id: t.id, entryPrice: parseFloat(t.entryPrice as any) })),
+          position.entryPrice,
+        );
+
+        if (residualMatch) {
+          const tradeToReopen = recentlyClosed.find(t => t.id === residualMatch.id)!;
+          await this.reopenResidualTrade(tradeToReopen, position);
+          this.logger.warn('[SYNC] Resíduo de trade recém-fechado — reaberto em vez de importar duplicata');
+          synced++;
+          continue;
         }
 
         this.logger.warn(`[SYNC] Orphan position detected: ${position.symbol} (${position.side}) - importing...`);
@@ -909,11 +945,22 @@ export class PositionSyncService implements OnModuleInit {
       pnl: position.unrealizedPnl as any,
       status: 'OPEN',
       binancePositionAmt: position.size as any,
+      origin: 'IMPORTED',
     });
 
     const savedTrade = await this.tradesRepository.save(trade);
     this.logger.log(`[SYNC] Imported orphan position as trade ${savedTrade.id}: ${position.symbol} ${position.side} @ ${position.entryPrice}`);
     return savedTrade;
+  }
+
+  private async reopenResidualTrade(trade: Trade, position: NormalizedPosition): Promise<Trade> {
+    trade.status = 'OPEN';
+    trade.quantity = position.size as any;
+    trade.binancePositionAmt = position.size as any;
+    trade.exitPrice = null;
+    trade.closeReason = null;
+    trade.closedAt = null;
+    return this.tradesRepository.save(trade);
   }
 
   public async checkBreakAgain(
