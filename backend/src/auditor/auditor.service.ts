@@ -3,6 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, Between } from 'typeorm';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { AuditLog, AuditCategory, AuditSeverity } from './audit-log.entity';
+import { computePercentMismatch } from './percent-mismatch.util';
 import { Trade } from '../strategies/trade.entity';
 import { TradeExecution, ExecutionType } from '../trades/trade-execution.entity';
 import { Strategy } from '../strategies/strategy.entity';
@@ -258,6 +259,34 @@ export class AuditorService {
         `Trade fechado sem preco de saida registrado`,
         { status: trade.status, closeReason: trade.closeReason },
       ));
+    }
+
+    if (trade.status === 'CLOSED' && trade.exitPrice && trade.entryPrice) {
+      const percentMismatch = computePercentMismatch({
+        entryPrice: Number(trade.entryPrice),
+        exitPrice: Number(trade.exitPrice),
+        closeReason: trade.closeReason,
+        closeDetail: trade.closeDetail,
+        stopLossPercentage: strategy.stopLossPercentage ? Number(strategy.stopLossPercentage) : null,
+        takeProfitPercentage1: strategy.takeProfitPercentage1 ? Number(strategy.takeProfitPercentage1) : null,
+        takeProfitPercentage2: strategy.takeProfitPercentage2 ? Number(strategy.takeProfitPercentage2) : null,
+        takeProfitPercentage3: strategy.takeProfitPercentage3 ? Number(strategy.takeProfitPercentage3) : null,
+      });
+
+      if (percentMismatch) {
+        issues.push(this.createLog(trade,
+          percentMismatch.category === 'TP_PERCENT_MISMATCH' ? AuditCategory.TP_PERCENT_MISMATCH : AuditCategory.SL_PERCENT_MISMATCH,
+          percentMismatch.severity === 'ERROR' ? AuditSeverity.ERROR : AuditSeverity.WARNING,
+          `${trade.closeReason} efetivo ${percentMismatch.effectivePercent.toFixed(4)}% difere do configurado ${percentMismatch.configuredPercent.toFixed(4)}% (diff ${percentMismatch.deviation.toFixed(4)} p.p.)`,
+          {
+            configuredPercent: percentMismatch.configuredPercent,
+            effectivePercent: percentMismatch.effectivePercent,
+            entryPrice: Number(trade.entryPrice),
+            exitPrice: Number(trade.exitPrice),
+          },
+          percentMismatch.configuredPercent, percentMismatch.effectivePercent, percentMismatch.deviation,
+        ));
+      }
     }
 
     if (trade.status === 'ERROR' && trade.error) {

@@ -83,6 +83,8 @@ const CATEGORY_INFO: Record<string, { label: string; icon: string; description: 
   LIQUIDATION_RISK: { label: 'Risco de Liquidação', icon: '⚠', description: 'Trade próximo do preço de liquidação' },
   BACKTEST_DIVERGENCE: { label: 'Divergência Backtest', icon: '⟷', description: 'Resultado real difere do backtest' },
   ORDER_REJECTED: { label: 'Ordem Rejeitada', icon: '✕', description: 'Ordem não encontrada ou rejeitada pela exchange' },
+  TP_PERCENT_MISMATCH: { label: 'TP% Divergente', icon: '≠', description: 'Take Profit efetivo difere do percentual configurado na estratégia' },
+  SL_PERCENT_MISMATCH: { label: 'SL% Divergente', icon: '≠', description: 'Stop Loss efetivo difere do percentual configurado na estratégia' },
 };
 
 function isKnownLimitation(log: AuditLog): boolean {
@@ -187,6 +189,16 @@ function parseIssueMessage(log: AuditLog): { title: string; detail: string } {
         return { title: 'Trade com erro', detail: String(log.details?.error || log.message) };
       }
       return { title: catLabel, detail: log.message };
+    }
+    case 'TP_PERCENT_MISMATCH':
+    case 'SL_PERCENT_MISMATCH': {
+      const configured = log.details?.configuredPercent != null ? `${Number(log.details.configuredPercent).toFixed(4)}%` : '';
+      const effective = log.details?.effectivePercent != null ? `${Number(log.details.effectivePercent).toFixed(4)}%` : '';
+      const dev = log.deviation != null ? `${Number(log.deviation).toFixed(4)} p.p.` : '';
+      return {
+        title: `${catLabel}: configurado ${configured || '?'} → efetivo ${effective || '?'}`,
+        detail: configured && effective ? `Diferença de ${dev} entre o percentual configurado na estratégia e o percentual efetivamente executado.` : log.message,
+      };
     }
     default:
       return { title: catLabel, detail: log.message };
