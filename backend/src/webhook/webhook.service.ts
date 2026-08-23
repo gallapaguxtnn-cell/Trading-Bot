@@ -16,6 +16,8 @@ import { BinanceWebSocketService } from '../binance-ws/binance-ws.service';
 import { SignalLogService } from './signal-log.service';
 import { SignalDecision } from './signal-log.entity';
 import { BinanceRequestUtil } from '../utils/binance-request.util';
+import { resolveBybitActualFillPrice } from './bybit-fill-price.util';
+import { resolveProtectionPrice, resolveFinalEntryPrice } from './protection-price.util';
 import axios from 'axios';
 import * as crypto from 'crypto';
 import Decimal from 'decimal.js';
@@ -753,30 +755,12 @@ export class WebhookService {
     orderId: string,
     side: 'Buy' | 'Sell'
   ): Promise<number | undefined> {
-    const maxRetries = 3;
-    const retryDelayMs = 300;
-
-    for (let attempt = 1; attempt <= maxRetries; attempt++) {
-      const orderInfo = await this.bybitClient.getOrderInfo(apiKey, apiSecret, isTestnet, symbol, orderId);
-      const avgPrice = parseFloat(orderInfo?.avgPrice || '0');
-      if (avgPrice > 0) {
-        return avgPrice;
-      }
-      if (attempt < maxRetries) {
-        await new Promise(resolve => setTimeout(resolve, retryDelayMs));
-      }
-    }
-
-    const historyInfo = await this.bybitClient.getOrderHistory(apiKey, apiSecret, isTestnet, symbol, orderId);
-    const historyAvgPrice = parseFloat(historyInfo?.avgPrice || '0');
-    if (historyAvgPrice > 0) {
-      return historyAvgPrice;
-    }
-
-    const positions = await this.bybitClient.getPositions(apiKey, apiSecret, isTestnet, symbol);
-    const position = positions.find(pos => pos.side === side && parseFloat(pos.size || '0') > 0);
-    const positionAvgPrice = parseFloat(position?.avgPrice || '0');
-    return positionAvgPrice > 0 ? positionAvgPrice : undefined;
+    return resolveBybitActualFillPrice({
+      getOrderInfo: () => this.bybitClient.getOrderInfo(apiKey, apiSecret, isTestnet, symbol, orderId),
+      getOrderHistory: () => this.bybitClient.getOrderHistory(apiKey, apiSecret, isTestnet, symbol, orderId),
+      getPositions: () => this.bybitClient.getPositions(apiKey, apiSecret, isTestnet, symbol),
+      side,
+    });
   }
 
   private async createBinanceOrder(
@@ -2676,9 +2660,12 @@ export class WebhookService {
         // - Averaging entry: ALWAYS use signal price (NOT the average position price)
         //   Example: First entry $100, second entry $110 → position avg is $105
         //   But we want TPs for second entry based on $110, not $105!
-        const priceForProtectionOrders = (!isLimitOrder && actualEntryPrice && !isAveragingTrade)
-          ? actualEntryPrice  // First entry MARKET: use real execution price
-          : entryPrice;       // Averaging or LIMIT: use signal price
+        const { price: priceForProtectionOrders } = resolveProtectionPrice({
+          isLimitOrder,
+          isAveragingTrade,
+          actualEntryPrice,
+          signalPrice: entryPrice,
+        });
 
         if (priceForProtectionOrders !== entryPrice) {
           this.logger.log(
@@ -3009,9 +2996,11 @@ export class WebhookService {
       }
 
       // Update trade with actual entry price (not signal price) for MARKET orders
-      const finalEntryPrice = (!isLimitOrder && actualEntryPrice)
-        ? actualEntryPrice
-        : tradeData.entryPrice;
+      const finalEntryPrice = resolveFinalEntryPrice({
+        isLimitOrder,
+        actualEntryPrice,
+        fallbackPrice: tradeData.entryPrice,
+      });
 
       await this.tradesService.updateTrade(savedTrade.id, {
         entryPrice: finalEntryPrice,
