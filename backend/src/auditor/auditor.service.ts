@@ -4,6 +4,7 @@ import { Repository, Between } from 'typeorm';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { AuditLog, AuditCategory, AuditSeverity } from './audit-log.entity';
 import { computePercentMismatch } from './percent-mismatch.util';
+import { findDuplicatePositionGroups } from './duplicate-position.util';
 import { Trade } from '../strategies/trade.entity';
 import { TradeExecution, ExecutionType } from '../trades/trade-execution.entity';
 import { Strategy } from '../strategies/strategy.entity';
@@ -340,7 +341,9 @@ export class AuditorService {
       }
     }
 
-    const totalIssues = results.reduce((sum, r) => sum + r.issues.length, 0);
+    const duplicatePositionIssues = await this.detectDuplicatePositions(strategyId);
+
+    const totalIssues = results.reduce((sum, r) => sum + r.issues.length, 0) + duplicatePositionIssues.length;
     const totalFeesExchange = results.reduce((sum, r) => sum + r.feesFromExchange, 0);
     const avgSlippage = results
       .filter(r => r.slippage !== null)
@@ -356,8 +359,51 @@ export class AuditorService {
       totalFeesNotAccountedFor: totalFeesExchange,
       avgSlippagePct: avgSlippage,
       avgSignalLatencyMs: avgLatency,
+      duplicatePositions: duplicatePositionIssues,
       trades: results,
     };
+  }
+
+  async detectDuplicatePositions(strategyId: string): Promise<AuditLog[]> {
+    const closedTrades = await this.tradeRepo.find({ where: { strategyId, status: 'CLOSED' } });
+
+    const groups = findDuplicatePositionGroups(closedTrades.map(t => ({
+      id: t.id,
+      symbol: t.symbol,
+      side: t.side,
+      entryPrice: Number(t.entryPrice),
+      closedAt: t.closedAt as Date,
+      pnl: t.pnl !== null ? Number(t.pnl) : null,
+    })));
+
+    const issues: AuditLog[] = [];
+
+    for (const group of groups) {
+      const sortedByClosedAt = [...group.trades].sort(
+        (a, b) => new Date(a.closedAt).getTime() - new Date(b.closedAt).getTime()
+      );
+      const anchor = closedTrades.find(t => t.id === sortedByClosedAt[0].id);
+      if (!anchor) continue;
+
+      const totalPnl = group.trades.reduce((sum, t) => sum + (t.pnl ?? 0), 0);
+      const tradesSummary = group.trades
+        .map(t => `${t.id.substring(0, 8)} (pnl=${t.pnl !== null ? t.pnl.toFixed(4) : 'null'})`)
+        .join(', ');
+
+      issues.push(this.createLog(
+        anchor,
+        AuditCategory.DUPLICATE_POSITION,
+        AuditSeverity.ERROR,
+        `Possível posição duplicada em ${anchor.symbol} (${anchor.side}): ${group.trades.length} trades fechados com entrada equivalente dentro de 24h — ${tradesSummary}. PnL somado: $${totalPnl.toFixed(4)}`,
+        { tradeIds: group.trades.map(t => t.id), pnls: group.trades.map(t => t.pnl), totalPnl },
+      ));
+    }
+
+    if (issues.length > 0) {
+      await this.auditRepo.save(issues);
+    }
+
+    return issues;
   }
 
   async getAuditLogs(filters: {
