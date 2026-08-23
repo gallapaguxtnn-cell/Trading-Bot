@@ -19,14 +19,59 @@ interface Trade {
   timestamp: string;
   closedAt?: string;
   error?: string;
+  excludeFromStats?: boolean;
+  origin?: string | null;
 }
 
 interface TradeCardProps {
   trade: Trade;
+  fragments?: Trade[];
 }
 
-export function TradeCard({ trade }: TradeCardProps) {
+function hasPnlValue(pnl: Trade['pnl']): boolean {
+  return pnl !== null && pnl !== undefined && pnl !== '';
+}
+
+function TradeBadges({ trade }: { trade: Trade }) {
+  return (
+    <>
+      {trade.excludeFromStats && (
+        <span className="px-2 py-0.5 rounded text-[10px] font-bold border bg-amber-500/15 text-amber-400 border-amber-500/30">
+          {trade.closeReason === 'DUST_AMOUNT' ? 'Poeira' : 'Duplicata — não conta no resultado'}
+        </span>
+      )}
+      {trade.origin === 'IMPORTED' && (
+        <span className="px-2 py-0.5 rounded text-[10px] font-bold border bg-sky-500/15 text-sky-400 border-sky-500/30">
+          Importado da corretora
+        </span>
+      )}
+    </>
+  );
+}
+
+function TradeFragmentRow({ trade }: { trade: Trade }) {
+  const pnlOk = hasPnlValue(trade.pnl);
+  const pnlValue = pnlOk ? (typeof trade.pnl === 'string' ? parseFloat(trade.pnl) : (trade.pnl as number)) : 0;
+
+  return (
+    <div className="flex items-center justify-between gap-2 text-[11px] py-1.5 border-t border-border/20 first:border-t-0">
+      <div className="flex items-center gap-1.5 flex-wrap min-w-0">
+        <span className="text-muted-foreground font-mono">{formatQuantity(trade.quantity)}</span>
+        <span className="text-muted-foreground/60">@</span>
+        <span className="text-foreground font-mono">{formatPrice(trade.entryPrice)}</span>
+        <span className="uppercase text-muted-foreground/70">{trade.type || 'MARKET'}</span>
+        <TradeBadges trade={trade} />
+      </div>
+      <div className={`font-mono font-semibold shrink-0 ${pnlOk ? (pnlValue >= 0 ? 'text-emerald-400' : 'text-red-400') : 'text-muted-foreground'}`}>
+        {pnlOk ? `${formatPnL(trade.pnl)} USDT` : formatCloseReason(trade.closeReason)}
+      </div>
+    </div>
+  );
+}
+
+export function TradeCard({ trade, fragments = [] }: TradeCardProps) {
   const [showTimeline, setShowTimeline] = useState(false);
+  const [showFragments, setShowFragments] = useState(false);
 
   const getPnLValue = (): number => {
     if (!trade.pnl) return 0;
@@ -34,6 +79,7 @@ export function TradeCard({ trade }: TradeCardProps) {
   };
 
   const totalPnl = getPnLValue();
+  const pnlOk = hasPnlValue(trade.pnl);
   const isClosed = trade.status === 'CLOSED';
 
   const statusStyles = () => {
@@ -60,8 +106,8 @@ export function TradeCard({ trade }: TradeCardProps) {
   return (
     <div className={`group glass-card rounded-lg border border-border/60 border-l-2 ${borderAccent} hover:border-border transition-all duration-200 hover:translate-y-[-1px] glow-subtle`}>
       <div className="p-4 space-y-3">
-        <div className="flex justify-between items-start">
-          <div className="flex items-center gap-2">
+        <div className="flex justify-between items-start gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <span className="font-bold text-base text-foreground">{trade.symbol}</span>
             <span className={`px-2 py-0.5 rounded text-[10px] font-bold border ${
               trade.side === 'BUY' ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30' : 'bg-red-500/15 text-red-400 border-red-500/30'
@@ -71,10 +117,17 @@ export function TradeCard({ trade }: TradeCardProps) {
             <span className={`px-2 py-0.5 rounded text-[10px] font-bold border ${statusStyles()}`}>
               {trade.status}
             </span>
+            <TradeBadges trade={trade} />
           </div>
-          <div className={`font-mono text-base font-bold ${totalPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-            {formatPnL(trade.pnl)} USDT
-          </div>
+          {pnlOk ? (
+            <div className={`font-mono text-base font-bold shrink-0 ${totalPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+              {formatPnL(trade.pnl)} USDT
+            </div>
+          ) : (
+            <div className="text-xs font-semibold text-muted-foreground text-right shrink-0 max-w-[140px]">
+              {trade.closeReason ? formatCloseReason(trade.closeReason) : trade.error ? 'Sem P&L' : '-'}
+            </div>
+          )}
         </div>
 
         <div className="grid grid-cols-2 gap-3 text-xs">
@@ -111,6 +164,30 @@ export function TradeCard({ trade }: TradeCardProps) {
                 {trade.closeDetail && <span className="ml-1 text-[11px] font-normal text-muted-foreground">({trade.closeDetail})</span>}
               </span>
             </div>
+          </div>
+        )}
+
+        {fragments.length > 0 && (
+          <div className="border-t border-border/30 pt-2">
+            <button
+              onClick={() => setShowFragments(!showFragments)}
+              className="w-full text-left text-xs text-primary hover:text-primary/80 transition-colors flex items-center justify-between"
+            >
+              <span className="font-semibold flex items-center gap-1.5">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className={`transition-transform duration-200 ${showFragments ? 'rotate-90' : ''}`}>
+                  <polyline points="9 18 15 12 9 6" />
+                </svg>
+                {fragments.length} trade{fragments.length > 1 ? 's' : ''} relacionado{fragments.length > 1 ? 's' : ''} (mesma posição)
+              </span>
+            </button>
+
+            {showFragments && (
+              <div className="mt-1">
+                {fragments.map(fragment => (
+                  <TradeFragmentRow key={fragment.id} trade={fragment} />
+                ))}
+              </div>
+            )}
           </div>
         )}
 

@@ -5,6 +5,7 @@ import { useTradesSocket } from '@/hooks/useTradesSocket';
 import { StatsCard } from '@/components/dashboard/StatsCard';
 import { Table } from '@/components/ui/Table';
 import { TradeCard } from '@/components/trades/TradeCard';
+import { groupTradesByPosition } from '@/lib/trade-grouping';
 import { closeAllPositions, pauseAllStrategies, resumeAllStrategies, closePosition } from '@/lib/api';
 import { formatPrice, formatQuantity, formatPnL, formatPnLSummary, formatPercentSummary, formatDateUTC, formatTimeUTC } from '@/lib/formatters';
 
@@ -80,6 +81,8 @@ export default function Home() {
     if (filter === 'ALL') return true;
     return trade.status === filter;
   }) || [];
+
+  const groupedTrades = groupTradesByPosition(filteredTrades);
 
   return (
     <div className="space-y-5">
@@ -319,8 +322,8 @@ export default function Home() {
 
         {viewMode === 'cards' ? (
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-            {filteredTrades.map((trade) => (
-              <TradeCard key={trade.id} trade={trade} />
+            {groupedTrades.map(({ primary, fragments }) => (
+              <TradeCard key={primary.id} trade={primary} fragments={fragments} />
             ))}
           </div>
         ) : (
