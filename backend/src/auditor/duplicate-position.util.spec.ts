@@ -1,4 +1,4 @@
-import { findDuplicatePositionGroups } from './duplicate-position.util';
+import { findDuplicatePositionGroups, planDedupe } from './duplicate-position.util';
 
 function trade(overrides: Partial<{
   id: string; symbol: string; side: string; entryPrice: number; closedAt: string; pnl: number | null;
@@ -70,5 +70,35 @@ describe('findDuplicatePositionGroups', () => {
     const groups = findDuplicatePositionGroups([t1, t2, t3]);
     expect(groups).toHaveLength(1);
     expect(groups[0].trades).toHaveLength(3);
+  });
+});
+
+describe('planDedupe', () => {
+  it('caso real: mantem o trade mais antigo (A, correto) e marca o mais novo (B, duplicata)', () => {
+    const tradeA = trade({ id: 'trade-a', closedAt: '2026-08-19T04:30:00Z', pnl: 5.4555 });
+    const tradeB = trade({ id: 'trade-b', closedAt: '2026-08-19T05:00:00Z', pnl: 2.506 });
+
+    const groups = findDuplicatePositionGroups([tradeB, tradeA]);
+    const plan = planDedupe(groups);
+
+    expect(plan).toHaveLength(1);
+    expect(plan[0].keepTradeId).toBe('trade-a');
+    expect(plan[0].markTradeIds).toEqual(['trade-b']);
+    expect(plan[0].groupTradeIds.sort()).toEqual(['trade-a', 'trade-b']);
+  });
+
+  it('grupo de 3: mantem so o mais antigo, marca os outros dois', () => {
+    const t1 = trade({ id: 't1', closedAt: '2026-08-19T06:00:00Z' });
+    const t2 = trade({ id: 't2', closedAt: '2026-08-19T04:00:00Z' });
+    const t3 = trade({ id: 't3', closedAt: '2026-08-19T05:00:00Z' });
+
+    const plan = planDedupe(findDuplicatePositionGroups([t1, t2, t3]));
+
+    expect(plan[0].keepTradeId).toBe('t2');
+    expect(plan[0].markTradeIds.sort()).toEqual(['t1', 't3']);
+  });
+
+  it('sem grupos duplicados -> plano vazio', () => {
+    expect(planDedupe([])).toEqual([]);
   });
 });

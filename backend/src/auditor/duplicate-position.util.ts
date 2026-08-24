@@ -56,3 +56,23 @@ export function findDuplicatePositionGroups(trades: ClosedTradeForDuplicateCheck
 
   return result;
 }
+
+export interface DedupePlanItem {
+  groupTradeIds: string[];
+  keepTradeId: string;
+  markTradeIds: string[];
+}
+
+export function planDedupe(groups: DuplicatePositionGroup[]): DedupePlanItem[] {
+  return groups.map(group => {
+    const sorted = [...group.trades].sort(
+      (a, b) => new Date(a.closedAt).getTime() - new Date(b.closedAt).getTime()
+    );
+    const [keep, ...mark] = sorted;
+    return {
+      groupTradeIds: group.trades.map(t => t.id),
+      keepTradeId: keep.id,
+      markTradeIds: mark.map(t => t.id),
+    };
+  });
+}

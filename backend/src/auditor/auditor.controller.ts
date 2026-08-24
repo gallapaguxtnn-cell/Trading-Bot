@@ -70,6 +70,15 @@ export class AuditorController {
     return this.auditorService.backfillTrade(tradeId);
   }
 
+  @Post('dedupe/strategy/:strategyId')
+  async dedupeStrategy(
+    @Param('strategyId') strategyId: string,
+    @Query('dryRun') dryRun?: string,
+  ) {
+    const isDryRun = dryRun !== 'false' && dryRun !== '0';
+    return this.auditorService.dedupeStrategy(strategyId, isDryRun);
+  }
+
   @Post('compare-backtest')
   async compareBacktest(@Body() body: CompareBacktestDto) {
     return this.auditorService.compareBacktestVsBot(

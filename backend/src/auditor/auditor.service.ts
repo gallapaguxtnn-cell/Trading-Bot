@@ -4,7 +4,7 @@ import { Repository, Between } from 'typeorm';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { AuditLog, AuditCategory, AuditSeverity } from './audit-log.entity';
 import { computePercentMismatch } from './percent-mismatch.util';
-import { findDuplicatePositionGroups } from './duplicate-position.util';
+import { findDuplicatePositionGroups, planDedupe, DedupePlanItem, DuplicatePositionGroup } from './duplicate-position.util';
 import { Trade } from '../strategies/trade.entity';
 import { TradeExecution, ExecutionType } from '../trades/trade-execution.entity';
 import { Strategy } from '../strategies/strategy.entity';
@@ -364,7 +364,10 @@ export class AuditorService {
     };
   }
 
-  async detectDuplicatePositions(strategyId: string): Promise<AuditLog[]> {
+  private async findDuplicatePositionGroupsForStrategy(strategyId: string): Promise<{
+    closedTrades: Trade[];
+    groups: DuplicatePositionGroup[];
+  }> {
     const closedTrades = await this.tradeRepo.find({ where: { strategyId, status: 'CLOSED' } });
 
     const groups = findDuplicatePositionGroups(closedTrades.map(t => ({
@@ -376,13 +379,18 @@ export class AuditorService {
       pnl: t.pnl !== null ? Number(t.pnl) : null,
     })));
 
+    return { closedTrades, groups };
+  }
+
+  async detectDuplicatePositions(strategyId: string): Promise<AuditLog[]> {
+    const { closedTrades, groups } = await this.findDuplicatePositionGroupsForStrategy(strategyId);
+    const plan = planDedupe(groups);
+
     const issues: AuditLog[] = [];
 
-    for (const group of groups) {
-      const sortedByClosedAt = [...group.trades].sort(
-        (a, b) => new Date(a.closedAt).getTime() - new Date(b.closedAt).getTime()
-      );
-      const anchor = closedTrades.find(t => t.id === sortedByClosedAt[0].id);
+    for (let i = 0; i < groups.length; i++) {
+      const group = groups[i];
+      const anchor = closedTrades.find(t => t.id === plan[i].keepTradeId);
       if (!anchor) continue;
 
       const totalPnl = group.trades.reduce((sum, t) => sum + (t.pnl ?? 0), 0);
@@ -404,6 +412,47 @@ export class AuditorService {
     }
 
     return issues;
+  }
+
+  async dedupeStrategy(strategyId: string, dryRun: boolean): Promise<{
+    dryRun: boolean;
+    groupsFound: number;
+    plan: DedupePlanItem[];
+    applied: string[];
+  }> {
+    const { closedTrades, groups } = await this.findDuplicatePositionGroupsForStrategy(strategyId);
+    const plan = planDedupe(groups);
+
+    if (dryRun) {
+      return { dryRun: true, groupsFound: groups.length, plan, applied: [] };
+    }
+
+    const applied: string[] = [];
+    const logs: AuditLog[] = [];
+
+    for (const item of plan) {
+      for (const tradeId of item.markTradeIds) {
+        const trade = closedTrades.find(t => t.id === tradeId);
+        if (!trade || trade.excludeFromStats) continue;
+
+        await this.tradeRepo.update(tradeId, { excludeFromStats: true });
+        applied.push(tradeId);
+
+        logs.push(this.createLog(
+          trade,
+          AuditCategory.DUPLICATE_POSITION,
+          AuditSeverity.INFO,
+          `Trade marcado excludeFromStats=true via dedupe manual (trade mantido: ${item.keepTradeId})`,
+          { keepTradeId: item.keepTradeId, groupTradeIds: item.groupTradeIds },
+        ));
+      }
+    }
+
+    if (logs.length > 0) {
+      await this.auditRepo.save(logs);
+    }
+
+    return { dryRun: false, groupsFound: groups.length, plan, applied };
   }
 
   async getAuditLogs(filters: {
