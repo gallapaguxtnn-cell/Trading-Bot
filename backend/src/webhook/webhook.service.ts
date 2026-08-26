@@ -18,6 +18,7 @@ import { SignalDecision } from './signal-log.entity';
 import { BinanceRequestUtil } from '../utils/binance-request.util';
 import { resolveBybitActualFillPrice } from './bybit-fill-price.util';
 import { resolveProtectionPrice, resolveFinalEntryPrice } from './protection-price.util';
+import { planTakeProfits, buildEnabledTpConfigs } from './tp-planner.util';
 import axios from 'axios';
 import * as crypto from 'crypto';
 import Decimal from 'decimal.js';
@@ -1541,63 +1542,29 @@ export class WebhookService {
           }
 
           const rules = await this.getSymbolRules(symbol, strategy.isTestnet, Exchange.BYBIT);
-          const minQty = parseFloat(rules.minQty);
 
-          const configuredTPs = [
-            {
-              percent: strategy.takeProfitPercentage1,
-              qtyPercent: strategy.takeProfitQuantity1 || 33,
-              id: 1,
-              enabled: strategy.enableTakeProfit1 ?? true
-            },
-            {
-              percent: strategy.takeProfitPercentage2,
-              qtyPercent: strategy.takeProfitQuantity2 || 33,
-              id: 2,
-              enabled: strategy.enableTakeProfit2 ?? true
-            },
-            {
-              percent: strategy.takeProfitPercentage3,
-              qtyPercent: strategy.takeProfitQuantity3 || 34,
-              id: 3,
-              enabled: strategy.enableTakeProfit3 ?? true
-            },
-          ].filter(tp => tp.enabled && tp.percent && tp.percent > 0);
+          const enabledTps = buildEnabledTpConfigs(strategy);
+          const tpPlan = planTakeProfits({
+            quantity: actualQty,
+            tps: enabledTps.map(tp => ({
+              id: tp.id,
+              percent: tp.percent,
+              qtyPercent: tp.qtyPercent,
+              price: this.calculateTakeProfitPrice(side, actualEntryPrice, tp.percent),
+            })),
+            qtyStep: rules.qtyStep,
+            minQty: rules.minQty,
+            minNotional: 5,
+          });
 
-          let tpConfigs;
-          const maxPossibleTPs = Math.floor(actualQty / minQty);
-
-          if (maxPossibleTPs >= configuredTPs.length) {
-            tpConfigs = configuredTPs;
-          } else if (maxPossibleTPs === 2) {
+          if (tpPlan.discarded.length > 0) {
             this.logger.warn(
-              `[BYBIT LIMIT TP] Quantity allows 2 TPs (not 3)\n` +
-              `  Total Quantity: ${actualQty}\n` +
-              `  Min Quantity: ${minQty}\n` +
-              `  Creating 2 TPs at first and last % targets`
+              `[BYBIT LIMIT TP] ${tpPlan.discarded.length} TP(s) discarded during planning: ` +
+              tpPlan.discarded.map(d => `TP${d.id}(${d.reason})`).join(', ')
             );
-            tpConfigs = [
-              { percent: configuredTPs[0].percent, qtyPercent: 50, id: 1 },
-              { percent: configuredTPs[configuredTPs.length - 1].percent, qtyPercent: 50, id: 2 },
-            ];
-          } else if (maxPossibleTPs === 1) {
-            this.logger.warn(
-              `[BYBIT LIMIT TP] Quantity allows only 1 TP\n` +
-              `  Total Quantity: ${actualQty}\n` +
-              `  Min Quantity: ${minQty}\n` +
-              `  Creating single TP at highest % target with 100% quantity`
-            );
-            const highestTp = configuredTPs.reduce((max, tp) => tp.percent > max.percent ? tp : max, configuredTPs[0]);
-            tpConfigs = [{ percent: highestTp.percent, qtyPercent: 100, id: 1 }];
-          } else {
-            this.logger.error(
-              `[BYBIT LIMIT TP] Quantity too small for any TP\n` +
-              `  Total Quantity: ${actualQty}\n` +
-              `  Min Quantity: ${minQty}\n` +
-              `  Skipping TP creation`
-            );
-            tpConfigs = [];
           }
+
+          const tpConfigs = tpPlan.planned;
           // Start with existing TP IDs if they exist
           const tpOrderIds: string[] = hasTakeProfit && trade.takeProfitOrderId
             ? trade.takeProfitOrderId.split('|')
@@ -1612,21 +1579,9 @@ export class WebhookService {
             for (const tp of tpConfigs) {
             if (tp.percent && tp.percent > 0) {
               const tpPrice = this.calculateTakeProfitPrice(side, actualEntryPrice, tp.percent);
-              let tpQty = (actualQty * tp.qtyPercent) / 100;
+              const tpQty = Number(tp.quantity);
 
-              // Validate quantity is sufficient
               if (tpQty <= 0) continue;
-
-              // Normalize to step size
-              const normalizedQty = this.normalizeQuantity(tpQty, rules.qtyStep, rules.minQty);
-
-              // Skip if normalized quantity is zero (too small for exchange)
-              if (parseFloat(normalizedQty) === 0) {
-                this.logger.warn(
-                  `[BYBIT LIMIT TP${tp.id}] Skipping - quantity ${tpQty.toFixed(4)} is below minimum ${minQty} for ${symbol}`
-                );
-                continue;
-              }
 
               try {
                 const tpOrder = await this.bybitClient.createOrder(
@@ -1635,7 +1590,7 @@ export class WebhookService {
                     symbol,
                     side: side === 'BUY' ? 'Sell' : 'Buy',
                     orderType: 'Limit',
-                    qty: normalizedQty,
+                    qty: tp.quantity,
                     price: this.roundTick(tpPrice, rules.priceTick),
                     positionIdx: bybitPositionIdx,
                     reduceOnly: true,
@@ -2760,63 +2715,29 @@ export class WebhookService {
         // Each entry (including averaging) creates its own independent TPs for its own quantity
         const quantityForTPs = quantity;
         const rules = await this.getSymbolRules(normalizedSymbol, strategy.isTestnet, exchange);
-        const minQty = parseFloat(rules.minQty);
 
-        const configuredTPs = [
-          {
-            percent: strategy.takeProfitPercentage1,
-            qtyPercent: strategy.takeProfitQuantity1 || 33,
-            id: 1,
-            enabled: strategy.enableTakeProfit1 ?? true
-          },
-          {
-            percent: strategy.takeProfitPercentage2,
-            qtyPercent: strategy.takeProfitQuantity2 || 33,
-            id: 2,
-            enabled: strategy.enableTakeProfit2 ?? true
-          },
-          {
-            percent: strategy.takeProfitPercentage3,
-            qtyPercent: strategy.takeProfitQuantity3 || 34,
-            id: 3,
-            enabled: strategy.enableTakeProfit3 ?? true
-          },
-        ].filter(tp => tp.enabled && tp.percent && tp.percent > 0);
+        const enabledTps = buildEnabledTpConfigs(strategy);
+        const tpPlan = planTakeProfits({
+          quantity: quantityForTPs,
+          tps: enabledTps.map(tp => ({
+            id: tp.id,
+            percent: tp.percent,
+            qtyPercent: tp.qtyPercent,
+            price: this.calculateTakeProfitPrice(side, priceForProtectionOrders, tp.percent),
+          })),
+          qtyStep: rules.qtyStep,
+          minQty: rules.minQty,
+          minNotional: 5,
+        });
 
-        let tpConfigs;
-        const maxPossibleTPs = Math.floor(quantityForTPs / minQty);
-
-        if (maxPossibleTPs >= configuredTPs.length) {
-          tpConfigs = configuredTPs;
-        } else if (maxPossibleTPs === 2) {
+        if (tpPlan.discarded.length > 0) {
           this.logger.warn(
-            `[TP] Quantity allows 2 TPs (not 3)\n` +
-            `  Total Quantity: ${quantityForTPs}\n` +
-            `  Min Quantity: ${minQty}\n` +
-            `  Creating 2 TPs at first and last % targets`
+            `[TP] ${tpPlan.discarded.length} TP(s) discarded during planning: ` +
+            tpPlan.discarded.map(d => `TP${d.id}(${d.reason})`).join(', ')
           );
-          tpConfigs = [
-            { percent: configuredTPs[0].percent, qtyPercent: 50, id: 1 },
-            { percent: configuredTPs[configuredTPs.length - 1].percent, qtyPercent: 50, id: 2 },
-          ];
-        } else if (maxPossibleTPs === 1) {
-          this.logger.warn(
-            `[TP] Quantity allows only 1 TP\n` +
-            `  Total Quantity: ${quantityForTPs}\n` +
-            `  Min Quantity: ${minQty}\n` +
-            `  Creating single TP at highest % target with 100% quantity`
-          );
-          const highestTp = configuredTPs.reduce((max, tp) => tp.percent > max.percent ? tp : max, configuredTPs[0]);
-          tpConfigs = [{ percent: highestTp.percent, qtyPercent: 100, id: 1 }];
-        } else {
-          this.logger.error(
-            `[TP] Quantity too small for any TP\n` +
-            `  Total Quantity: ${quantityForTPs}\n` +
-            `  Min Quantity: ${minQty}\n` +
-            `  Skipping TP creation`
-          );
-          tpConfigs = [];
         }
+
+        const tpConfigs = tpPlan.planned;
 
         const tpOrderIds: string[] = [];
 
@@ -2845,7 +2766,7 @@ export class WebhookService {
         for (const tp of tpConfigs) {
           if (tp.percent && tp.percent > 0) {
             const tpPriceRaw = this.calculateTakeProfitPrice(side, priceForProtectionOrders, tp.percent);
-            const tpQty = (quantityForTPs * tp.qtyPercent) / 100;
+            const tpQty = Number(tp.quantity);
 
             if (tpQty <= 0) continue;
 
@@ -2874,7 +2795,7 @@ export class WebhookService {
                     symbol: normalizedSymbol,
                     side: side === 'BUY' ? 'Sell' : 'Buy',
                     orderType: 'Limit',
-                    qty: this.normalizeQuantity(tpQty, rules.qtyStep, rules.minQty),
+                    qty: tp.quantity,
                     price: this.roundTick(tpPriceRaw, rules.priceTick),
                     positionIdx: bybitPositionIdx,
                     reduceOnly: true,
