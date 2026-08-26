@@ -5,6 +5,8 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 import { AuditLog, AuditCategory, AuditSeverity } from './audit-log.entity';
 import { computePercentMismatch } from './percent-mismatch.util';
 import { findDuplicatePositionGroups, planDedupe, DedupePlanItem, DuplicatePositionGroup } from './duplicate-position.util';
+import { parseTrackedTpOrders, computeExpectedTpLevels, countLiveTrackedOrders } from './missing-tp-orders.util';
+import { buildEnabledTpConfigs } from '../webhook/tp-planner.util';
 import { Trade } from '../strategies/trade.entity';
 import { TradeExecution, ExecutionType } from '../trades/trade-execution.entity';
 import { Strategy } from '../strategies/strategy.entity';
@@ -68,6 +70,16 @@ export class AuditorService {
 
     for (const trade of recentTrades) {
       await this.reconcileTrade(trade.id);
+    }
+
+    const openTrades = await this.tradeRepo.find({ where: { status: 'OPEN' } });
+    const strategyIds = [...new Set(openTrades.map(t => t.strategyId))];
+    for (const strategyId of strategyIds) {
+      try {
+        await this.detectMissingTpOrders(strategyId);
+      } catch (err) {
+        this.logger.warn(`[MISSING_TP_ORDERS] Failed for strategy ${strategyId}: ${err}`);
+      }
     }
   }
 
@@ -342,8 +354,9 @@ export class AuditorService {
     }
 
     const duplicatePositionIssues = await this.detectDuplicatePositions(strategyId);
+    const missingTpOrderIssues = await this.detectMissingTpOrders(strategyId);
 
-    const totalIssues = results.reduce((sum, r) => sum + r.issues.length, 0) + duplicatePositionIssues.length;
+    const totalIssues = results.reduce((sum, r) => sum + r.issues.length, 0) + duplicatePositionIssues.length + missingTpOrderIssues.length;
     const totalFeesExchange = results.reduce((sum, r) => sum + r.feesFromExchange, 0);
     const avgSlippage = results
       .filter(r => r.slippage !== null)
@@ -360,6 +373,7 @@ export class AuditorService {
       avgSlippagePct: avgSlippage,
       avgSignalLatencyMs: avgLatency,
       duplicatePositions: duplicatePositionIssues,
+      missingTpOrders: missingTpOrderIssues,
       trades: results,
     };
   }
@@ -405,6 +419,72 @@ export class AuditorService {
         `Possível posição duplicada em ${anchor.symbol} (${anchor.side}): ${group.trades.length} trades fechados com entrada equivalente dentro de 24h — ${tradesSummary}. PnL somado: $${totalPnl.toFixed(4)}`,
         { tradeIds: group.trades.map(t => t.id), pnls: group.trades.map(t => t.pnl), totalPnl },
       ));
+    }
+
+    if (issues.length > 0) {
+      await this.auditRepo.save(issues);
+    }
+
+    return issues;
+  }
+
+  async detectMissingTpOrders(strategyId: string): Promise<AuditLog[]> {
+    const strategy = await this.strategyRepo
+      .createQueryBuilder('strategy')
+      .addSelect(['strategy.apiKey', 'strategy.apiSecret'])
+      .where('strategy.id = :id', { id: strategyId })
+      .getOne();
+    if (!strategy || !strategy.apiKey || !strategy.apiSecret) return [];
+
+    const enabledTpIds = buildEnabledTpConfigs(strategy).map(tp => tp.id);
+    if (enabledTpIds.length === 0) return [];
+
+    const openTrades = await this.tradeRepo.find({ where: { strategyId, status: 'OPEN' } });
+    if (openTrades.length === 0) return [];
+
+    const issues: AuditLog[] = [];
+
+    for (const trade of openTrades) {
+      const expectedLevels = computeExpectedTpLevels(enabledTpIds, trade.lastTpLevel || 0);
+      if (expectedLevels.length === 0) continue;
+
+      const tracked = parseTrackedTpOrders(trade.takeProfitOrderId).filter(t => expectedLevels.includes(t.level));
+
+      if (tracked.length < expectedLevels.length) {
+        issues.push(this.createLog(
+          trade,
+          AuditCategory.MISSING_TP_ORDERS,
+          AuditSeverity.WARNING,
+          `Trade ${trade.symbol} (${trade.side}) tem apenas ${tracked.length} ordem(ns) de TP registrada(s), mas a estratégia espera ${expectedLevels.length} ainda pendente(s) (níveis ${expectedLevels.join(', ')}; ${trade.lastTpLevel || 0} já realizado(s)).`,
+          { trackedCount: tracked.length, expectedLevels, lastTpLevel: trade.lastTpLevel || 0 },
+          expectedLevels.length,
+          tracked.length,
+          expectedLevels.length - tracked.length,
+        ));
+        continue;
+      }
+
+      try {
+        const exchange = await this.getExchangeForStrategy(strategy);
+        const openOrders = await exchange.fetchOpenOrders(trade.symbol);
+        const liveOrderIds = new Set<string>(openOrders.map((o: any) => String(o.id)));
+        const liveCount = countLiveTrackedOrders(tracked, liveOrderIds);
+
+        if (liveCount < expectedLevels.length) {
+          issues.push(this.createLog(
+            trade,
+            AuditCategory.MISSING_TP_ORDERS,
+            AuditSeverity.WARNING,
+            `Trade ${trade.symbol} (${trade.side}) tem ${liveCount} ordem(ns) de TP viva(s) na corretora, mas a estratégia espera ${expectedLevels.length} ainda pendente(s) (níveis ${expectedLevels.join(', ')}; ${trade.lastTpLevel || 0} já realizado(s)).`,
+            { liveCount, expectedLevels, lastTpLevel: trade.lastTpLevel || 0, trackedOrderIds: tracked.map(t => t.orderId) },
+            expectedLevels.length,
+            liveCount,
+            expectedLevels.length - liveCount,
+          ));
+        }
+      } catch (err) {
+        this.logger.warn(`[MISSING_TP_ORDERS] Could not fetch open orders for trade ${trade.id}: ${err}`);
+      }
     }
 
     if (issues.length > 0) {
