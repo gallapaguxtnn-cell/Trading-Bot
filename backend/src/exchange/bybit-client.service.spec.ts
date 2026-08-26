@@ -1,4 +1,7 @@
+import axios from 'axios';
 import { BybitClientService } from './bybit-client.service';
+
+jest.mock('axios');
 
 function makeConfigService(values: Record<string, string> = {}) {
   return {
@@ -83,5 +86,62 @@ describe('BybitClientService (mensagem de erro retCode 10003)', () => {
     const message = formatRetMsg(service, 110043, 'leverage not modified');
 
     expect(message).toBe('leverage not modified');
+  });
+});
+
+describe('BybitClientService (getSymbolRules minNotional)', () => {
+  afterEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('devolve o minNotionalValue vindo do lotSizeFilter da Bybit', async () => {
+    (axios.get as jest.Mock).mockResolvedValueOnce({
+      data: {
+        retCode: 0,
+        result: {
+          list: [
+            {
+              lotSizeFilter: { qtyStep: '1', minOrderQty: '1', minNotionalValue: '5' },
+              priceFilter: { tickSize: '0.0001' },
+            },
+          ],
+        },
+      },
+    });
+
+    const service = new BybitClientService(makeConfigService());
+    const rules = await service.getSymbolRules(false, 'SUIUSDT');
+
+    expect(rules).toEqual({ qtyStep: '1', priceTick: '0.0001', minQty: '1', minNotional: '5' });
+  });
+
+  it('usa fallback de 5 quando a corretora nao devolve minNotionalValue', async () => {
+    (axios.get as jest.Mock).mockResolvedValueOnce({
+      data: {
+        retCode: 0,
+        result: {
+          list: [
+            {
+              lotSizeFilter: { qtyStep: '0.001', minOrderQty: '0.001' },
+              priceFilter: { tickSize: '0.01' },
+            },
+          ],
+        },
+      },
+    });
+
+    const service = new BybitClientService(makeConfigService());
+    const rules = await service.getSymbolRules(false, 'BTCUSDT');
+
+    expect(rules.minNotional).toBe('5');
+  });
+
+  it('usa fallback de 5 quando a requisicao falha', async () => {
+    (axios.get as jest.Mock).mockRejectedValueOnce(new Error('network error'));
+
+    const service = new BybitClientService(makeConfigService());
+    const rules = await service.getSymbolRules(false, 'BTCUSDT');
+
+    expect(rules).toEqual({ qtyStep: '0.001', priceTick: '0.01', minQty: '0.001', minNotional: '5' });
   });
 });

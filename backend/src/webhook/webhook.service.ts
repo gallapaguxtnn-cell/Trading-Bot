@@ -114,17 +114,17 @@ export class WebhookService {
     return symbol;
   }
 
-  private symbolRules: Map<string, { qtyStep: string; priceTick: string; minQty: string; timestamp: number }> = new Map();
+  private symbolRules: Map<string, { qtyStep: string; priceTick: string; minQty: string; minNotional: string; timestamp: number }> = new Map();
   private readonly SYMBOL_RULES_TTL_MS = 60 * 60 * 1000;
 
   private async getSymbolRules(
     symbol: string,
     isTestnet: boolean,
     exchange: Exchange = Exchange.BINANCE
-  ): Promise<{ qtyStep: string; priceTick: string; minQty: string }> {
+  ): Promise<{ qtyStep: string; priceTick: string; minQty: string; minNotional: string }> {
     const cacheKey = `rules:${exchange}:${symbol}`;
 
-    const cached = this.rateLimiter.getCached<{ qtyStep: string; priceTick: string; minQty: string }>(cacheKey);
+    const cached = this.rateLimiter.getCached<{ qtyStep: string; priceTick: string; minQty: string; minNotional: string }>(cacheKey);
     if (cached) {
       return cached;
     }
@@ -134,11 +134,11 @@ export class WebhookService {
             await this.rateLimiter.throttle(`symbolRules:${symbol}`, 'bybit');
             const rules = await this.bybitClient.getSymbolRules(isTestnet, symbol);
             this.rateLimiter.setCached(cacheKey, rules, 3600000);
-            this.logger.log(`[BYBIT] Fetched rules for ${symbol}: Step=${rules.qtyStep}, Tick=${rules.priceTick}`);
+            this.logger.log(`[BYBIT] Fetched rules for ${symbol}: Step=${rules.qtyStep}, Tick=${rules.priceTick}, MinNotional=${rules.minNotional}`);
             return rules;
         } catch (error) {
             this.logger.error(`[BYBIT] Failed to fetch symbol rules: ${error.message}`);
-            return { qtyStep: '0.001', priceTick: '0.01', minQty: '0.001' };
+            return { qtyStep: '0.001', priceTick: '0.01', minQty: '0.001', minNotional: '5' };
         }
     }
 
@@ -152,24 +152,26 @@ export class WebhookService {
 
         if (!symbolInfo) {
             this.logger.warn(`[BINANCE] Symbol ${symbol} not found in exchangeInfo. Using defaults.`);
-            return { qtyStep: '0.001', priceTick: '0.01', minQty: '0.001' };
+            return { qtyStep: '0.001', priceTick: '0.01', minQty: '0.001', minNotional: '5' };
         }
 
         const lotSizeFilter = symbolInfo.filters.find((f: any) => f.filterType === 'LOT_SIZE');
         const priceFilter = symbolInfo.filters.find((f: any) => f.filterType === 'PRICE_FILTER');
+        const minNotionalFilter = symbolInfo.filters.find((f: any) => f.filterType === 'MIN_NOTIONAL');
 
         const rules = {
             qtyStep: lotSizeFilter ? lotSizeFilter.stepSize : '0.001',
             minQty: lotSizeFilter ? lotSizeFilter.minQty : '0.001',
-            priceTick: priceFilter ? priceFilter.tickSize : '0.01'
+            priceTick: priceFilter ? priceFilter.tickSize : '0.01',
+            minNotional: minNotionalFilter ? minNotionalFilter.notional : '5'
         };
 
         this.rateLimiter.setCached(cacheKey, rules, 3600000);
-        this.logger.log(`[BINANCE] Fetched rules for ${symbol}: Step=${rules.qtyStep}, Tick=${rules.priceTick}`);
+        this.logger.log(`[BINANCE] Fetched rules for ${symbol}: Step=${rules.qtyStep}, Tick=${rules.priceTick}, MinNotional=${rules.minNotional}`);
         return rules;
     } catch (error) {
         this.logger.error(`[BINANCE] Failed to fetch symbol rules: ${error.message}`);
-        return { qtyStep: '0.001', priceTick: '0.01', minQty: '0.001' };
+        return { qtyStep: '0.001', priceTick: '0.01', minQty: '0.001', minNotional: '5' };
     }
   }
 
@@ -1554,7 +1556,7 @@ export class WebhookService {
             })),
             qtyStep: rules.qtyStep,
             minQty: rules.minQty,
-            minNotional: 5,
+            minNotional: Number(rules.minNotional),
           });
 
           if (tpPlan.discarded.length > 0) {

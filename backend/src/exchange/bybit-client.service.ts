@@ -1018,7 +1018,7 @@ export class BybitClientService implements OnModuleInit {
   async getSymbolRules(
     isTestnet: boolean,
     symbol: string
-  ): Promise<{ qtyStep: string; priceTick: string; minQty: string }> {
+  ): Promise<{ qtyStep: string; priceTick: string; minQty: string; minNotional: string }> {
     const baseUrl = this.getBaseUrl(isTestnet);
     const endpoint = '/v5/market/instruments-info';
 
@@ -1029,7 +1029,7 @@ export class BybitClientService implements OnModuleInit {
 
       if (response.data.retCode !== 0) {
         this.logger.warn(`[BYBIT] Failed to get symbol rules: ${response.data.retMsg}`);
-        return { qtyStep: '0.001', priceTick: '0.01', minQty: '0.001' };
+        return { qtyStep: '0.001', priceTick: '0.01', minQty: '0.001', minNotional: '5' };
       }
 
       const instruments = response.data.result.list || [];
@@ -1042,15 +1042,16 @@ export class BybitClientService implements OnModuleInit {
           qtyStep: lotSizeFilter.qtyStep || '0.001',
           minQty: lotSizeFilter.minOrderQty || '0.001',
           priceTick: priceFilter.tickSize || '0.01',
+          minNotional: lotSizeFilter.minNotionalValue || '5',
         };
 
         return rules;
       }
 
-      return { qtyStep: '0.001', priceTick: '0.01', minQty: '0.001' };
+      return { qtyStep: '0.001', priceTick: '0.01', minQty: '0.001', minNotional: '5' };
     } catch (error: any) {
       this.logger.error(`[BYBIT] Failed to get symbol rules: ${error.message}`);
-      return { qtyStep: '0.001', priceTick: '0.01', minQty: '0.001' };
+      return { qtyStep: '0.001', priceTick: '0.01', minQty: '0.001', minNotional: '5' };
     }
   }
 
