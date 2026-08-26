@@ -103,3 +103,28 @@ export function formatCloseReason(reason?: string | null): string {
   if (!reason) return '-';
   return reason.replace(/_/g, ' ');
 }
+
+const TP_WARNING_REASON_LABELS: Record<string, string> = {
+  BELOW_MIN_QTY: 'quantidade abaixo do mínimo da corretora',
+  BELOW_MIN_NOTIONAL: 'valor abaixo do nocional mínimo da corretora',
+  REJECTED_BY_EXCHANGE: 'rejeitado pela corretora após tentar novamente',
+};
+
+export interface TpWarning {
+  tpId: string;
+  reason: string;
+}
+
+export function parseTpWarnings(tpWarnings?: string | null): TpWarning[] {
+  if (!tpWarnings) return [];
+  return tpWarnings
+    .split(';')
+    .filter(Boolean)
+    .map((entry) => {
+      const [tp, code] = entry.split(':');
+      return {
+        tpId: (tp || '').replace('TP', ''),
+        reason: TP_WARNING_REASON_LABELS[code] || code || 'motivo desconhecido',
+      };
+    });
+}

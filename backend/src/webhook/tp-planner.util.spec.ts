@@ -1,4 +1,4 @@
-import { planTakeProfits, buildEnabledTpConfigs } from './tp-planner.util';
+import { planTakeProfits, buildEnabledTpConfigs, buildTpWarnings } from './tp-planner.util';
 
 describe('planTakeProfits', () => {
   it('splits 1790 SUI at 33/33/34 with step 1 without leftover (last slice absorbs the residue)', () => {
@@ -142,5 +142,20 @@ describe('buildEnabledTpConfigs', () => {
     });
 
     expect(configs.map((c) => c.id)).toEqual([1, 3]);
+  });
+});
+
+describe('buildTpWarnings', () => {
+  it('returns null when nothing was discarded or failed', () => {
+    expect(buildTpWarnings([], [])).toBeNull();
+  });
+
+  it('combines discard reasons and exchange failures into a single summary string', () => {
+    const result = buildTpWarnings(
+      [{ id: 2, percent: 2, reason: 'BELOW_MIN_NOTIONAL' }],
+      [{ id: 3, reason: 'insufficient balance' }],
+    );
+
+    expect(result).toBe('TP2:BELOW_MIN_NOTIONAL;TP3:REJECTED_BY_EXCHANGE');
   });
 });

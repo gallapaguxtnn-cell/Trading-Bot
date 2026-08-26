@@ -126,6 +126,22 @@ export interface EnabledTpConfig {
   qtyPercent: number;
 }
 
+export interface FailedTakeProfit {
+  id: number;
+  reason: string;
+}
+
+export function buildTpWarnings(
+  discarded: DiscardedTakeProfit[],
+  failed: FailedTakeProfit[]
+): string | null {
+  const parts = [
+    ...discarded.map((d) => `TP${d.id}:${d.reason}`),
+    ...failed.map((f) => `TP${f.id}:REJECTED_BY_EXCHANGE`),
+  ];
+  return parts.length > 0 ? parts.join(';') : null;
+}
+
 export function buildEnabledTpConfigs(strategy: StrategyTpConfig): EnabledTpConfig[] {
   return [
     {

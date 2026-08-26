@@ -80,6 +80,9 @@ export class Trade {
   @Column({ default: false })
   excludeFromStats: boolean;
 
+  @Column({ type: 'text', nullable: true })
+  tpWarnings: string | null;
+
   @CreateDateColumn()
   timestamp: Date;
 }

@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { TradeTimeline } from './TradeTimeline';
-import { formatPrice, formatQuantity, formatPnL, formatDateUTC, formatTimeUTC, formatCloseReason } from '@/lib/formatters';
+import { formatPrice, formatQuantity, formatPnL, formatDateUTC, formatTimeUTC, formatCloseReason, parseTpWarnings } from '@/lib/formatters';
 
 interface Trade {
   id: string;
@@ -21,6 +21,7 @@ interface Trade {
   error?: string;
   excludeFromStats?: boolean;
   origin?: string | null;
+  tpWarnings?: string | null;
 }
 
 interface TradeCardProps {
@@ -43,6 +44,14 @@ function TradeBadges({ trade }: { trade: Trade }) {
       {trade.origin === 'IMPORTED' && (
         <span className="px-2 py-0.5 rounded text-[10px] font-bold border bg-sky-500/15 text-sky-400 border-sky-500/30">
           Importado da corretora
+        </span>
+      )}
+      {trade.tpWarnings && (
+        <span
+          title={parseTpWarnings(trade.tpWarnings).map(w => `TP${w.tpId}: ${w.reason}`).join(' | ')}
+          className="px-2 py-0.5 rounded text-[10px] font-bold border bg-amber-500/15 text-amber-400 border-amber-500/30"
+        >
+          TP incompleto
         </span>
       )}
     </>
@@ -152,6 +161,14 @@ export function TradeCard({ trade, fragments = [] }: TradeCardProps) {
         {trade.error && (
           <div className="bg-red-500/10 border border-red-500/20 rounded-md px-3 py-2 text-xs text-red-400 break-words">
             {trade.error}
+          </div>
+        )}
+
+        {trade.tpWarnings && (
+          <div className="bg-amber-500/10 border border-amber-500/20 rounded-md px-3 py-2 text-xs text-amber-400 space-y-0.5">
+            {parseTpWarnings(trade.tpWarnings).map((w, i) => (
+              <div key={i}>TP{w.tpId}: {w.reason}</div>
+            ))}
           </div>
         )}
 

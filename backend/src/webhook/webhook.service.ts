@@ -18,7 +18,7 @@ import { SignalDecision } from './signal-log.entity';
 import { BinanceRequestUtil } from '../utils/binance-request.util';
 import { resolveBybitActualFillPrice } from './bybit-fill-price.util';
 import { resolveProtectionPrice, resolveFinalEntryPrice } from './protection-price.util';
-import { planTakeProfits, buildEnabledTpConfigs } from './tp-planner.util';
+import { planTakeProfits, buildEnabledTpConfigs, buildTpWarnings } from './tp-planner.util';
 import axios from 'axios';
 import * as crypto from 'crypto';
 import Decimal from 'decimal.js';
@@ -221,6 +221,15 @@ export class WebhookService {
     }
 
     return rounded.toFixed();
+  }
+
+  private async withOneRetry<T>(fn: () => Promise<T>, delayMs = 500): Promise<T> {
+    try {
+      return await fn();
+    } catch (firstError) {
+      await this.sleep(delayMs);
+      return fn();
+    }
   }
 
   private roundTick(value: number, tick: string): string {
@@ -1278,59 +1287,65 @@ export class WebhookService {
             this.logger.debug(`[LIMIT SL/TP] SL already exists, skipping creation`);
           }
 
-          const tpConfigs = [
-            {
-              percent: strategy.takeProfitPercentage1,
-              qtyPercent: strategy.takeProfitQuantity1 || 33,
-              id: 1,
-              enabled: strategy.enableTakeProfit1 ?? true
-            },
-            {
-              percent: strategy.takeProfitPercentage2,
-              qtyPercent: strategy.takeProfitQuantity2 || 33,
-              id: 2,
-              enabled: strategy.enableTakeProfit2 ?? true
-            },
-            {
-              percent: strategy.takeProfitPercentage3,
-              qtyPercent: strategy.takeProfitQuantity3 || 34,
-              id: 3,
-              enabled: strategy.enableTakeProfit3 ?? true
-            },
-          ].filter(tp => tp.enabled && tp.percent && tp.percent > 0);
+          const rules = await this.getSymbolRules(symbol, strategy.isTestnet);
+          const enabledTps = buildEnabledTpConfigs(strategy);
+          const tpPlan = planTakeProfits({
+            quantity: actualQty,
+            tps: enabledTps.map(tp => ({
+              id: tp.id,
+              percent: tp.percent,
+              qtyPercent: tp.qtyPercent,
+              price: this.calculateTakeProfitPrice(side, actualEntryPrice, tp.percent),
+            })),
+            qtyStep: rules.qtyStep,
+            minQty: rules.minQty,
+            minNotional: Number(rules.minNotional),
+          });
+
+          if (tpPlan.discarded.length > 0) {
+            this.logger.warn(
+              `[LIMIT TP] ${tpPlan.discarded.length} TP(s) discarded during planning: ` +
+              tpPlan.discarded.map(d => `TP${d.id}(${d.reason})`).join(', ')
+            );
+          }
+
+          const tpConfigs = tpPlan.planned;
 
           // Start with existing TP IDs if they exist
           const tpOrderIds: string[] = hasTakeProfit && trade.takeProfitOrderId
             ? trade.takeProfitOrderId.split('|')
             : [];
+          const failedTps: Array<{ id: number; reason: string }> = [];
 
           // Only create TPs if they don't already exist
           if (!hasTakeProfit && tpConfigs.length > 0) {
             for (const tp of tpConfigs) {
-              if (tp.percent && tp.percent > 0) {
-                const tpPrice = this.calculateTakeProfitPrice(side, actualEntryPrice, tp.percent);
-                const tpQty = (actualQty * tp.qtyPercent) / 100;
-                if (tpQty <= 0) continue;
-                try {
-                  const tpId = await this.createBinanceTakeProfitOrder(
-                    symbol, side, tpQty, tpPrice, decryptedKey, decryptedSecret, strategy.isTestnet, strategy.hedgeMode
-                  );
-                  tpOrderIds.push(`${tp.id}:${tpId}`);
-                  this.logger.log(`[LIMIT TP${tp.id}] Created: ${tpId}`);
-                } catch (e: any) {
-                  this.logger.warn(`[LIMIT TP${tp.id}] Failed: ${e.message}`);
-                }
+              const tpPrice = this.calculateTakeProfitPrice(side, actualEntryPrice, tp.percent);
+              const tpQty = Number(tp.quantity);
+              if (tpQty <= 0) continue;
+              try {
+                const tpId = await this.withOneRetry(() => this.createBinanceTakeProfitOrder(
+                  symbol, side, tpQty, tpPrice, decryptedKey, decryptedSecret, strategy.isTestnet, strategy.hedgeMode
+                ));
+                tpOrderIds.push(`${tp.id}:${tpId}`);
+                this.logger.log(`[LIMIT TP${tp.id}] Created: ${tpId}`);
+              } catch (e: any) {
+                this.logger.error(`[LIMIT TP${tp.id}] Failed after retry: ${e.message}`);
+                failedTps.push({ id: tp.id, reason: e.message });
               }
             }
           } else if (hasTakeProfit) {
             this.logger.debug(`[LIMIT SL/TP] TPs already exist, skipping creation`);
           }
 
+          const tpWarnings = buildTpWarnings(tpPlan.discarded, failedTps);
+
           await this.tradesService.updateTrade(tradeId, {
             entryPrice: actualEntryPrice as any,
             quantity: actualQty as any,
             stopLossOrderId: slOrderId || undefined,
             takeProfitOrderId: tpOrderIds.length > 0 ? tpOrderIds.join('|') : undefined,
+            tpWarnings,
           });
 
           this.logger.log(`[LIMIT SL/TP] All protection orders created for trade ${tradeId}`);
@@ -1572,6 +1587,8 @@ export class WebhookService {
             ? trade.takeProfitOrderId.split('|')
             : [];
 
+          const failedTps: Array<{ id: number; reason: string }> = [];
+
           // Only create TPs if they don't already exist
           if (!hasTakeProfit && tpConfigs.length > 0) {
             const bybitPositionIdx = await this.bybitClient.getPositionIdx(
@@ -1579,33 +1596,32 @@ export class WebhookService {
             );
 
             for (const tp of tpConfigs) {
-            if (tp.percent && tp.percent > 0) {
-              const tpPrice = this.calculateTakeProfitPrice(side, actualEntryPrice, tp.percent);
-              const tpQty = Number(tp.quantity);
+            const tpPrice = this.calculateTakeProfitPrice(side, actualEntryPrice, tp.percent);
+            const tpQty = Number(tp.quantity);
 
-              if (tpQty <= 0) continue;
+            if (tpQty <= 0) continue;
 
-              try {
-                const tpOrder = await this.bybitClient.createOrder(
-                  decryptedKey, decryptedSecret, strategy.isTestnet,
-                  {
-                    symbol,
-                    side: side === 'BUY' ? 'Sell' : 'Buy',
-                    orderType: 'Limit',
-                    qty: tp.quantity,
-                    price: this.roundTick(tpPrice, rules.priceTick),
-                    positionIdx: bybitPositionIdx,
-                    reduceOnly: true,
-                    hedgeMode: strategy.hedgeMode
-                  }
-                );
-                tpOrderIds.push(`${tp.id}:${tpOrder.orderId}`);
-                this.logger.log(`[BYBIT LIMIT TP${tp.id}] Created: ${tpOrder.orderId}`);
-              } catch (e: any) {
-                this.logger.warn(`[BYBIT LIMIT TP${tp.id}] Failed: ${e.message}`);
-              }
+            try {
+              const tpOrder = await this.withOneRetry(() => this.bybitClient.createOrder(
+                decryptedKey, decryptedSecret, strategy.isTestnet,
+                {
+                  symbol,
+                  side: side === 'BUY' ? 'Sell' : 'Buy',
+                  orderType: 'Limit',
+                  qty: tp.quantity,
+                  price: this.roundTick(tpPrice, rules.priceTick),
+                  positionIdx: bybitPositionIdx,
+                  reduceOnly: true,
+                  hedgeMode: strategy.hedgeMode
+                }
+              ));
+              tpOrderIds.push(`${tp.id}:${tpOrder.orderId}`);
+              this.logger.log(`[BYBIT LIMIT TP${tp.id}] Created: ${tpOrder.orderId}`);
+            } catch (e: any) {
+              this.logger.error(`[BYBIT LIMIT TP${tp.id}] Failed after retry: ${e.message}`);
+              failedTps.push({ id: tp.id, reason: e.message });
             }
-            }
+          }
           } else if (hasTakeProfit) {
             this.logger.debug(`[BYBIT LIMIT SL/TP] TPs already exist, skipping creation`);
           }
@@ -1623,6 +1639,7 @@ export class WebhookService {
             stopLossOrderId: slOrderId || undefined,
             takeProfitOrderId: tpOrderIds.length > 0 ? tpOrderIds.join('|') : undefined,
             currentStopLoss: actualSlPrice as any,
+            tpWarnings: buildTpWarnings(tpPlan.discarded, failedTps),
           });
 
           this.logger.log(`[BYBIT LIMIT SL/TP] All protection orders created for trade ${tradeId}`);
@@ -2468,6 +2485,7 @@ export class WebhookService {
       let stopLossOrderId: string | null = null;
       let takeProfitOrderId: string | null = null;
       let actualStopLossPrice: number | null = null;
+      let tpWarnings: string | null = null;
 
       if (exchange === Exchange.BYBIT) {
         tradeDetails = await this.executeBybitOrder(
@@ -2765,64 +2783,66 @@ export class WebhookService {
           this.logger.log(`[BYBIT] Using positionIdx ${bybitPositionIdx} for TP orders (original position side: ${bybitSide})`);
         }
 
+        const failedTps: Array<{ id: number; reason: string }> = [];
+
         for (const tp of tpConfigs) {
-          if (tp.percent && tp.percent > 0) {
-            const tpPriceRaw = this.calculateTakeProfitPrice(side, priceForProtectionOrders, tp.percent);
-            const tpQty = Number(tp.quantity);
+          const tpPriceRaw = this.calculateTakeProfitPrice(side, priceForProtectionOrders, tp.percent);
+          const tpQty = Number(tp.quantity);
 
-            if (tpQty <= 0) continue;
+          if (tpQty <= 0) continue;
 
-            const rules = await this.getSymbolRules(normalizedSymbol, strategy.isTestnet, exchange);
-            const tpPriceRounded = parseFloat(this.roundTick(tpPriceRaw, rules.priceTick));
-            const effectivePercent = side === 'BUY'
-              ? ((tpPriceRounded - priceForProtectionOrders) / priceForProtectionOrders) * 100
-              : ((priceForProtectionOrders - tpPriceRounded) / priceForProtectionOrders) * 100;
+          const rules = await this.getSymbolRules(normalizedSymbol, strategy.isTestnet, exchange);
+          const tpPriceRounded = parseFloat(this.roundTick(tpPriceRaw, rules.priceTick));
+          const effectivePercent = side === 'BUY'
+            ? ((tpPriceRounded - priceForProtectionOrders) / priceForProtectionOrders) * 100
+            : ((priceForProtectionOrders - tpPriceRounded) / priceForProtectionOrders) * 100;
 
-            this.logger.log(
-              `[TP${tp.id}] Precision analysis:\n` +
-              `  Entry Price: ${priceForProtectionOrders}\n` +
-              `  Target %: ${tp.percent}%\n` +
-              `  Calculated Price: ${tpPriceRaw.toFixed(8)}\n` +
-              `  Exchange Tick: ${rules.priceTick}\n` +
-              `  Rounded Price: ${tpPriceRounded.toFixed(8)}\n` +
-              `  Effective %: ${effectivePercent.toFixed(4)}%\n` +
-              `  Quantity: ${this.formatQuantityWithUsdt(tpQty, tpPriceRounded)}`
-            );
+          this.logger.log(
+            `[TP${tp.id}] Precision analysis:\n` +
+            `  Entry Price: ${priceForProtectionOrders}\n` +
+            `  Target %: ${tp.percent}%\n` +
+            `  Calculated Price: ${tpPriceRaw.toFixed(8)}\n` +
+            `  Exchange Tick: ${rules.priceTick}\n` +
+            `  Rounded Price: ${tpPriceRounded.toFixed(8)}\n` +
+            `  Effective %: ${effectivePercent.toFixed(4)}%\n` +
+            `  Quantity: ${this.formatQuantityWithUsdt(tpQty, tpPriceRounded)}`
+          );
 
-            try {
-              if (exchange === Exchange.BYBIT) {
-                const bybitOrder = await this.bybitClient.createOrder(
-                  decryptedKey, decryptedSecret, strategy.isTestnet,
-                  {
-                    symbol: normalizedSymbol,
-                    side: side === 'BUY' ? 'Sell' : 'Buy',
-                    orderType: 'Limit',
-                    qty: tp.quantity,
-                    price: this.roundTick(tpPriceRaw, rules.priceTick),
-                    positionIdx: bybitPositionIdx,
-                    reduceOnly: true,
-                    hedgeMode: strategy.hedgeMode
-                  }
-                );
-                if (bybitOrder?.orderId) {
-                  tpOrderIds.push(`${tp.id}:${bybitOrder.orderId}`);
+          try {
+            if (exchange === Exchange.BYBIT) {
+              const bybitOrder = await this.withOneRetry(() => this.bybitClient.createOrder(
+                decryptedKey, decryptedSecret, strategy.isTestnet,
+                {
+                  symbol: normalizedSymbol,
+                  side: side === 'BUY' ? 'Sell' : 'Buy',
+                  orderType: 'Limit',
+                  qty: tp.quantity,
+                  price: this.roundTick(tpPriceRaw, rules.priceTick),
+                  positionIdx: bybitPositionIdx,
+                  reduceOnly: true,
+                  hedgeMode: strategy.hedgeMode
                 }
-              } else {
-                const tpOrderId = await this.createBinanceTakeProfitOrder(
-                  normalizedSymbol, side, tpQty, tpPriceRaw, decryptedKey, decryptedSecret, strategy.isTestnet, strategy.hedgeMode, detectedPositionSide
-                );
-                tpOrderIds.push(`${tp.id}:${tpOrderId}`);
-                this.logger.log(`[TP${tp.id}] Successfully created Take Profit order: ${tpOrderId}`);
+              ));
+              if (bybitOrder?.orderId) {
+                tpOrderIds.push(`${tp.id}:${bybitOrder.orderId}`);
               }
-            } catch (tpError: any) {
-              this.logger.warn(`[TP${tp.id}] Failed to create, skipping: ${tpError.message}`);
+            } else {
+              const tpOrderId = await this.withOneRetry(() => this.createBinanceTakeProfitOrder(
+                normalizedSymbol, side, tpQty, tpPriceRaw, decryptedKey, decryptedSecret, strategy.isTestnet, strategy.hedgeMode, detectedPositionSide
+              ));
+              tpOrderIds.push(`${tp.id}:${tpOrderId}`);
+              this.logger.log(`[TP${tp.id}] Successfully created Take Profit order: ${tpOrderId}`);
             }
+          } catch (tpError: any) {
+            this.logger.error(`[TP${tp.id}] Failed to create after retry: ${tpError.message}`);
+            failedTps.push({ id: tp.id, reason: tpError.message });
           }
         }
 
         if (tpOrderIds.length > 0) {
           takeProfitOrderId = tpOrderIds.join('|');
         }
+        tpWarnings = buildTpWarnings(tpPlan.discarded, failedTps);
 
         const hasStopLoss = !!stopLossOrderId || (isAveragingTrade && stopLossPrice);
         const hasTakeProfit = tpOrderIds.length > 0;
@@ -2841,6 +2861,11 @@ export class WebhookService {
             `[PROTECTION WARNING] All ${tpConfigs.length} TP orders failed to create. ` +
             `Position only has SL protection (${stopLossOrderId || 'software-monitored'}). ` +
             `Consider this a partial failure.`
+          );
+        } else if (failedTps.length > 0) {
+          this.logger.error(
+            `[PROTECTION WARNING] ${failedTps.length} of ${tpConfigs.length} TP orders failed to create. ` +
+            `Position has partial TP coverage: ${tpOrderIds.length}/${tpConfigs.length}.`
           );
         }
 
@@ -2931,6 +2956,7 @@ export class WebhookService {
         stopLossOrderId: stopLossOrderId || undefined,
         takeProfitOrderId: takeProfitOrderId || undefined,
         currentStopLoss: actualStopLossPrice ? parseFloat(this.roundTick(actualStopLossPrice, (await this.getSymbolRules(normalizedSymbol, strategy.isTestnet, exchange)).priceTick)) as any : undefined,
+        tpWarnings,
       });
 
       this.logger.log(`[TRADE] Updated trade ${savedTrade.id} with order details`);
