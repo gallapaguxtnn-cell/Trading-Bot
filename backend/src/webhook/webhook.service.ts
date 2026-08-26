@@ -19,6 +19,7 @@ import { BinanceRequestUtil } from '../utils/binance-request.util';
 import { resolveBybitActualFillPrice } from './bybit-fill-price.util';
 import { resolveProtectionPrice, resolveFinalEntryPrice } from './protection-price.util';
 import { planTakeProfits, buildEnabledTpConfigs, buildTpWarnings } from './tp-planner.util';
+import { withOneRetry } from './retry.util';
 import axios from 'axios';
 import * as crypto from 'crypto';
 import Decimal from 'decimal.js';
@@ -223,14 +224,6 @@ export class WebhookService {
     return rounded.toFixed();
   }
 
-  private async withOneRetry<T>(fn: () => Promise<T>, delayMs = 500): Promise<T> {
-    try {
-      return await fn();
-    } catch (firstError) {
-      await this.sleep(delayMs);
-      return fn();
-    }
-  }
 
   private roundTick(value: number, tick: string): string {
     const dValue = new Decimal(value);
@@ -1324,9 +1317,9 @@ export class WebhookService {
               const tpQty = Number(tp.quantity);
               if (tpQty <= 0) continue;
               try {
-                const tpId = await this.withOneRetry(() => this.createBinanceTakeProfitOrder(
+                const tpId = await withOneRetry(() => this.createBinanceTakeProfitOrder(
                   symbol, side, tpQty, tpPrice, decryptedKey, decryptedSecret, strategy.isTestnet, strategy.hedgeMode
-                ));
+                ), (ms) => this.sleep(ms));
                 tpOrderIds.push(`${tp.id}:${tpId}`);
                 this.logger.log(`[LIMIT TP${tp.id}] Created: ${tpId}`);
               } catch (e: any) {
@@ -1602,7 +1595,7 @@ export class WebhookService {
             if (tpQty <= 0) continue;
 
             try {
-              const tpOrder = await this.withOneRetry(() => this.bybitClient.createOrder(
+              const tpOrder = await withOneRetry(() => this.bybitClient.createOrder(
                 decryptedKey, decryptedSecret, strategy.isTestnet,
                 {
                   symbol,
@@ -1614,7 +1607,7 @@ export class WebhookService {
                   reduceOnly: true,
                   hedgeMode: strategy.hedgeMode
                 }
-              ));
+              ), (ms) => this.sleep(ms));
               tpOrderIds.push(`${tp.id}:${tpOrder.orderId}`);
               this.logger.log(`[BYBIT LIMIT TP${tp.id}] Created: ${tpOrder.orderId}`);
             } catch (e: any) {
@@ -2810,7 +2803,7 @@ export class WebhookService {
 
           try {
             if (exchange === Exchange.BYBIT) {
-              const bybitOrder = await this.withOneRetry(() => this.bybitClient.createOrder(
+              const bybitOrder = await withOneRetry(() => this.bybitClient.createOrder(
                 decryptedKey, decryptedSecret, strategy.isTestnet,
                 {
                   symbol: normalizedSymbol,
@@ -2822,14 +2815,14 @@ export class WebhookService {
                   reduceOnly: true,
                   hedgeMode: strategy.hedgeMode
                 }
-              ));
+              ), (ms) => this.sleep(ms));
               if (bybitOrder?.orderId) {
                 tpOrderIds.push(`${tp.id}:${bybitOrder.orderId}`);
               }
             } else {
-              const tpOrderId = await this.withOneRetry(() => this.createBinanceTakeProfitOrder(
+              const tpOrderId = await withOneRetry(() => this.createBinanceTakeProfitOrder(
                 normalizedSymbol, side, tpQty, tpPriceRaw, decryptedKey, decryptedSecret, strategy.isTestnet, strategy.hedgeMode, detectedPositionSide
-              ));
+              ), (ms) => this.sleep(ms));
               tpOrderIds.push(`${tp.id}:${tpOrderId}`);
               this.logger.log(`[TP${tp.id}] Successfully created Take Profit order: ${tpOrderId}`);
             }
