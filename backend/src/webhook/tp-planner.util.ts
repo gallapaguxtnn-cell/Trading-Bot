@@ -58,9 +58,18 @@ export function planTakeProfits(params: PlanTakeProfitsParams): TakeProfitPlan {
     };
   }
 
+  const baseQuantity = floorToStep(dQuantity, dStep);
+
+  if (baseQuantity.lessThanOrEqualTo(0)) {
+    return {
+      planned: [],
+      discarded: tps.map((tp) => ({ id: tp.id, percent: tp.percent, reason: 'BELOW_MIN_QTY' as const })),
+    };
+  }
+
   const candidates = tps.map((tp) => ({
     ...tp,
-    slice: floorToStep(dQuantity.mul(tp.qtyPercent).div(100), dStep),
+    slice: floorToStep(baseQuantity.mul(tp.qtyPercent).div(100), dStep),
   }));
 
   const discarded: DiscardedTakeProfit[] = [];
@@ -86,7 +95,7 @@ export function planTakeProfits(params: PlanTakeProfitsParams): TakeProfitPlan {
     .reduce((sum, tp) => sum.plus(tp.qtyPercent), new Decimal(0));
 
   const survivorsWeight = viable.reduce((sum, tp) => sum.plus(tp.qtyPercent), new Decimal(0));
-  const discardedQuantity = dQuantity.mul(discardedQtyPercent).div(100);
+  const discardedQuantity = baseQuantity.mul(discardedQtyPercent).div(100);
 
   const planned: PlannedTakeProfit[] = viable.map((tp) => {
     const extraShare = discardedQuantity.isZero()
@@ -96,14 +105,25 @@ export function planTakeProfits(params: PlanTakeProfitsParams): TakeProfitPlan {
     return { id: tp.id, percent: tp.percent, quantity: slice.toFixed() };
   });
 
+  const lastIndex = planned.length - 1;
   const sumExceptLast = planned
     .slice(0, -1)
     .reduce((sum, tp) => sum.plus(tp.quantity), new Decimal(0));
-  const lastIndex = planned.length - 1;
+  const lastSlice = baseQuantity.minus(sumExceptLast);
   planned[lastIndex] = {
     ...planned[lastIndex],
-    quantity: dQuantity.minus(sumExceptLast).toFixed(),
+    quantity: lastSlice.toFixed(),
   };
+
+  const lastNotional = lastSlice.mul(viable[lastIndex].price);
+  if (lastSlice.lessThan(dMinQty) || lastNotional.lessThan(dMinNotional)) {
+    const removed = planned.pop()!;
+    discarded.push({
+      id: removed.id,
+      percent: removed.percent,
+      reason: lastSlice.lessThan(dMinQty) ? 'BELOW_MIN_QTY' : 'BELOW_MIN_NOTIONAL',
+    });
+  }
 
   return { planned, discarded };
 }
