@@ -55,11 +55,11 @@ describe('StrategiesService', () => {
       enableTakeProfit2: false,
       enableTakeProfit3: true,
       takeProfitPercentage2: null,
-    } as Strategy);
+    } as unknown as Strategy);
 
     const result = await service.update('strategy-1', {
       enableTakeProfit2: false,
-      takeProfitPercentage2: null,
+      takeProfitPercentage2: null as unknown as number,
     });
 
     expect(strategiesRepository.update).toHaveBeenCalledWith(

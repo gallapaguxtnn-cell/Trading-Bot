@@ -1,4 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { ConfigService } from '@nestjs/config';
 import { ExchangeService } from './exchange.service';
 
 describe('ExchangeService', () => {
@@ -6,7 +7,10 @@ describe('ExchangeService', () => {
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
-      providers: [ExchangeService],
+      providers: [
+        ExchangeService,
+        { provide: ConfigService, useValue: { get: jest.fn() } },
+      ],
     }).compile();
 
     service = module.get<ExchangeService>(ExchangeService);

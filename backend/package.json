@@ -87,6 +87,9 @@
     "transform": {
       "^.+\\.(t|j)s$": "ts-jest"
     },
+    "transformIgnorePatterns": [
+      "node_modules/(?!(https-proxy-agent|agent-base|socks-proxy-agent)/)"
+    ],
     "collectCoverageFrom": [
       "**/*.(t|j)s"
     ],

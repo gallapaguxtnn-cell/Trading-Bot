@@ -149,6 +149,22 @@ describe('planTakeProfits', () => {
     expect(result.discarded).toEqual([{ id: 2, percent: 2, reason: 'BELOW_MIN_QTY' }]);
   });
 
+  it('revalida a ultima fatia apos receber o resto: descarta por BELOW_MIN_NOTIONAL (nao emitida) quando o resto passa em minQty mas nao em minNotional', () => {
+    const result = planTakeProfits({
+      quantity: 100,
+      tps: [
+        { id: 1, percent: 1, qtyPercent: 90, price: 1 },
+        { id: 2, percent: 2, qtyPercent: 90, price: 1 },
+      ],
+      qtyStep: '1',
+      minQty: '1',
+      minNotional: 15,
+    });
+
+    expect(result.planned).toEqual([{ id: 1, percent: 1, quantity: '90' }]);
+    expect(result.discarded).toEqual([{ id: 2, percent: 2, reason: 'BELOW_MIN_NOTIONAL' }]);
+  });
+
   it('quando a quantidade e menor que um step inteiro, floorToStep(quantity) e zero: nenhum TP e criado', () => {
     const result = planTakeProfits({
       quantity: 0.7,
