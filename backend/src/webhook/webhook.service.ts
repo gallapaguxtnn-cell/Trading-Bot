@@ -2752,7 +2752,7 @@ export class WebhookService {
           })),
           qtyStep: rules.qtyStep,
           minQty: rules.minQty,
-          minNotional: 5,
+          minNotional: Number(rules.minNotional),
         });
 
         if (tpPlan.discarded.length > 0) {
