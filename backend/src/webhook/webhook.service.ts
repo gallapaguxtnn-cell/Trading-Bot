@@ -1039,7 +1039,7 @@ export class WebhookService {
     isTestnet: boolean,
     hedgeMode: boolean = false,
     expectedMinQty?: number
-  ): Promise<{ entryPrice: number; actualPositionSide: string }> {
+  ): Promise<{ entryPrice: number; actualPositionSide: string; quantity: number }> {
     const baseURL = isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
     const endpoint = '/fapi/v2/positionRisk';
     const positionSide = hedgeMode ? (side === 'BUY' ? 'LONG' : 'SHORT') : 'BOTH';
@@ -1159,7 +1159,8 @@ export class WebhookService {
 
         return {
           entryPrice: parseFloat(targetPosition.entryPrice),
-          actualPositionSide: targetPosition.positionSide // Return actual positionSide (BOTH, LONG, or SHORT)
+          actualPositionSide: targetPosition.positionSide, // Return actual positionSide (BOTH, LONG, or SHORT)
+          quantity: positionAmt
         };
       } catch (error: any) {
         if (error instanceof PositionNotFoundError) {
@@ -2543,6 +2544,7 @@ export class WebhookService {
 
       // For Binance MARKET: Verify position exists before creating SL/TP (prevents race condition)
       let actualEntryPrice: number | undefined;
+      let actualEntryQty: number | undefined;
       let detectedPositionSide: string | undefined; // Track actual position mode (BOTH, LONG, SHORT)
 
       if (exchange === Exchange.BINANCE) {
@@ -2567,6 +2569,9 @@ export class WebhookService {
           );
           actualEntryPrice = positionInfo.entryPrice;
           detectedPositionSide = positionInfo.actualPositionSide; // Capture actual position mode
+          if (!isAveragingTrade) {
+            actualEntryQty = positionInfo.quantity;
+          }
 
           if (detectedPositionSide === 'BOTH') {
             this.logger.log(`[POSITION MODE] One-Way Mode detected - SL/TP will use positionSide=BOTH`);
@@ -2726,8 +2731,15 @@ export class WebhookService {
 
         // --- MULTI-PARTIAL TAKE PROFITS ---
         // Each entry (including averaging) creates its own independent TPs for its own quantity
-        const quantityForTPs = quantity;
         const rules = await this.getSymbolRules(normalizedSymbol, strategy.isTestnet, exchange);
+        const normalizedEntryQty = Number(this.normalizeQuantity(quantity, rules.qtyStep, rules.minQty));
+        const quantityForTPs = actualEntryQty && actualEntryQty > 0 ? actualEntryQty : normalizedEntryQty;
+        if (quantityForTPs !== quantity) {
+          this.logger.warn(
+            `[TP] Quantidade bruta calculada (${quantity}) difere da quantidade usada para planejar TPs (${quantityForTPs}, ` +
+            `${actualEntryQty && actualEntryQty > 0 ? 'posicao real na corretora' : 'normalizada ao qtyStep da entrada'})`
+          );
+        }
 
         const enabledTps = buildEnabledTpConfigs(strategy);
         const tpPlan = planTakeProfits({
