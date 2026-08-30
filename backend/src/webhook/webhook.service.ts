@@ -20,6 +20,7 @@ import { resolveBybitActualFillPrice } from './bybit-fill-price.util';
 import { resolveProtectionPrice, resolveFinalEntryPrice } from './protection-price.util';
 import { planTakeProfits, buildEnabledTpConfigs, buildTpWarnings } from './tp-planner.util';
 import { withOneRetry } from './retry.util';
+import { parseTrackedTpOrders, countLiveTrackedOrders } from '../auditor/missing-tp-orders.util';
 import axios from 'axios';
 import * as crypto from 'crypto';
 import Decimal from 'decimal.js';
@@ -1724,15 +1725,45 @@ export class WebhookService {
 
     const trade = await this.tradesService.findById(tradeId);
     if (!trade || trade.status !== 'OPEN' || trade.type !== 'LIMIT' || !trade.exchangeOrderId) return;
-    if (trade.stopLossOrderId && trade.takeProfitOrderId) return;
 
     const strategy = await this.strategiesService.findOne(trade.strategyId);
     if (!strategy || !strategy.apiKey || !strategy.apiSecret) return;
 
+    const decryptedKey = (await EncryptionUtil.decrypt(strategy.apiKey)).trim();
+    const decryptedSecret = (await EncryptionUtil.decrypt(strategy.apiSecret)).trim();
+
+    let needsStopLoss = !trade.stopLossOrderId;
+    let needsTakeProfit = !trade.takeProfitOrderId;
+
+    if (!needsTakeProfit && strategy.exchange === Exchange.BYBIT) {
+      const tracked = parseTrackedTpOrders(trade.takeProfitOrderId);
+      if (tracked.length > 0) {
+        try {
+          const openOrders = await this.bybitClient.getOpenOrders(decryptedKey, decryptedSecret, strategy.isTestnet, trade.symbol);
+          const liveOrderIds = new Set(openOrders.map(o => o.orderId));
+          if (countLiveTrackedOrders(tracked, liveOrderIds) === 0) {
+            this.logger.warn(
+              `[RESUME PROTECTION] Trade ${tradeId} tem takeProfitOrderId registrado mas nenhuma ordem viva na Bybit — tratando como TP ausente`
+            );
+            needsTakeProfit = true;
+          }
+        } catch (err: any) {
+          this.logger.warn(`[RESUME PROTECTION] Falha ao validar TPs na corretora para trade ${tradeId}: ${err.message}`);
+        }
+      }
+    }
+
+    if (!needsStopLoss && !needsTakeProfit) return;
+
+    this.logger.log(
+      `[RESUME PROTECTION] Trade ${tradeId} precisa de ${needsStopLoss && needsTakeProfit ? 'SL e TP' : needsStopLoss ? 'SL' : 'TP'}`
+    );
+
     this.resumingProtection.add(tradeId);
     try {
-      const decryptedKey = (await EncryptionUtil.decrypt(strategy.apiKey)).trim();
-      const decryptedSecret = (await EncryptionUtil.decrypt(strategy.apiSecret)).trim();
+      if (needsTakeProfit && trade.takeProfitOrderId) {
+        await this.tradesService.updateTrade(tradeId, { takeProfitOrderId: null as any });
+      }
 
       if (strategy.exchange === Exchange.BINANCE) {
         this.scheduleProtectionOrders(trade.id, trade.symbol, trade.side, strategy, decryptedKey, decryptedSecret);
@@ -1743,7 +1774,33 @@ export class WebhookService {
     } catch (err: any) {
       this.logger.warn(`[RESUME PROTECTION] Failed for trade ${tradeId}: ${err.message}`);
     } finally {
-      setTimeout(() => this.resumingProtection.delete(tradeId), 5 * 60 * 1000);
+      setTimeout(() => this.resumingProtection.delete(tradeId), 5 * 60 * 1000).unref();
+    }
+  }
+
+  @Cron('*/30 * * * * *')
+  private async scanUnprotectedLimitTrades(): Promise<void> {
+    const openTrades = await this.tradesService.findOpenTrades();
+    const now = Date.now();
+
+    for (const trade of openTrades) {
+      if (trade.type !== 'LIMIT' || !trade.exchangeOrderId) continue;
+
+      const missingStopLoss = !trade.stopLossOrderId;
+      const missingTakeProfit = !trade.takeProfitOrderId;
+      if (!missingStopLoss && !missingTakeProfit) continue;
+
+      const ageMs = now - new Date(trade.timestamp).getTime();
+      if (ageMs < 30000) continue;
+
+      if (ageMs > 2 * 60 * 1000) {
+        this.logger.error(
+          `[PROTECTION ALERT] Trade ${trade.id} (${trade.symbol}) OPEN ha ${(ageMs / 1000).toFixed(0)}s sem ` +
+          `${missingStopLoss && missingTakeProfit ? 'SL e TP' : missingStopLoss ? 'SL' : 'TP'}`
+        );
+      }
+
+      await this.resumeLimitProtection(trade.id);
     }
   }
 
