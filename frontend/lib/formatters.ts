@@ -128,3 +128,16 @@ export function parseTpWarnings(tpWarnings?: string | null): TpWarning[] {
       };
     });
 }
+
+export function parseFallbackTarget(closeDetail?: string | null): number | null {
+  if (!closeDetail) return null;
+  const match = closeDetail.match(/TARGET:([\d.]+)/);
+  if (!match) return null;
+  const n = parseFloat(match[1]);
+  return Number.isNaN(n) ? null : n;
+}
+
+export function computeTargetDiffPct(targetPrice: number, executedPrice: number): number {
+  if (!targetPrice) return 0;
+  return ((executedPrice - targetPrice) / targetPrice) * 100;
+}

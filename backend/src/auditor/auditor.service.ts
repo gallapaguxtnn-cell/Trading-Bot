@@ -7,6 +7,7 @@ import { computePercentMismatch } from './percent-mismatch.util';
 import { findDuplicatePositionGroups, planDedupe, DedupePlanItem, DuplicatePositionGroup } from './duplicate-position.util';
 import { parseTrackedTpOrders, computeExpectedTpLevels, countLiveTrackedOrders } from './missing-tp-orders.util';
 import { buildEnabledTpConfigs } from '../webhook/tp-planner.util';
+import { parseFallbackCloseDetailTarget, computeTargetVsExecutedDiffPct } from '../take-profit/take-profit-fallback.util';
 import { Trade } from '../strategies/trade.entity';
 import { TradeExecution, ExecutionType } from '../trades/trade-execution.entity';
 import { Strategy } from '../strategies/strategy.entity';
@@ -300,6 +301,22 @@ export class AuditorService {
           percentMismatch.configuredPercent, percentMismatch.effectivePercent, percentMismatch.deviation,
         ));
       }
+    }
+
+    if (trade.status === 'CLOSED' && trade.closeReason === 'TAKE_PROFIT_FALLBACK_MARKET' && trade.exitPrice) {
+      const targetPrice = parseFallbackCloseDetailTarget(trade.closeDetail);
+      const executedPrice = Number(trade.exitPrice);
+      const diffPct = targetPrice != null ? computeTargetVsExecutedDiffPct(targetPrice, executedPrice) : null;
+
+      issues.push(this.createLog(trade,
+        AuditCategory.TP_EXECUTED_AT_MARKET,
+        AuditSeverity.WARNING,
+        targetPrice != null
+          ? `TP executado a mercado (fallback), nao no alvo LIMIT: alvo ${targetPrice} x executado ${executedPrice} (diff ${diffPct!.toFixed(4)}%)`
+          : `TP executado a mercado (fallback), nao no alvo LIMIT: executado ${executedPrice}`,
+        { targetPrice, executedPrice, diffPct },
+        targetPrice ?? undefined, executedPrice, diffPct ?? undefined,
+      ));
     }
 
     if (trade.status === 'ERROR' && trade.error) {

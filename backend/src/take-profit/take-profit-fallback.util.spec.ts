@@ -4,6 +4,8 @@ import {
   clearTpMissingRetry,
   shouldFallbackToMarket,
   computeTargetVsExecutedDiffPct,
+  formatFallbackCloseDetail,
+  parseFallbackCloseDetailTarget,
   TP_MISSING_RETRY_LIMIT,
 } from './take-profit-fallback.util';
 
@@ -70,5 +72,19 @@ describe('computeTargetVsExecutedDiffPct', () => {
 
   it('returns 0 when the target price is 0 (avoids divide-by-zero)', () => {
     expect(computeTargetVsExecutedDiffPct(0, 100)).toBe(0);
+  });
+});
+
+describe('formatFallbackCloseDetail / parseFallbackCloseDetailTarget', () => {
+  it('round-trips the target price through closeDetail', () => {
+    const detail = formatFallbackCloseDetail(0.75234);
+    expect(detail).toBe('TARGET:0.75234');
+    expect(parseFallbackCloseDetailTarget(detail)).toBeCloseTo(0.75234, 8);
+  });
+
+  it('returns null for missing or unrelated closeDetail text', () => {
+    expect(parseFallbackCloseDetailTarget(null)).toBeNull();
+    expect(parseFallbackCloseDetailTarget(undefined)).toBeNull();
+    expect(parseFallbackCloseDetailTarget('TP1+TP2 @12:34:56')).toBeNull();
   });
 });

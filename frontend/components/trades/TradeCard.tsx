@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { TradeTimeline } from './TradeTimeline';
-import { formatPrice, formatQuantity, formatPnL, formatDateUTC, formatTimeUTC, formatCloseReason, parseTpWarnings } from '@/lib/formatters';
+import { formatPrice, formatQuantity, formatPnL, formatDateUTC, formatTimeUTC, formatCloseReason, parseTpWarnings, parseFallbackTarget, computeTargetDiffPct } from '@/lib/formatters';
 
 interface Trade {
   id: string;
@@ -52,6 +52,22 @@ function TradeBadges({ trade }: { trade: Trade }) {
           className="px-2 py-0.5 rounded text-[10px] font-bold border bg-amber-500/15 text-amber-400 border-amber-500/30"
         >
           TP incompleto
+        </span>
+      )}
+      {trade.closeReason === 'TAKE_PROFIT_FALLBACK_MARKET' && (
+        <span
+          title="O TP nao foi executado como ordem LIMIT na corretora -- fechou a mercado como ultimo recurso apos falhas repetidas ao criar o TP"
+          className="px-2 py-0.5 rounded text-[10px] font-bold border bg-orange-500/15 text-orange-400 border-orange-500/30"
+        >
+          TP a mercado (fallback)
+        </span>
+      )}
+      {(trade.closeReason === 'TAKE_PROFIT_1' || trade.closeReason === 'TAKE_PROFIT_2' || trade.closeReason === 'TAKE_PROFIT_3') && (
+        <span
+          title="TP executado como ordem LIMIT na corretora, exatamente no preco-alvo"
+          className="px-2 py-0.5 rounded text-[10px] font-bold border bg-emerald-500/15 text-emerald-400 border-emerald-500/30"
+        >
+          TP no alvo (limit)
         </span>
       )}
     </>
@@ -178,7 +194,15 @@ export function TradeCard({ trade, fragments = [] }: TradeCardProps) {
               <span className="text-muted-foreground">Motivo:</span>
               <span className="font-semibold text-foreground">
                 {formatCloseReason(trade.closeReason)}
-                {trade.closeDetail && <span className="ml-1 text-[11px] font-normal text-muted-foreground">({trade.closeDetail})</span>}
+                {trade.closeReason === 'TAKE_PROFIT_FALLBACK_MARKET' && parseFallbackTarget(trade.closeDetail) != null ? (
+                  <span className="ml-1 text-[11px] font-normal text-orange-400">
+                    (alvo {formatPrice(parseFallbackTarget(trade.closeDetail), '')}, diff {computeTargetDiffPct(parseFallbackTarget(trade.closeDetail)!, Number(trade.exitPrice)).toFixed(3)}%)
+                  </span>
+                ) : (
+                  trade.closeDetail && trade.closeReason !== 'TAKE_PROFIT_FALLBACK_MARKET' && (
+                    <span className="ml-1 text-[11px] font-normal text-muted-foreground">({trade.closeDetail})</span>
+                  )
+                )}
               </span>
             </div>
           </div>

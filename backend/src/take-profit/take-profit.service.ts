@@ -25,6 +25,7 @@ import {
   clearTpMissingRetry,
   shouldFallbackToMarket,
   computeTargetVsExecutedDiffPct,
+  formatFallbackCloseDetail,
 } from './take-profit-fallback.util';
 import { floorToStep } from '../webhook/tp-planner.util';
 import axios from 'axios';
@@ -212,6 +213,7 @@ export class TakeProfitService implements OnModuleInit {
       this.logger.log(`├─ Entry: ${entryPrice.toFixed(2)} → Exit: ${currentPrice.toFixed(2)} (${profitPercent > 0 ? '+' : ''}${profitPercent.toFixed(2)}%)`);
       trade.lastTpLevel = 1;
       trade.tpWarnings = clearTpMissingRetry(trade.tpWarnings) as any;
+      trade.closeDetail = formatFallbackCloseDetail(tp1) as any;
       await this.closePosition(trade, strategy, currentPrice, 'TAKE_PROFIT_FALLBACK_MARKET', tp1Qty / 100, apiKey, apiSecret, 1);
     } else if (lastTpLevel < 2 && tp2 && this.shouldTrigger(trade, currentPrice, tp2)) {
       const closePercent = tp2Qty / (100 - tp1Qty);
@@ -222,6 +224,7 @@ export class TakeProfitService implements OnModuleInit {
       this.logger.log(`├─ Entry: ${entryPrice.toFixed(2)} → Exit: ${currentPrice.toFixed(2)} (${profitPercent > 0 ? '+' : ''}${profitPercent.toFixed(2)}%)`);
       trade.lastTpLevel = 2;
       trade.tpWarnings = clearTpMissingRetry(trade.tpWarnings) as any;
+      trade.closeDetail = formatFallbackCloseDetail(tp2) as any;
       await this.closePosition(trade, strategy, currentPrice, 'TAKE_PROFIT_FALLBACK_MARKET', closePercent, apiKey, apiSecret, 2);
     } else if (lastTpLevel < 3 && tp3 && this.shouldTrigger(trade, currentPrice, tp3)) {
       this.logger.error(
@@ -231,6 +234,7 @@ export class TakeProfitService implements OnModuleInit {
       this.logger.log(`├─ Entry: ${entryPrice.toFixed(2)} → Exit: ${currentPrice.toFixed(2)} (${profitPercent > 0 ? '+' : ''}${profitPercent.toFixed(2)}%)`);
       trade.lastTpLevel = 3;
       trade.tpWarnings = clearTpMissingRetry(trade.tpWarnings) as any;
+      trade.closeDetail = formatFallbackCloseDetail(tp3) as any;
       await this.closePosition(trade, strategy, currentPrice, 'TAKE_PROFIT_FALLBACK_MARKET', 1.0, apiKey, apiSecret, 3);
     }
   }

@@ -32,3 +32,15 @@ export function computeTargetVsExecutedDiffPct(targetPrice: number, executedPric
   if (!targetPrice) return 0;
   return ((executedPrice - targetPrice) / targetPrice) * 100;
 }
+
+export function formatFallbackCloseDetail(targetPrice: number): string {
+  return `TARGET:${targetPrice}`;
+}
+
+export function parseFallbackCloseDetailTarget(closeDetail: string | null | undefined): number | null {
+  if (!closeDetail) return null;
+  const match = closeDetail.match(/TARGET:([\d.]+)/);
+  if (!match) return null;
+  const n = parseFloat(match[1]);
+  return Number.isNaN(n) ? null : n;
+}
