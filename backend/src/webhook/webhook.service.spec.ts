@@ -60,12 +60,6 @@ describe('WebhookService', () => {
     expect(calculateStopLossPrice('SELL', 100, 2)).toBeCloseTo(102, 8);
   });
 
-  it('normalizeQuantity arredonda para baixo no qtyStep e nunca devolve valor negativo', () => {
-    const normalizeQuantity = (service as any).normalizeQuantity.bind(service);
-
-    expect(normalizeQuantity(1789.98, '1', '1')).toBe('1789');
-    expect(normalizeQuantity(0.0007, '0.001', '0.001')).toBe('0');
-  });
 });
 
 describe('WebhookService (FASE 2 -- fechar a janela de desprotecao)', () => {
