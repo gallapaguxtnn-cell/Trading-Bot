@@ -13,6 +13,7 @@ import { ExchangeService } from '../exchange/exchange.service';
 import { BybitClientService } from '../exchange/bybit-client.service';
 import { BinanceWebSocketService } from '../binance-ws/binance-ws.service';
 import { PositionSyncService } from '../position-sync/position-sync.service';
+import { SymbolRulesService } from '../common/symbol-rules.service';
 import { Exchange } from '../strategies/strategy.entity';
 
 function makeTrade(overrides: Partial<Trade> = {}): Trade {
@@ -100,6 +101,7 @@ describe('TakeProfitService (FASE 1 -- fallback nao substitui o TP LIMIT)', () =
         { provide: BinanceWebSocketService, useValue: { isEnabled: () => false } },
         { provide: PositionSyncService, useValue: {} },
         { provide: EventEmitter2, useValue: eventEmitter },
+        { provide: SymbolRulesService, useValue: { getSymbolRules: jest.fn() } },
       ],
     }).compile();
 
@@ -194,6 +196,7 @@ describe('TakeProfitService (FASE 4 -- closePosition)', () => {
         { provide: BinanceWebSocketService, useValue: { isEnabled: () => false } },
         { provide: PositionSyncService, useValue: {} },
         { provide: EventEmitter2, useValue: { emit: jest.fn() } },
+        { provide: SymbolRulesService, useValue: { getSymbolRules: jest.fn() } },
       ],
     }).compile();
 

@@ -28,6 +28,7 @@ import {
   formatFallbackCloseDetail,
 } from './take-profit-fallback.util';
 import { floorToStep } from '../webhook/tp-planner.util';
+import { SymbolRulesService } from '../common/symbol-rules.service';
 import axios from 'axios';
 import * as crypto from 'crypto';
 import Decimal from 'decimal.js';
@@ -52,6 +53,7 @@ export class TakeProfitService implements OnModuleInit {
     @Inject(forwardRef(() => PositionSyncService))
     private positionSyncService: PositionSyncService,
     private eventEmitter: EventEmitter2,
+    private symbolRulesService: SymbolRulesService,
   ) {
     this.fallbackEnabled = process.env.BINANCE_WS_FALLBACK_ENABLED !== 'false';
   }

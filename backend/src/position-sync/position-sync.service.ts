@@ -17,6 +17,7 @@ import { EncryptionUtil } from '../utils/encryption.util';
 import { BinanceRequestUtil } from '../utils/binance-request.util';
 import { BinanceWebSocketService } from '../binance-ws/binance-ws.service';
 import { AccountUpdateEvent } from '../binance-ws/dto/binance-ws-events.dto';
+import { SymbolRulesService } from '../common/symbol-rules.service';
 import axios from 'axios';
 import * as crypto from 'crypto';
 
@@ -94,6 +95,7 @@ export class PositionSyncService implements OnModuleInit {
     private readonly tradesService: TradesService,
     private readonly binanceWs: BinanceWebSocketService,
     private readonly eventEmitter: EventEmitter2,
+    private readonly symbolRulesService: SymbolRulesService,
   ) {
     this.fallbackEnabled = process.env.BINANCE_WS_FALLBACK_ENABLED !== 'false';
     this.orphanMinNotionalUsdt = parseFloat(process.env.ORPHAN_MIN_NOTIONAL_USDT || '1') || 1;

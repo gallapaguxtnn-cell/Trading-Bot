@@ -17,6 +17,7 @@ import { ExchangeService } from '../exchange/exchange.service';
 import { BybitClientService } from '../exchange/bybit-client.service';
 import { BinanceWebSocketService } from '../binance-ws/binance-ws.service';
 import { PositionSyncService } from '../position-sync/position-sync.service';
+import { SymbolRulesService } from '../common/symbol-rules.service';
 
 describe('Cenario de aceite: PLANO_FIX_TP_MARKET_FALLBACK (print real SUIUSDT SHORT, 28/08)', () => {
   let takeProfitService: TakeProfitService;
@@ -105,6 +106,7 @@ describe('Cenario de aceite: PLANO_FIX_TP_MARKET_FALLBACK (print real SUIUSDT SH
         { provide: BinanceWebSocketService, useValue: { isEnabled: () => false } },
         { provide: PositionSyncService, useValue: {} },
         { provide: EventEmitter2, useValue: eventEmitter },
+        { provide: SymbolRulesService, useValue: { getSymbolRules: jest.fn() } },
       ],
     }).compile();
 

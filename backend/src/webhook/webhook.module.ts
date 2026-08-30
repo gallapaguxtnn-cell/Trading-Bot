@@ -9,6 +9,7 @@ import { ExchangeModule } from '../exchange/exchange.module';
 import { StrategiesModule } from '../strategies/strategies.module';
 import { TradesModule } from '../trades/trades.module';
 import { BinanceWebSocketModule } from '../binance-ws/binance-ws.module';
+import { CommonModule } from '../common/common.module';
 
 @Module({
   imports: [
@@ -17,6 +18,7 @@ import { BinanceWebSocketModule } from '../binance-ws/binance-ws.module';
     StrategiesModule,
     TradesModule,
     BinanceWebSocketModule,
+    CommonModule,
   ],
   controllers: [WebhookController, SignalLogController],
   providers: [WebhookService, SignalLogService],

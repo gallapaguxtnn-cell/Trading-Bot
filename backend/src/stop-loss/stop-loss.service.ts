@@ -15,6 +15,7 @@ import { BinanceRequestUtil } from '../utils/binance-request.util';
 import { BinanceWebSocketService } from '../binance-ws/binance-ws.service';
 import { OrderUpdateEvent } from '../binance-ws/dto/binance-ws-events.dto';
 import { isPendingLimitEntry } from '../utils/trade-guards.util';
+import { SymbolRulesService } from '../common/symbol-rules.service';
 import axios from 'axios';
 import * as crypto from 'crypto';
 
@@ -35,6 +36,7 @@ export class StopLossService implements OnModuleInit {
     private exchangeService: ExchangeService,
     private bybitClient: BybitClientService,
     private binanceWs: BinanceWebSocketService,
+    private symbolRulesService: SymbolRulesService,
   ) {
     this.fallbackEnabled = process.env.BINANCE_WS_FALLBACK_ENABLED !== 'false';
   }

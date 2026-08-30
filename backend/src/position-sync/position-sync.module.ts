@@ -8,6 +8,7 @@ import { StrategiesModule } from '../strategies/strategies.module';
 import { ExchangeModule } from '../exchange/exchange.module';
 import { TradesModule } from '../trades/trades.module';
 import { BinanceWebSocketModule } from '../binance-ws/binance-ws.module';
+import { CommonModule } from '../common/common.module';
 
 @Module({
   imports: [
@@ -16,6 +17,7 @@ import { BinanceWebSocketModule } from '../binance-ws/binance-ws.module';
     StrategiesModule,
     ExchangeModule,
     BinanceWebSocketModule,
+    CommonModule,
     forwardRef(() => TradesModule)
   ],
   providers: [PositionSyncService],

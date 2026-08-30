@@ -10,6 +10,7 @@ import { StrategiesService } from '../strategies/strategies.service';
 import { TradesService } from '../trades/trades.service';
 import { BinanceWebSocketService } from '../binance-ws/binance-ws.service';
 import { SignalLogService } from './signal-log.service';
+import { SymbolRulesService } from '../common/symbol-rules.service';
 import { Exchange } from '../strategies/strategy.entity';
 
 describe('WebhookService', () => {
@@ -36,6 +37,7 @@ describe('WebhookService', () => {
         { provide: TradesService, useValue: tradesService },
         { provide: BinanceWebSocketService, useValue: {} },
         { provide: SignalLogService, useValue: {} },
+        { provide: SymbolRulesService, useValue: { getSymbolRules: jest.fn() } },
       ],
     }).compile();
 
@@ -114,6 +116,7 @@ describe('WebhookService (FASE 2 -- fechar a janela de desprotecao)', () => {
         { provide: TradesService, useValue: tradesService },
         { provide: BinanceWebSocketService, useValue: {} },
         { provide: SignalLogService, useValue: {} },
+        { provide: SymbolRulesService, useValue: { getSymbolRules: jest.fn() } },
       ],
     }).compile();
 

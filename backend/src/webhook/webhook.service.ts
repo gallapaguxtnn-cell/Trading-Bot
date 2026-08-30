@@ -25,6 +25,7 @@ import axios from 'axios';
 import * as crypto from 'crypto';
 import Decimal from 'decimal.js';
 import { normalizeQuantity, roundPriceToTick } from '../common/exchange-precision.util';
+import { SymbolRulesService } from '../common/symbol-rules.service';
 
 interface BinanceOrderResponse {
   orderId: number;
@@ -101,7 +102,8 @@ export class WebhookService {
     private readonly strategiesService: StrategiesService,
     private readonly tradesService: TradesService,
     private readonly binanceWs: BinanceWebSocketService,
-    private readonly signalLog: SignalLogService
+    private readonly signalLog: SignalLogService,
+    private readonly symbolRulesService: SymbolRulesService
   ) {}
 
   private sleep(ms: number): Promise<void> {
@@ -117,65 +119,12 @@ export class WebhookService {
     return symbol;
   }
 
-  private symbolRules: Map<string, { qtyStep: string; priceTick: string; minQty: string; minNotional: string; timestamp: number }> = new Map();
-  private readonly SYMBOL_RULES_TTL_MS = 60 * 60 * 1000;
-
   private async getSymbolRules(
     symbol: string,
     isTestnet: boolean,
     exchange: Exchange = Exchange.BINANCE
   ): Promise<{ qtyStep: string; priceTick: string; minQty: string; minNotional: string }> {
-    const cacheKey = `rules:${exchange}:${symbol}`;
-
-    const cached = this.rateLimiter.getCached<{ qtyStep: string; priceTick: string; minQty: string; minNotional: string }>(cacheKey);
-    if (cached) {
-      return cached;
-    }
-
-    if (exchange === Exchange.BYBIT) {
-        try {
-            await this.rateLimiter.throttle(`symbolRules:${symbol}`, 'bybit');
-            const rules = await this.bybitClient.getSymbolRules(isTestnet, symbol);
-            this.rateLimiter.setCached(cacheKey, rules, 3600000);
-            this.logger.log(`[BYBIT] Fetched rules for ${symbol}: Step=${rules.qtyStep}, Tick=${rules.priceTick}, MinNotional=${rules.minNotional}`);
-            return rules;
-        } catch (error) {
-            this.logger.error(`[BYBIT] Failed to fetch symbol rules: ${error.message}`);
-            return { qtyStep: '0.001', priceTick: '0.01', minQty: '0.001', minNotional: '5' };
-        }
-    }
-
-    try {
-        await this.rateLimiter.throttle(`exchangeInfo`, 'binance');
-        await this.sleep(2000);
-
-        const baseURL = isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
-        const response = await BinanceRequestUtil.get(`${baseURL}/fapi/v1/exchangeInfo`);
-        const symbolInfo = response.data.symbols.find((s: any) => s.symbol === symbol);
-
-        if (!symbolInfo) {
-            this.logger.warn(`[BINANCE] Symbol ${symbol} not found in exchangeInfo. Using defaults.`);
-            return { qtyStep: '0.001', priceTick: '0.01', minQty: '0.001', minNotional: '5' };
-        }
-
-        const lotSizeFilter = symbolInfo.filters.find((f: any) => f.filterType === 'LOT_SIZE');
-        const priceFilter = symbolInfo.filters.find((f: any) => f.filterType === 'PRICE_FILTER');
-        const minNotionalFilter = symbolInfo.filters.find((f: any) => f.filterType === 'MIN_NOTIONAL');
-
-        const rules = {
-            qtyStep: lotSizeFilter ? lotSizeFilter.stepSize : '0.001',
-            minQty: lotSizeFilter ? lotSizeFilter.minQty : '0.001',
-            priceTick: priceFilter ? priceFilter.tickSize : '0.01',
-            minNotional: minNotionalFilter ? minNotionalFilter.notional : '5'
-        };
-
-        this.rateLimiter.setCached(cacheKey, rules, 3600000);
-        this.logger.log(`[BINANCE] Fetched rules for ${symbol}: Step=${rules.qtyStep}, Tick=${rules.priceTick}, MinNotional=${rules.minNotional}`);
-        return rules;
-    } catch (error) {
-        this.logger.error(`[BINANCE] Failed to fetch symbol rules: ${error.message}`);
-        return { qtyStep: '0.001', priceTick: '0.01', minQty: '0.001', minNotional: '5' };
-    }
+    return this.symbolRulesService.getSymbolRules(symbol, isTestnet, exchange);
   }
 
 
