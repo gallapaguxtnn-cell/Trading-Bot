@@ -14,6 +14,7 @@ import { BybitClientService } from '../exchange/bybit-client.service';
 import { BinanceWebSocketService } from '../binance-ws/binance-ws.service';
 import { PositionSyncService } from '../position-sync/position-sync.service';
 import { SymbolRulesService } from '../common/symbol-rules.service';
+import { BinanceRequestUtil } from '../utils/binance-request.util';
 import { Exchange } from '../strategies/strategy.entity';
 
 function makeTrade(overrides: Partial<Trade> = {}): Trade {
@@ -260,5 +261,52 @@ describe('TakeProfitService (FASE 4 -- closePosition)', () => {
 
     const execution = tradesService.createExecution.mock.calls[0][0];
     expect(execution.price).toBe(0.7535);
+  });
+});
+
+describe('TakeProfitService (FASE 3 do PLANO_FIX_ARREDONDAMENTO_GLOBAL -- createBinanceStopLossOrder)', () => {
+  let service: TakeProfitService;
+  let symbolRulesService: { getSymbolRules: jest.Mock };
+
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    symbolRulesService = { getSymbolRules: jest.fn() };
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        TakeProfitService,
+        { provide: getRepositoryToken(Trade), useValue: {} },
+        { provide: TradesService, useValue: {} },
+        { provide: StrategiesService, useValue: {} },
+        { provide: ExchangeService, useValue: {} },
+        { provide: BybitClientService, useValue: {} },
+        { provide: BinanceWebSocketService, useValue: { isEnabled: () => false } },
+        { provide: PositionSyncService, useValue: {} },
+        { provide: EventEmitter2, useValue: { emit: jest.fn() } },
+        { provide: SymbolRulesService, useValue: symbolRulesService },
+      ],
+    }).compile();
+
+    service = module.get<TakeProfitService>(TakeProfitService);
+  });
+
+  it('arredonda triggerPrice ao tick real e a quantidade ao qtyStep real -- nunca toFixed(2)/toFixed(3) fixo', async () => {
+    symbolRulesService.getSymbolRules.mockResolvedValue({ qtyStep: '1', priceTick: '0.0001', minQty: '1', minNotional: '5' });
+    (BinanceRequestUtil.post as jest.Mock).mockResolvedValue({ data: { algoId: 222 } });
+
+    await (service as any).createBinanceStopLossOrder('SUIUSDT', 'SELL', 60, 0.7697, 'key', 'secret', false, false);
+
+    const body = (BinanceRequestUtil.post as jest.Mock).mock.calls[0][1] as string;
+    const params = new URLSearchParams(body);
+    expect(params.get('triggerPrice')).toBe('0.7697');
+    expect(params.get('quantity')).toBe('60');
+  });
+
+  it('lanca erro explicito (aborta) quando a quantidade normalizada arredonda para 0, em vez de enviar a ordem', async () => {
+    symbolRulesService.getSymbolRules.mockResolvedValue({ qtyStep: '10', priceTick: '0.0001', minQty: '10', minNotional: '5' });
+
+    await expect(
+      (service as any).createBinanceStopLossOrder('SUIUSDT', 'SELL', 5, 0.7697, 'key', 'secret', false, false)
+    ).rejects.toThrow('rounded to 0');
   });
 });

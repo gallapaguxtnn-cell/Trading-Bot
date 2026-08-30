@@ -29,6 +29,7 @@ import {
 } from './take-profit-fallback.util';
 import { floorToStep } from '../webhook/tp-planner.util';
 import { SymbolRulesService } from '../common/symbol-rules.service';
+import { normalizeQuantity, roundPriceToTick } from '../common/exchange-precision.util';
 import axios from 'axios';
 import * as crypto from 'crypto';
 import Decimal from 'decimal.js';
@@ -672,7 +673,16 @@ export class TakeProfitService implements OnModuleInit {
   ): Promise<string> {
     const baseUrl = isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
     const closeSide = side === 'BUY' ? 'SELL' : 'BUY';
-    const qty = quantity.toFixed(3);
+    const rules = await this.symbolRulesService.getSymbolRules(symbol, isTestnet, Exchange.BINANCE);
+    const qty = normalizeQuantity(quantity, rules.qtyStep, rules.minQty);
+
+    if (qty === '0') {
+      throw new Error(
+        `Normalized quantity for ${symbol} rounded to 0 (raw=${quantity}, step=${rules.qtyStep}, minQty=${rules.minQty}). Aborting SL order.`
+      );
+    }
+
+    const triggerPrice = roundPriceToTick(stopPrice, rules.priceTick);
 
     const params = new URLSearchParams();
     params.append('symbol', symbol);
@@ -680,7 +690,7 @@ export class TakeProfitService implements OnModuleInit {
     params.append('algoType', 'CONDITIONAL');
     params.append('type', 'STOP_MARKET');
     params.append('quantity', qty);
-    params.append('triggerPrice', stopPrice.toFixed(2));  // ALGO API uses triggerPrice, not stopPrice
+    params.append('triggerPrice', triggerPrice);
     params.append('workingType', 'MARK_PRICE');
 
     if (hedgeMode) {

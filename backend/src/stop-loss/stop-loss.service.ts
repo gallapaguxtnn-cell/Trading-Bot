@@ -16,6 +16,7 @@ import { BinanceWebSocketService } from '../binance-ws/binance-ws.service';
 import { OrderUpdateEvent } from '../binance-ws/dto/binance-ws-events.dto';
 import { isPendingLimitEntry } from '../utils/trade-guards.util';
 import { SymbolRulesService } from '../common/symbol-rules.service';
+import { normalizeQuantity, roundPriceToTick } from '../common/exchange-precision.util';
 import axios from 'axios';
 import * as crypto from 'crypto';
 
@@ -238,7 +239,17 @@ export class StopLossService implements OnModuleInit {
       }
 
       const closeSide = trade.side === 'BUY' ? 'SELL' : 'BUY';
-      const qty = remainingQty.toFixed(3);
+      const rules = await this.symbolRulesService.getSymbolRules(trade.symbol, strategy.isTestnet, Exchange.BINANCE);
+      const qty = normalizeQuantity(remainingQty, rules.qtyStep, rules.minQty);
+
+      if (qty === '0') {
+        this.logger.error(
+          `[SL RECREATE] Normalized quantity for ${trade.symbol} rounded to 0 (raw=${remainingQty}, step=${rules.qtyStep}, minQty=${rules.minQty}). Aborting SL recreation.`
+        );
+        return false;
+      }
+
+      const triggerPrice = roundPriceToTick(stopPrice, rules.priceTick);
 
       const orderParams = new URLSearchParams();
       orderParams.append('symbol', trade.symbol);
@@ -246,7 +257,7 @@ export class StopLossService implements OnModuleInit {
       orderParams.append('algoType', 'CONDITIONAL');
       orderParams.append('type', 'STOP_MARKET');
       orderParams.append('quantity', qty);
-      orderParams.append('triggerPrice', stopPrice.toFixed(2));  // ALGO API uses triggerPrice, not stopPrice
+      orderParams.append('triggerPrice', triggerPrice);
       orderParams.append('workingType', 'MARK_PRICE');
 
       if (strategy.hedgeMode) {
@@ -269,7 +280,7 @@ export class StopLossService implements OnModuleInit {
       trade.stopLossOrderId = newSlId;
       await this.tradesRepository.save(trade);
 
-      this.logger.log(`[SL RECREATE] Successfully recreated SL for ${trade.symbol}: orderId=${newSlId}, stopPrice=${stopPrice.toFixed(2)}`);
+      this.logger.log(`[SL RECREATE] Successfully recreated SL for ${trade.symbol}: orderId=${newSlId}, stopPrice=${triggerPrice}`);
       return true;
     } catch (error: any) {
       this.logger.error(`[SL RECREATE] Failed to recreate SL: ${error.message}`);
@@ -523,6 +534,16 @@ export class StopLossService implements OnModuleInit {
       const quantity = parseFloat(trade.quantity as any);
 
       if (exchange === Exchange.BYBIT) {
+        const rules = await this.symbolRulesService.getSymbolRules(trade.symbol, strategy.isTestnet, Exchange.BYBIT);
+        const closeQty = normalizeQuantity(quantity, rules.qtyStep, rules.minQty);
+
+        if (closeQty === '0') {
+          this.logger.error(
+            `[BYBIT] Normalized quantity for ${trade.symbol} rounded to 0 (raw=${quantity}, step=${rules.qtyStep}, minQty=${rules.minQty}). Aborting close.`
+          );
+          return;
+        }
+
         const originalSide = trade.side === 'BUY' ? 'Buy' : 'Sell';
         const positionIdx = await this.bybitClient.getPositionIdx(
           apiKey, apiSecret, strategy.isTestnet, trade.symbol, originalSide, strategy.hedgeMode
@@ -537,7 +558,7 @@ export class StopLossService implements OnModuleInit {
             symbol: trade.symbol,
             side: bybitSide,
             orderType: 'Market',
-            qty: quantity.toFixed(3),
+            qty: closeQty,
             positionIdx,
             reduceOnly: true,
             hedgeMode: strategy.hedgeMode
@@ -545,12 +566,22 @@ export class StopLossService implements OnModuleInit {
         );
         this.logger.warn(`[BYBIT] Closed ${trade.symbol} via ${reason}`);
       } else if (strategy.isTestnet && exchange === Exchange.BINANCE) {
+        const rules = await this.symbolRulesService.getSymbolRules(trade.symbol, strategy.isTestnet, Exchange.BINANCE);
+        const closeQty = normalizeQuantity(quantity, rules.qtyStep, rules.minQty);
+
+        if (closeQty === '0') {
+          this.logger.error(
+            `[BINANCE] Normalized quantity for ${trade.symbol} rounded to 0 (raw=${quantity}, step=${rules.qtyStep}, minQty=${rules.minQty}). Aborting close.`
+          );
+          return;
+        }
+
         const baseURL = this.BINANCE_TESTNET_URL;
         const params = new URLSearchParams();
         params.append('symbol', trade.symbol);
         params.append('side', closeSide);
         params.append('type', 'MARKET');
-        params.append('quantity', quantity.toFixed(3));
+        params.append('quantity', closeQty);
 
         if (strategy.hedgeMode) {
           const positionSide = trade.side === 'BUY' ? 'LONG' : 'SHORT';

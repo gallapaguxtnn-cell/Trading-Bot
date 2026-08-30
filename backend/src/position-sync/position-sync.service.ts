@@ -18,6 +18,7 @@ import { BinanceRequestUtil } from '../utils/binance-request.util';
 import { BinanceWebSocketService } from '../binance-ws/binance-ws.service';
 import { AccountUpdateEvent } from '../binance-ws/dto/binance-ws-events.dto';
 import { SymbolRulesService } from '../common/symbol-rules.service';
+import { normalizeQuantity } from '../common/exchange-precision.util';
 import axios from 'axios';
 import * as crypto from 'crypto';
 
@@ -1095,12 +1096,21 @@ export class PositionSyncService implements OnModuleInit {
 
                         const closeSide = side === 'BUY' ? 'SELL' : 'BUY';
                         const tradeQuantity = Math.abs(safeParseFloat(trade.quantity as any));
+                        const rules = await this.symbolRulesService.getSymbolRules(trade.symbol, strategy.isTestnet, Exchange.BINANCE);
+                        const normalizedQty = normalizeQuantity(tradeQuantity, rules.qtyStep, rules.minQty);
+
+                        if (normalizedQty === '0') {
+                          throw new Error(
+                            `Normalized quantity for ${trade.symbol} rounded to 0 (raw=${tradeQuantity}, step=${rules.qtyStep}, minQty=${rules.minQty}). Aborting SL update.`
+                          );
+                        }
+
                         const params = new URLSearchParams();
                         params.append('symbol', trade.symbol);
                         params.append('side', closeSide);
                         params.append('algoType', 'CONDITIONAL');
                         params.append('type', 'STOP_MARKET');
-                        params.append('quantity', tradeQuantity.toFixed(2));
+                        params.append('quantity', normalizedQty);
                         params.append('triggerPrice', formattedStopLoss);
                         params.append('workingType', 'MARK_PRICE');
 
