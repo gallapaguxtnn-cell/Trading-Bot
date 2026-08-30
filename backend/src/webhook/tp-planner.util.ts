@@ -34,7 +34,7 @@ export interface PlanTakeProfitsParams {
   minNotional: number;
 }
 
-function floorToStep(value: Decimal, step: Decimal): Decimal {
+export function floorToStep(value: Decimal, step: Decimal): Decimal {
   if (step.isZero()) return value;
   return value.div(step).floor().mul(step);
 }

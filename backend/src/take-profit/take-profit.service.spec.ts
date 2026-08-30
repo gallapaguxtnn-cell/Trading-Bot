@@ -165,3 +165,97 @@ describe('TakeProfitService (FASE 1 -- fallback nao substitui o TP LIMIT)', () =
     expect(bybitClient.createOrder).not.toHaveBeenCalled();
   });
 });
+
+describe('TakeProfitService (FASE 4 -- closePosition)', () => {
+  let service: TakeProfitService;
+  let tradesRepository: { update: jest.Mock; save: jest.Mock };
+  let tradesService: { createExecution: jest.Mock };
+  let bybitClient: { createOrder: jest.Mock; getSymbolRules: jest.Mock; getPositionIdx: jest.Mock; getOrderInfo: jest.Mock; getOrderHistory: jest.Mock };
+
+  beforeEach(async () => {
+    tradesRepository = { update: jest.fn(), save: jest.fn() };
+    tradesService = { createExecution: jest.fn() };
+    bybitClient = {
+      createOrder: jest.fn(),
+      getSymbolRules: jest.fn(),
+      getPositionIdx: jest.fn().mockResolvedValue(0),
+      getOrderInfo: jest.fn(),
+      getOrderHistory: jest.fn(),
+    };
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        TakeProfitService,
+        { provide: getRepositoryToken(Trade), useValue: tradesRepository },
+        { provide: TradesService, useValue: tradesService },
+        { provide: StrategiesService, useValue: { findOne: jest.fn() } },
+        { provide: ExchangeService, useValue: {} },
+        { provide: BybitClientService, useValue: bybitClient },
+        { provide: BinanceWebSocketService, useValue: { isEnabled: () => false } },
+        { provide: PositionSyncService, useValue: {} },
+        { provide: EventEmitter2, useValue: { emit: jest.fn() } },
+      ],
+    }).compile();
+
+    service = module.get<TakeProfitService>(TakeProfitService);
+  });
+
+  it('fatia abaixo de minQty numa parcial (TP1) NAO fecha a posicao inteira: pula o nivel e avanca lastTpLevel sem criar ordem', async () => {
+    const trade = makeTrade({ quantity: 100 });
+    bybitClient.getSymbolRules.mockResolvedValue({ qtyStep: '1', minQty: '5', priceTick: '0.0001', minNotional: '5' });
+
+    await (service as any).closePosition(trade, makeStrategy(), 0.75, 'TAKE_PROFIT_FALLBACK_MARKET', 0.03, 'k', 's', 1);
+
+    expect(bybitClient.createOrder).not.toHaveBeenCalled();
+    expect(tradesRepository.update).toHaveBeenCalledWith('trade-1', { lastTpLevel: 1 });
+    expect(tradesRepository.save).not.toHaveBeenCalled();
+  });
+
+  it('fatia abaixo de minQty mas a posicao TOTAL tambem e dust (nivel final): fecha tudo como DUST_AMOUNT (comportamento preservado)', async () => {
+    const trade = makeTrade({ quantity: 0.5 });
+    bybitClient.getSymbolRules.mockResolvedValue({ qtyStep: '1', minQty: '5', priceTick: '0.0001', minNotional: '5' });
+
+    await (service as any).closePosition(trade, makeStrategy(), 0.75, 'TAKE_PROFIT_FALLBACK_MARKET', 1.0, 'k', 's', 3);
+
+    expect(bybitClient.createOrder).not.toHaveBeenCalled();
+    const saved = tradesRepository.save.mock.calls[0][0];
+    expect(saved.status).toBe('CLOSED');
+    expect(saved.closeReason).toBe('DUST_AMOUNT');
+    expect(saved.excludeFromStats).toBe(true);
+  });
+
+  it('normaliza a quantidade pelo qtyStep real com Decimal, nao toFixed(3): step 10 nunca envia fracao', async () => {
+    const trade = makeTrade({ quantity: 253 });
+    bybitClient.getSymbolRules.mockResolvedValue({ qtyStep: '10', minQty: '10', priceTick: '0.0001', minNotional: '5' });
+    bybitClient.createOrder.mockResolvedValue({ orderId: 'order-1' });
+    bybitClient.getOrderInfo.mockResolvedValue(null);
+    bybitClient.getOrderHistory.mockResolvedValue(null);
+
+    await (service as any).closePosition(trade, makeStrategy(), 0.75, 'TAKE_PROFIT_FALLBACK_MARKET', 1.0, 'k', 's', 3);
+
+    expect(bybitClient.createOrder).toHaveBeenCalledWith('k', 's', true, expect.objectContaining({ qty: '250' }));
+  });
+
+  it('usa o preco REALMENTE executado (avgPrice da corretora) para exitPrice e PnL, nao o exitPrice estimado passado como parametro', async () => {
+    const trade = makeTrade({ quantity: 60, entryPrice: 0.7546, side: 'SELL' });
+    bybitClient.getSymbolRules.mockResolvedValue({ qtyStep: '1', minQty: '1', priceTick: '0.0001', minNotional: '5' });
+    bybitClient.createOrder.mockResolvedValue({ orderId: 'order-1' });
+    bybitClient.getOrderInfo.mockResolvedValue({
+      orderStatus: 'Filled',
+      avgPrice: '0.7535',
+      cumExecQty: '60',
+      cumExecFee: '0.01',
+      updatedTime: `${Date.now()}`,
+    });
+
+    const estimatedExitPrice = 0.752;
+    await (service as any).closePosition(trade, makeStrategy(), estimatedExitPrice, 'TAKE_PROFIT_FALLBACK_MARKET', 1.0, 'k', 's', 3);
+
+    const saved = tradesRepository.save.mock.calls[0][0];
+    expect(Number(saved.exitPrice)).toBe(0.7535);
+    expect(Number(saved.exitPrice)).not.toBe(estimatedExitPrice);
+
+    const execution = tradesService.createExecution.mock.calls[0][0];
+    expect(execution.price).toBe(0.7535);
+  });
+});

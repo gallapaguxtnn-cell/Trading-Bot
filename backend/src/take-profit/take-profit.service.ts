@@ -26,8 +26,10 @@ import {
   shouldFallbackToMarket,
   computeTargetVsExecutedDiffPct,
 } from './take-profit-fallback.util';
+import { floorToStep } from '../webhook/tp-planner.util';
 import axios from 'axios';
 import * as crypto from 'crypto';
+import Decimal from 'decimal.js';
 
 @Injectable()
 export class TakeProfitService implements OnModuleInit {
@@ -79,6 +81,19 @@ export class TakeProfitService implements OnModuleInit {
     } catch (error: any) {
       this.logger.warn(`[TP] Failed to fetch minQty for ${symbol}: ${error.message}`);
       return 0;
+    }
+  }
+
+  private async getQtyStepForSymbol(symbol: string, isTestnet: boolean): Promise<string> {
+    try {
+      const baseURL = isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
+      const response = await axios.get(`${baseURL}/fapi/v1/exchangeInfo`);
+      const symbolInfo = response.data.symbols.find((s: any) => s.symbol === symbol);
+      const lotSizeFilter = symbolInfo?.filters.find((f: any) => f.filterType === 'LOT_SIZE');
+      return lotSizeFilter ? lotSizeFilter.stepSize : '0.001';
+    } catch (error: any) {
+      this.logger.warn(`[TP] Failed to fetch qtyStep for ${symbol}: ${error.message}`);
+      return '0.001';
     }
   }
 
@@ -943,29 +958,28 @@ export class TakeProfitService implements OnModuleInit {
       let ccxtFill: OrderFill | null = null;
 
       if (exchange === Exchange.BYBIT) {
-        // Get symbol rules to validate quantity
         const rules = await this.bybitClient.getSymbolRules(strategy.isTestnet, trade.symbol);
-        const minQty = parseFloat(rules.minQty);
-        const stepSize = parseFloat(rules.qtyStep);
+        const minQty = new Decimal(rules.minQty);
+        const stepSize = new Decimal(rules.qtyStep);
 
-        // Normalize quantity to step size
-        const normalizedQty = Math.floor(closeQuantity / stepSize) * stepSize;
+        const normalizedQty = floorToStep(new Decimal(closeQuantity), stepSize);
 
-        // If normalized quantity is less than minimum, close entire position
-        if (normalizedQty < minQty) {
-          // CRITICAL: Normalize the total position quantity too!
-          const normalizedTotalQty = Math.floor(quantity / stepSize) * stepSize;
+        if (normalizedQty.lessThan(minQty)) {
+          const normalizedTotalQty = floorToStep(new Decimal(quantity), stepSize);
 
-          if (normalizedTotalQty >= minQty) {
+          if (closePercent < 1.0) {
             this.logger.warn(
-              `[BYBIT TP] Calculated quantity ${closeQuantity.toFixed(3)} < minQty ${minQty}. ` +
-              `Closing entire remaining position (${normalizedTotalQty}) instead.`
+              `[BYBIT TP] Fatia calculada ${closeQuantity.toFixed(8)} < minQty ${minQty.toFixed()}. ` +
+              `Pulando TP${executionLevel} sem fechar nada — quantidade fica integral para o proximo nivel.`
             );
-            closeQuantity = normalizedTotalQty;
-          } else {
+            await this.tradesRepository.update(trade.id, { lastTpLevel: executionLevel });
+            return;
+          }
+
+          if (normalizedTotalQty.lessThan(minQty)) {
             this.logger.error(
               `[BYBIT TP] Position quantity ${quantity} too small to close. ` +
-              `Normalized: ${normalizedTotalQty}, MinQty: ${minQty}. Marking trade as closed.`
+              `Normalized: ${normalizedTotalQty.toFixed()}, MinQty: ${minQty.toFixed()}. Marking trade as closed.`
             );
 
             await this.tradesRepository.save({
@@ -981,8 +995,10 @@ export class TakeProfitService implements OnModuleInit {
             this.logger.log(`[BYBIT TP] Trade ${trade.id.substring(0, 8)} closed due to dust amount (< minQty)`);
             return;
           }
+
+          closeQuantity = normalizedTotalQty.toNumber();
         } else {
-          closeQuantity = normalizedQty;
+          closeQuantity = normalizedQty.toNumber();
         }
 
         const originalSide = trade.side === 'BUY' ? 'Buy' : 'Sell';
@@ -991,7 +1007,8 @@ export class TakeProfitService implements OnModuleInit {
         );
 
         const bybitSide = closeSide === 'BUY' ? 'Buy' : 'Sell';
-        await this.bybitClient.createOrder(
+        const closeQtyStr = floorToStep(new Decimal(closeQuantity), stepSize).toFixed();
+        const bybitOrder = await this.bybitClient.createOrder(
           apiKey,
           apiSecret,
           strategy.isTestnet,
@@ -999,20 +1016,29 @@ export class TakeProfitService implements OnModuleInit {
             symbol: trade.symbol,
             side: bybitSide,
             orderType: 'Market',
-            qty: closeQuantity.toFixed(3),
+            qty: closeQtyStr,
             positionIdx,
             reduceOnly: true,
             hedgeMode: strategy.hedgeMode
           }
         );
-        this.logger.log(`[BYBIT] Closed ${closeQuantity.toFixed(3)} ${trade.symbol} via ${reason}`);
+        this.logger.log(`[BYBIT] Closed ${closeQtyStr} ${trade.symbol} via ${reason}`);
+
+        if (bybitOrder?.orderId) {
+          await new Promise(resolve => setTimeout(resolve, 500));
+          ccxtFill = await this.fetchOrderFill(bybitOrder.orderId, trade.symbol, Exchange.BYBIT, apiKey, apiSecret, strategy.isTestnet);
+        }
       } else if (strategy.isTestnet && exchange === Exchange.BINANCE) {
+        const stepSize = await this.getQtyStepForSymbol(trade.symbol, strategy.isTestnet);
+        const normalizedQty = floorToStep(new Decimal(closeQuantity), new Decimal(stepSize || '0.001'));
+        closeQuantity = normalizedQty.toNumber();
+
         const baseURL = this.BINANCE_TESTNET_URL;
         const params = new URLSearchParams();
         params.append('symbol', trade.symbol);
         params.append('side', closeSide);
         params.append('type', 'MARKET');
-        params.append('quantity', closeQuantity.toFixed(3));
+        params.append('quantity', normalizedQty.toFixed());
 
         if (strategy.hedgeMode) {
           const positionSide = trade.side === 'BUY' ? 'LONG' : 'SHORT';
@@ -1025,13 +1051,14 @@ export class TakeProfitService implements OnModuleInit {
         const signature = crypto.createHmac('sha256', apiSecret).update(queryString).digest('hex');
         const body = `${queryString}&signature=${signature}`;
 
-        await BinanceRequestUtil.post(`${baseURL}/fapi/v1/order`, body, {
+        const response = await BinanceRequestUtil.post(`${baseURL}/fapi/v1/order`, body, {
           headers: {
             'X-MBX-APIKEY': apiKey,
             'Content-Type': 'application/x-www-form-urlencoded'
           }
         });
 
+        ccxtFill = mapBinanceFill(response.data as Record<string, unknown>);
         this.logger.log(`[BINANCE] Closed ${(closePercent * 100).toFixed(0)}% of ${trade.symbol} via ${reason}`);
       } else {
         const exchangeInstance = await this.exchangeService.getExchange(
