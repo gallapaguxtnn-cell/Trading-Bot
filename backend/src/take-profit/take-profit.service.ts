@@ -1,6 +1,6 @@
 import { Injectable, Logger, Inject, forwardRef, OnModuleInit } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
-import { OnEvent } from '@nestjs/event-emitter';
+import { OnEvent, EventEmitter2 } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Trade, CloseReason } from '../strategies/trade.entity';
@@ -18,6 +18,14 @@ import { PositionSyncService } from '../position-sync/position-sync.service';
 import { BinanceWebSocketService } from '../binance-ws/binance-ws.service';
 import { OrderUpdateEvent } from '../binance-ws/dto/binance-ws-events.dto';
 import { isPendingLimitEntry } from '../utils/trade-guards.util';
+import {
+  TP_MISSING_RETRY_LIMIT,
+  parseTpMissingRetryCount,
+  incrementTpMissingRetry,
+  clearTpMissingRetry,
+  shouldFallbackToMarket,
+  computeTargetVsExecutedDiffPct,
+} from './take-profit-fallback.util';
 import axios from 'axios';
 import * as crypto from 'crypto';
 
@@ -40,6 +48,7 @@ export class TakeProfitService implements OnModuleInit {
     private binanceWs: BinanceWebSocketService,
     @Inject(forwardRef(() => PositionSyncService))
     private positionSyncService: PositionSyncService,
+    private eventEmitter: EventEmitter2,
   ) {
     this.fallbackEnabled = process.env.BINANCE_WS_FALLBACK_ENABLED !== 'false';
   }
@@ -153,14 +162,25 @@ export class TakeProfitService implements OnModuleInit {
       return;
     }
 
-    const currentPrice = await this.getCurrentPrice(trade, strategy);
-    if (!currentPrice) return;
-
     const tp1 = this.calculateTakeProfit(trade, strategy, 1);
     const tp2 = this.calculateTakeProfit(trade, strategy, 2);
     const tp3 = this.calculateTakeProfit(trade, strategy, 3);
 
     if (!tp1 && !tp2 && !tp3) return;
+
+    if (!shouldFallbackToMarket(trade.tpWarnings)) {
+      const nextTpWarnings = incrementTpMissingRetry(trade.tpWarnings);
+      await this.tradesRepository.update(trade.id, { tpWarnings: nextTpWarnings });
+      this.eventEmitter.emit('limit.protection.resume', { tradeId: trade.id });
+      this.logger.warn(
+        `[TP] ${trade.symbol} sem ordens LIMIT de TP na corretora — solicitando recriacao ` +
+        `(tentativa ${parseTpMissingRetryCount(nextTpWarnings)}/${TP_MISSING_RETRY_LIMIT})`
+      );
+      return;
+    }
+
+    const currentPrice = await this.getCurrentPrice(trade, strategy);
+    if (!currentPrice) return;
 
     const tp1Qty = strategy.takeProfitQuantity1 || 33;
     const tp2Qty = strategy.takeProfitQuantity2 || 33;
@@ -170,21 +190,33 @@ export class TakeProfitService implements OnModuleInit {
     const entryPrice = parseFloat(trade.entryPrice as any);
 
     if (lastTpLevel < 1 && tp1 && this.shouldTrigger(trade, currentPrice, tp1)) {
-      this.logger.log(`[TAKE-PROFIT 1 HIT] ${trade.symbol}`);
+      this.logger.error(
+        `[TP FALLBACK MARKET] ${trade.symbol} TP1 apos ${TP_MISSING_RETRY_LIMIT} tentativas sem LIMIT na corretora — ` +
+        `alvo=${tp1.toFixed(8)} executado~=${currentPrice.toFixed(8)} diff=${computeTargetVsExecutedDiffPct(tp1, currentPrice).toFixed(4)}%`
+      );
       this.logger.log(`├─ Entry: ${entryPrice.toFixed(2)} → Exit: ${currentPrice.toFixed(2)} (${profitPercent > 0 ? '+' : ''}${profitPercent.toFixed(2)}%)`);
       trade.lastTpLevel = 1;
-      await this.closePosition(trade, strategy, currentPrice, 'TAKE_PROFIT_1', tp1Qty / 100, apiKey, apiSecret);
+      trade.tpWarnings = clearTpMissingRetry(trade.tpWarnings) as any;
+      await this.closePosition(trade, strategy, currentPrice, 'TAKE_PROFIT_FALLBACK_MARKET', tp1Qty / 100, apiKey, apiSecret, 1);
     } else if (lastTpLevel < 2 && tp2 && this.shouldTrigger(trade, currentPrice, tp2)) {
       const closePercent = tp2Qty / (100 - tp1Qty);
-      this.logger.log(`[TAKE-PROFIT 2 HIT] ${trade.symbol}`);
+      this.logger.error(
+        `[TP FALLBACK MARKET] ${trade.symbol} TP2 apos ${TP_MISSING_RETRY_LIMIT} tentativas sem LIMIT na corretora — ` +
+        `alvo=${tp2.toFixed(8)} executado~=${currentPrice.toFixed(8)} diff=${computeTargetVsExecutedDiffPct(tp2, currentPrice).toFixed(4)}%`
+      );
       this.logger.log(`├─ Entry: ${entryPrice.toFixed(2)} → Exit: ${currentPrice.toFixed(2)} (${profitPercent > 0 ? '+' : ''}${profitPercent.toFixed(2)}%)`);
       trade.lastTpLevel = 2;
-      await this.closePosition(trade, strategy, currentPrice, 'TAKE_PROFIT_2', closePercent, apiKey, apiSecret);
+      trade.tpWarnings = clearTpMissingRetry(trade.tpWarnings) as any;
+      await this.closePosition(trade, strategy, currentPrice, 'TAKE_PROFIT_FALLBACK_MARKET', closePercent, apiKey, apiSecret, 2);
     } else if (lastTpLevel < 3 && tp3 && this.shouldTrigger(trade, currentPrice, tp3)) {
-      this.logger.log(`[TAKE-PROFIT 3 HIT] ${trade.symbol}`);
+      this.logger.error(
+        `[TP FALLBACK MARKET] ${trade.symbol} TP3 apos ${TP_MISSING_RETRY_LIMIT} tentativas sem LIMIT na corretora — ` +
+        `alvo=${tp3.toFixed(8)} executado~=${currentPrice.toFixed(8)} diff=${computeTargetVsExecutedDiffPct(tp3, currentPrice).toFixed(4)}%`
+      );
       this.logger.log(`├─ Entry: ${entryPrice.toFixed(2)} → Exit: ${currentPrice.toFixed(2)} (${profitPercent > 0 ? '+' : ''}${profitPercent.toFixed(2)}%)`);
       trade.lastTpLevel = 3;
-      await this.closePosition(trade, strategy, currentPrice, 'TAKE_PROFIT_3', 1.0, apiKey, apiSecret);
+      trade.tpWarnings = clearTpMissingRetry(trade.tpWarnings) as any;
+      await this.closePosition(trade, strategy, currentPrice, 'TAKE_PROFIT_FALLBACK_MARKET', 1.0, apiKey, apiSecret, 3);
     }
   }
 
@@ -900,7 +932,8 @@ export class TakeProfitService implements OnModuleInit {
     reason: CloseReason,
     closePercent: number,
     apiKey: string,
-    apiSecret: string
+    apiSecret: string,
+    executionLevel: 1 | 2 | 3
   ) {
     try {
       const exchange = strategy.exchange || Exchange.BINANCE;
@@ -1026,8 +1059,8 @@ export class TakeProfitService implements OnModuleInit {
         : this.calculatePnL(trade, exitPrice, closePercent);
       const closedAtReal = ccxtFill?.updatedAt ?? new Date();
 
-      const executionType = reason === 'TAKE_PROFIT_1' ? ExecutionType.TAKE_PROFIT_1 :
-                           reason === 'TAKE_PROFIT_2' ? ExecutionType.TAKE_PROFIT_2 :
+      const executionType = executionLevel === 1 ? ExecutionType.TAKE_PROFIT_1 :
+                           executionLevel === 2 ? ExecutionType.TAKE_PROFIT_2 :
                            ExecutionType.TAKE_PROFIT_3;
 
       await this.tradesService.createExecution({

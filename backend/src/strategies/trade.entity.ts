@@ -1,6 +1,6 @@
 import { Entity, Column, PrimaryGeneratedColumn, CreateDateColumn, Index } from 'typeorm';
 
-export type CloseReason = 'STOP_LOSS' | 'TAKE_PROFIT' | 'TAKE_PROFIT_1' | 'TAKE_PROFIT_2' | 'TAKE_PROFIT_3' | 'MANUAL' | 'LIQUIDATION' | 'SIGNAL';
+export type CloseReason = 'STOP_LOSS' | 'TAKE_PROFIT' | 'TAKE_PROFIT_1' | 'TAKE_PROFIT_2' | 'TAKE_PROFIT_3' | 'TAKE_PROFIT_FALLBACK_MARKET' | 'MANUAL' | 'LIQUIDATION' | 'SIGNAL';
 
 @Entity()
 export class Trade {
