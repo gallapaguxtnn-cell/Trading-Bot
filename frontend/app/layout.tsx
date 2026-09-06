@@ -3,30 +3,48 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { ReactNode, useState } from 'react';
+import { ThemeToggle } from '@/components/ui/ThemeToggle';
 import './globals.css';
 
 const NAV_ITEMS = [
   { href: '/', label: 'Dashboard', icon: DashboardIcon },
+  { href: '/performance', label: 'Desempenho', icon: PerformanceIcon },
+  { href: '/portfolios', label: 'Portfólios', icon: PortfoliosIcon },
   { href: '/strategies', label: 'Estratégias', icon: StrategyIcon },
   { href: '/auditor', label: 'Auditor', icon: AuditorIcon },
+  { href: '/alerts', label: 'Avisos', icon: AlertsIcon },
   { href: '/chat', label: 'AI Chat', icon: ChatIcon },
   { href: '/logs', label: 'Logs', icon: LogsIcon },
   { href: '/settings', label: 'Configurações', icon: SettingsIcon },
 ];
+
+const THEME_INIT_SCRIPT = `
+(function () {
+  try {
+    var stored = window.localStorage.getItem('theme');
+    var theme = stored === 'light' || stored === 'dark'
+      ? stored
+      : (window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+    document.documentElement.classList.remove('light', 'dark');
+    document.documentElement.classList.add(theme);
+  } catch (e) {}
+})();
+`;
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   return (
-    <html lang="pt-BR" className="dark">
+    <html lang="pt-BR" className="dark" suppressHydrationWarning>
       <head>
         <title>Singularity AutoTrader</title>
         <meta name="description" content="Automated Trading Bot Manager" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
-        <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
+        <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Sora:wght@500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
+        <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
       </head>
       <body className="flex h-screen overflow-hidden">
         {sidebarOpen && (
@@ -77,12 +95,15 @@ export default function RootLayout({ children }: { children: ReactNode }) {
             })}
           </nav>
 
-          <div className="px-4 py-3 border-t border-border/40">
-            <div className="flex items-center gap-2 text-xs text-muted-foreground">
-              <div className="w-2 h-2 rounded-full bg-emerald-500 pulse-dot" />
-              <span>Sistema Online</span>
+          <div className="px-4 py-3 border-t border-border/40 flex items-center justify-between">
+            <div>
+              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                <div className="w-2 h-2 rounded-full bg-emerald-500 pulse-dot" />
+                <span>Sistema Online</span>
+              </div>
+              <div className="text-[10px] text-muted-foreground/50 mt-1 font-mono">v1.0.0</div>
             </div>
-            <div className="text-[10px] text-muted-foreground/50 mt-1 font-mono">v1.0.0</div>
+            <ThemeToggle />
           </div>
         </aside>
 
@@ -101,6 +122,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
             <div className="hidden lg:block" />
             <div className="flex items-center gap-3">
               <span className="text-xs text-muted-foreground font-mono hidden sm:inline">AutoTrader</span>
+              <ThemeToggle />
             </div>
           </header>
 
@@ -125,6 +147,30 @@ function StrategyIcon({ active }: { active: boolean }) {
   return (
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={active ? 2.2 : 1.8} strokeLinecap="round" strokeLinejoin="round" className={active ? 'text-primary' : ''}>
       <path d="M12 20V10" /><path d="M18 20V4" /><path d="M6 20v-4" />
+    </svg>
+  );
+}
+
+function PerformanceIcon({ active }: { active: boolean }) {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={active ? 2.2 : 1.8} strokeLinecap="round" strokeLinejoin="round" className={active ? 'text-primary' : ''}>
+      <path d="M3 3v18h18" /><path d="M18.7 8l-5.1 5.2-3-3L3 18" />
+    </svg>
+  );
+}
+
+function PortfoliosIcon({ active }: { active: boolean }) {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={active ? 2.2 : 1.8} strokeLinecap="round" strokeLinejoin="round" className={active ? 'text-primary' : ''}>
+      <rect x="2" y="7" width="20" height="14" rx="2" /><path d="M16 21V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v16" />
+    </svg>
+  );
+}
+
+function AlertsIcon({ active }: { active: boolean }) {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={active ? 2.2 : 1.8} strokeLinecap="round" strokeLinejoin="round" className={active ? 'text-primary' : ''}>
+      <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" /><line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" />
     </svg>
   );
 }
