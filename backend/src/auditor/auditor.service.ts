@@ -13,6 +13,7 @@ import { TradeExecution, ExecutionType } from '../trades/trade-execution.entity'
 import { Strategy } from '../strategies/strategy.entity';
 import { ExchangeService } from '../exchange/exchange.service';
 import { EncryptionUtil } from '../utils/encryption.util';
+import { CredentialsResolverService } from '../common/credentials-resolver.service';
 import Decimal from 'decimal.js';
 import type { Exchange } from 'ccxt';
 
@@ -59,6 +60,7 @@ export class AuditorService {
     @InjectRepository(Strategy)
     private strategyRepo: Repository<Strategy>,
     private exchangeService: ExchangeService,
+    private credentialsResolver: CredentialsResolverService,
   ) {}
 
   @Cron(CronExpression.EVERY_HOUR)
@@ -94,6 +96,8 @@ export class AuditorService {
       .where('strategy.id = :id', { id: trade.strategyId })
       .getOne();
     if (!strategy) throw new Error(`Strategy ${trade.strategyId} not found`);
+    const credentials = await this.credentialsResolver.resolveCredentials(strategy);
+    const resolvedStrategy = { ...strategy, ...credentials };
 
     const executions = await this.execRepo.find({
       where: { tradeId },
@@ -102,7 +106,7 @@ export class AuditorService {
     const issues: AuditLog[] = [];
     let totalFeesFromExchange = 0;
 
-    const entryOrder = await this.safelyFetchOrder(strategy, trade.symbol, trade.exchangeOrderId);
+    const entryOrder = await this.safelyFetchOrder(resolvedStrategy, trade.symbol, trade.exchangeOrderId);
     if (entryOrder) {
       totalFeesFromExchange += entryOrder.commission;
 
@@ -135,7 +139,7 @@ export class AuditorService {
       ));
     }
 
-    const slOrder = await this.safelyFetchOrder(strategy, trade.symbol, trade.stopLossOrderId);
+    const slOrder = await this.safelyFetchOrder(resolvedStrategy, trade.symbol, trade.stopLossOrderId);
     if (slOrder) {
       totalFeesFromExchange += slOrder.commission;
       if (trade.closeReason === 'STOP_LOSS' && trade.exitPrice) {
@@ -162,7 +166,7 @@ export class AuditorService {
     for (const exec of executions) {
       if (exec.type === 'ENTRY') continue;
       if (!exec.exchangeOrderId) continue;
-      const execOrder = await this.safelyFetchOrder(strategy, trade.symbol, exec.exchangeOrderId);
+      const execOrder = await this.safelyFetchOrder(resolvedStrategy, trade.symbol, exec.exchangeOrderId);
       if (execOrder) {
         totalFeesFromExchange += execOrder.commission;
         const botPrice = new Decimal(exec.price);
@@ -202,7 +206,7 @@ export class AuditorService {
     }
 
     const fundingFees = trade.status === 'CLOSED'
-      ? await this.safelyFetchFunding(strategy, trade)
+      ? await this.safelyFetchFunding(resolvedStrategy, trade)
       : 0;
 
     let calculatedPnl: number | null = null;
@@ -281,10 +285,10 @@ export class AuditorService {
         exitPrice: Number(trade.exitPrice),
         closeReason: trade.closeReason,
         closeDetail: trade.closeDetail,
-        stopLossPercentage: strategy.stopLossPercentage ? Number(strategy.stopLossPercentage) : null,
-        takeProfitPercentage1: strategy.takeProfitPercentage1 ? Number(strategy.takeProfitPercentage1) : null,
-        takeProfitPercentage2: strategy.takeProfitPercentage2 ? Number(strategy.takeProfitPercentage2) : null,
-        takeProfitPercentage3: strategy.takeProfitPercentage3 ? Number(strategy.takeProfitPercentage3) : null,
+        stopLossPercentage: resolvedStrategy.stopLossPercentage ? Number(resolvedStrategy.stopLossPercentage) : null,
+        takeProfitPercentage1: resolvedStrategy.takeProfitPercentage1 ? Number(resolvedStrategy.takeProfitPercentage1) : null,
+        takeProfitPercentage2: resolvedStrategy.takeProfitPercentage2 ? Number(resolvedStrategy.takeProfitPercentage2) : null,
+        takeProfitPercentage3: resolvedStrategy.takeProfitPercentage3 ? Number(resolvedStrategy.takeProfitPercentage3) : null,
       });
 
       if (percentMismatch) {
@@ -451,9 +455,12 @@ export class AuditorService {
       .addSelect(['strategy.apiKey', 'strategy.apiSecret'])
       .where('strategy.id = :id', { id: strategyId })
       .getOne();
-    if (!strategy || !strategy.apiKey || !strategy.apiSecret) return [];
+    if (!strategy) return [];
+    const credentials = await this.credentialsResolver.resolveCredentials(strategy);
+    const resolvedStrategy = { ...strategy, ...credentials };
+    if (!resolvedStrategy.apiKey || !resolvedStrategy.apiSecret) return [];
 
-    const enabledTpIds = buildEnabledTpConfigs(strategy).map(tp => tp.id);
+    const enabledTpIds = buildEnabledTpConfigs(resolvedStrategy).map(tp => tp.id);
     if (enabledTpIds.length === 0) return [];
 
     const openTrades = await this.tradeRepo.find({ where: { strategyId, status: 'OPEN' } });
@@ -482,7 +489,7 @@ export class AuditorService {
       }
 
       try {
-        const exchange = await this.getExchangeForStrategy(strategy);
+        const exchange = await this.getExchangeForStrategy(resolvedStrategy);
         const openOrders = await exchange.fetchOpenOrders(trade.symbol);
         const liveOrderIds = new Set<string>(openOrders.map((o: any) => String(o.id)));
         const liveCount = countLiveTrackedOrders(tracked, liveOrderIds);
@@ -939,18 +946,20 @@ ${tradesSummary}`;
       .where('strategy.id = :id', { id: trade.strategyId })
       .getOne();
     if (!strategy) throw new Error(`Strategy ${trade.strategyId} not found`);
+    const credentials = await this.credentialsResolver.resolveCredentials(strategy);
+    const resolvedStrategy = { ...strategy, ...credentials };
 
     const closers: Array<{ level: number; order: ExchangeOrder }> = [];
     if (trade.takeProfitOrderId && trade.takeProfitOrderId.includes(':')) {
       for (const e of trade.takeProfitOrderId.split('|')) {
         const [lvlStr, oid] = e.split(':');
         if (!oid) continue;
-        const order = await this.safelyFetchOrder(strategy, trade.symbol, oid);
+        const order = await this.safelyFetchOrder(resolvedStrategy, trade.symbol, oid);
         if (order && order.executedQty > 0 && order.avgPrice > 0) closers.push({ level: parseInt(lvlStr) || 0, order });
       }
     }
     if (trade.closeReason === 'STOP_LOSS' && trade.stopLossOrderId) {
-      const slOrder = await this.safelyFetchOrder(strategy, trade.symbol, trade.stopLossOrderId);
+      const slOrder = await this.safelyFetchOrder(resolvedStrategy, trade.symbol, trade.stopLossOrderId);
       if (slOrder && slOrder.executedQty > 0 && slOrder.avgPrice > 0) closers.push({ level: 0, order: slOrder });
     }
 

@@ -5,6 +5,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Strategy } from './strategies/strategy.entity';
 import { EncryptionUtil } from './utils/encryption.util';
+import { CredentialsResolverService } from './common/credentials-resolver.service';
 import axios from 'axios';
 import * as crypto from 'crypto';
 
@@ -14,7 +15,8 @@ export class AppController {
     private readonly appService: AppService,
     private readonly binanceWs: BinanceWebSocketService,
     @InjectRepository(Strategy)
-    private readonly strategiesRepository: Repository<Strategy>
+    private readonly strategiesRepository: Repository<Strategy>,
+    private readonly credentialsResolver: CredentialsResolverService
   ) {}
 
   @Get()
@@ -54,16 +56,20 @@ export class AppController {
     try {
       const strategy = await this.strategiesRepository.findOne({
         where: { id: strategyId || '7059e1cb-20ea-450b-afb2-73871e010701' },
-        select: ['id', 'name', 'apiKey', 'apiSecret', 'isTestnet']
+        select: ['id', 'name', 'apiKey', 'apiSecret', 'isTestnet', 'isRealAccount', 'exchange', 'portfolioId']
       });
 
-      if (!strategy || !strategy.apiKey || !strategy.apiSecret) {
+      if (!strategy) {
+        return { error: 'Strategy not found or missing credentials' };
+      }
+      const credentials = await this.credentialsResolver.resolveCredentials(strategy);
+      if (!credentials.apiKey || !credentials.apiSecret) {
         return { error: 'Strategy not found or missing credentials' };
       }
 
-      const apiKey = await EncryptionUtil.decrypt(strategy.apiKey);
-      const apiSecret = await EncryptionUtil.decrypt(strategy.apiSecret);
-      const baseURL = strategy.isTestnet ? 'https://testnet.binancefuture.com' : 'https://fapi.binance.com';
+      const apiKey = await EncryptionUtil.decrypt(credentials.apiKey);
+      const apiSecret = await EncryptionUtil.decrypt(credentials.apiSecret);
+      const baseURL = credentials.isTestnet ? 'https://testnet.binancefuture.com' : 'https://fapi.binance.com';
 
       const timestamp = Date.now();
       const signature = crypto.createHmac('sha256', apiSecret).update(`timestamp=${timestamp}`).digest('hex');

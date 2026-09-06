@@ -7,11 +7,13 @@ import { MarketDataStreamService } from './market-data-stream.service';
 import { BinanceWebSocketHealthService } from './binance-ws-health.service';
 import { BinanceWebSocketInitService } from './binance-ws-init.service';
 import { Strategy } from '../strategies/strategy.entity';
+import { CommonModule } from '../common/common.module';
 
 @Module({
   imports: [
     EventEmitterModule.forRoot(),
     TypeOrmModule.forFeature([Strategy]),
+    CommonModule,
   ],
   providers: [
     BinanceWebSocketService,

@@ -6,6 +6,9 @@ import { Trade } from './trade.entity';
 import { EncryptionUtil } from '../utils/encryption.util';
 import { BinanceRequestUtil } from '../utils/binance-request.util';
 import { BybitClientService } from '../exchange/bybit-client.service';
+import { CredentialsResolverService } from '../common/credentials-resolver.service';
+import { PortfoliosService } from '../portfolios/portfolios.service';
+import { PortfolioSummary } from '../portfolios/portfolio-public.interface';
 import axios from 'axios';
 import * as crypto from 'crypto';
 
@@ -21,10 +24,21 @@ export class StrategiesService {
     @InjectRepository(Trade)
     private tradesRepository: Repository<Trade>,
     private readonly bybitClient: BybitClientService,
+    private readonly credentialsResolver: CredentialsResolverService,
+    private readonly portfoliosService: PortfoliosService,
   ) {}
 
-  findAll(): Promise<Strategy[]> {
-    return this.strategiesRepository.find();
+  private async attachPortfolioSummaries<T extends Strategy>(
+    strategies: T[],
+  ): Promise<Array<T & { portfolio: PortfolioSummary | null }>> {
+    const portfolioIds = [...new Set(strategies.map((s) => s.portfolioId).filter((id): id is string => !!id))];
+    const summaries = await this.portfoliosService.findSummariesByIds(portfolioIds);
+    return strategies.map((s) => ({ ...s, portfolio: s.portfolioId ? summaries.get(s.portfolioId) ?? null : null }));
+  }
+
+  async findAll(): Promise<Array<Strategy & { portfolio: PortfolioSummary | null }>> {
+    const strategies = await this.strategiesRepository.find();
+    return this.attachPortfolioSummaries(strategies);
   }
 
   findAllWithCredentials(): Promise<Strategy[]> {
@@ -73,13 +87,14 @@ export class StrategiesService {
         'hedgeMode',
         'pauseNewOrders',
         'apiKey',
-        'apiSecret'
+        'apiSecret',
+        'portfolioId'
       ]
     });
   }
 
-  findOnePublic(id: string): Promise<Strategy | null> {
-    return this.strategiesRepository.findOne({
+  async findOnePublic(id: string): Promise<(Strategy & { portfolio: PortfolioSummary | null }) | null> {
+    const strategy = await this.strategiesRepository.findOne({
       where: { id },
       select: [
         'id',
@@ -115,9 +130,13 @@ export class StrategiesService {
         'tradingMode',
         'allowAveraging',
         'hedgeMode',
-        'pauseNewOrders'
+        'pauseNewOrders',
+        'portfolioId'
       ]
     });
+    if (!strategy) return null;
+    const [withPortfolio] = await this.attachPortfolioSummaries([strategy]);
+    return withPortfolio;
   }
 
   async create(strategy: Partial<Strategy>): Promise<Strategy> {
@@ -164,24 +183,27 @@ export class StrategiesService {
   private async cancelPendingLimitOrders(id: string): Promise<void> {
     try {
       const strategy = await this.findOne(id);
-      if (!strategy || !strategy.apiKey || !strategy.apiSecret) return;
+      if (!strategy) return;
+      const credentials = await this.credentialsResolver.resolveCredentials(strategy);
+      const resolvedStrategy = { ...strategy, ...credentials };
+      if (!resolvedStrategy.apiKey || !resolvedStrategy.apiSecret) return;
 
       const pendingTrades = await this.tradesRepository.find({
         where: { strategyId: id, status: 'OPEN', type: 'LIMIT' },
       });
       if (!pendingTrades.length) return;
 
-      const apiKey = (await EncryptionUtil.decrypt(strategy.apiKey)).trim();
-      const apiSecret = (await EncryptionUtil.decrypt(strategy.apiSecret)).trim();
-      const exchange = strategy.exchange || Exchange.BINANCE;
+      const apiKey = (await EncryptionUtil.decrypt(resolvedStrategy.apiKey)).trim();
+      const apiSecret = (await EncryptionUtil.decrypt(resolvedStrategy.apiSecret)).trim();
+      const exchange = resolvedStrategy.exchange || Exchange.BINANCE;
 
       for (const trade of pendingTrades) {
         if (!trade.exchangeOrderId) continue;
         try {
           if (exchange === Exchange.BYBIT) {
-            await this.bybitClient.cancelOrder(apiKey, apiSecret, strategy.isTestnet, trade.symbol, trade.exchangeOrderId);
+            await this.bybitClient.cancelOrder(apiKey, apiSecret, resolvedStrategy.isTestnet, trade.symbol, trade.exchangeOrderId);
           } else {
-            const baseUrl = strategy.isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
+            const baseUrl = resolvedStrategy.isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
             const ts = Date.now();
             const qs = `symbol=${trade.symbol}&orderId=${trade.exchangeOrderId}&timestamp=${ts}`;
             const sig = crypto.createHmac('sha256', apiSecret).update(qs).digest('hex');
@@ -228,33 +250,35 @@ export class StrategiesService {
     if (!strategy) {
       throw new Error('Strategy not found');
     }
+    const credentials = await this.credentialsResolver.resolveCredentials(strategy);
+    const resolvedStrategy = { ...strategy, ...credentials };
 
-    const apiKey = (await EncryptionUtil.decrypt(strategy.apiKey)).trim();
-    const apiSecret = (await EncryptionUtil.decrypt(strategy.apiSecret)).trim();
-    const exchange = strategy.exchange || Exchange.BINANCE;
+    const apiKey = (await EncryptionUtil.decrypt(resolvedStrategy.apiKey)).trim();
+    const apiSecret = (await EncryptionUtil.decrypt(resolvedStrategy.apiSecret)).trim();
+    const exchange = resolvedStrategy.exchange || Exchange.BINANCE;
 
     const result: any = {
       strategy: {
-        id: strategy.id,
-        name: strategy.name,
+        id: resolvedStrategy.id,
+        name: resolvedStrategy.name,
         exchange,
-        isTestnet: strategy.isTestnet,
-        isRealAccount: strategy.isRealAccount,
+        isTestnet: resolvedStrategy.isTestnet,
+        isRealAccount: resolvedStrategy.isRealAccount,
       },
       openOrders: [],
       openPositions: [],
     };
 
-    if (!strategy.isTestnet && strategy.isRealAccount) {
+    if (!resolvedStrategy.isTestnet && resolvedStrategy.isRealAccount) {
       result.accountMode = 'REAL ACCOUNT';
-      this.logger.warn(`🚨 [REAL ACCOUNT] Checking open orders for strategy: ${strategy.name}`);
+      this.logger.warn(`🚨 [REAL ACCOUNT] Checking open orders for strategy: ${resolvedStrategy.name}`);
     } else {
-      result.accountMode = strategy.isTestnet ? 'TESTNET' : 'MAINNET';
+      result.accountMode = resolvedStrategy.isTestnet ? 'TESTNET' : 'MAINNET';
     }
 
     try {
       if (exchange === Exchange.BYBIT) {
-        const orders = await this.bybitClient.getOpenOrders(apiKey, apiSecret, strategy.isTestnet);
+        const orders = await this.bybitClient.getOpenOrders(apiKey, apiSecret, resolvedStrategy.isTestnet);
         result.openOrders = orders.map((order: any) => ({
           orderId: order.orderId,
           symbol: order.symbol,
@@ -265,7 +289,7 @@ export class StrategiesService {
           status: order.orderStatus,
         }));
 
-        const positions = await this.bybitClient.getPositions(apiKey, apiSecret, strategy.isTestnet);
+        const positions = await this.bybitClient.getPositions(apiKey, apiSecret, resolvedStrategy.isTestnet);
         result.openPositions = positions
           .filter((pos: any) => parseFloat(pos.size) > 0)
           .map((pos: any) => ({
@@ -277,7 +301,7 @@ export class StrategiesService {
             leverage: parseFloat(pos.leverage),
           }));
       } else {
-        const baseUrl = strategy.isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
+        const baseUrl = resolvedStrategy.isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
 
         const ordersTimestamp = Date.now();
         const ordersQuery = `timestamp=${ordersTimestamp}`;
@@ -320,7 +344,7 @@ export class StrategiesService {
       }
 
       this.logger.log(
-        `[ORDERS CHECK] ${strategy.name}: ${result.openOrders.length} open orders, ${result.openPositions.length} open positions`
+        `[ORDERS CHECK] ${resolvedStrategy.name}: ${result.openOrders.length} open orders, ${result.openPositions.length} open positions`
       );
 
       return result;

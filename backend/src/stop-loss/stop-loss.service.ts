@@ -17,6 +17,7 @@ import { OrderUpdateEvent } from '../binance-ws/dto/binance-ws-events.dto';
 import { isPendingLimitEntry } from '../utils/trade-guards.util';
 import { SymbolRulesService } from '../common/symbol-rules.service';
 import { normalizeQuantity, roundPriceToTick } from '../common/exchange-precision.util';
+import { CredentialsResolverService } from '../common/credentials-resolver.service';
 import axios from 'axios';
 import * as crypto from 'crypto';
 
@@ -38,6 +39,7 @@ export class StopLossService implements OnModuleInit {
     private bybitClient: BybitClientService,
     private binanceWs: BinanceWebSocketService,
     private symbolRulesService: SymbolRulesService,
+    private credentialsResolver: CredentialsResolverService,
   ) {
     this.fallbackEnabled = process.env.BINANCE_WS_FALLBACK_ENABLED !== 'false';
   }
@@ -73,12 +75,14 @@ export class StopLossService implements OnModuleInit {
 
     const strategy = await this.strategiesService.findOne(trade.strategyId);
     if (!strategy) return;
+    const credentials = await this.credentialsResolver.resolveCredentials(strategy);
+    const resolvedStrategy = { ...strategy, ...credentials };
 
-    const exchange = strategy.exchange || Exchange.BINANCE;
-    const apiKey = (await EncryptionUtil.decrypt(strategy.apiKey)).trim();
-    const apiSecret = (await EncryptionUtil.decrypt(strategy.apiSecret)).trim();
+    const exchange = resolvedStrategy.exchange || Exchange.BINANCE;
+    const apiKey = (await EncryptionUtil.decrypt(resolvedStrategy.apiKey)).trim();
+    const apiSecret = (await EncryptionUtil.decrypt(resolvedStrategy.apiSecret)).trim();
 
-    await this.markTradeAsClosed(trade, 'STOP_LOSS', exchange, apiKey, apiSecret, strategy.isTestnet);
+    await this.markTradeAsClosed(trade, 'STOP_LOSS', exchange, apiKey, apiSecret, resolvedStrategy.isTestnet);
   }
 
   @Cron('*/10 * * * * *')
@@ -112,14 +116,16 @@ export class StopLossService implements OnModuleInit {
 
     const strategy = await this.strategiesService.findOne(trade.strategyId);
     if (!strategy) return;
+    const credentials = await this.credentialsResolver.resolveCredentials(strategy);
+    const resolvedStrategy = { ...strategy, ...credentials };
 
-    const exchange = strategy.exchange || Exchange.BINANCE;
-    const apiKey = (await EncryptionUtil.decrypt(strategy.apiKey)).trim();
-    const apiSecret = (await EncryptionUtil.decrypt(strategy.apiSecret)).trim();
+    const exchange = resolvedStrategy.exchange || Exchange.BINANCE;
+    const apiKey = (await EncryptionUtil.decrypt(resolvedStrategy.apiKey)).trim();
+    const apiSecret = (await EncryptionUtil.decrypt(resolvedStrategy.apiSecret)).trim();
 
     if (trade.stopLossOrderId && trade.stopLossOrderId.trim() !== '') {
       if (trade.stopLossOrderId.startsWith('BYBIT_TRADING_STOP')) {
-        const positions = await this.bybitClient.getPositions(apiKey, apiSecret, strategy.isTestnet, trade.symbol);
+        const positions = await this.bybitClient.getPositions(apiKey, apiSecret, resolvedStrategy.isTestnet, trade.symbol);
         const position = positions.find(p =>
           p.symbol === trade.symbol &&
           ((trade.side === 'BUY' && p.side === 'Buy') || (trade.side === 'SELL' && p.side === 'Sell'))
@@ -127,7 +133,7 @@ export class StopLossService implements OnModuleInit {
 
         if (!position || parseFloat(position.size) === 0) {
           this.logger.log(`[STOP LOSS EXECUTED] ${trade.symbol} - Position closed on Bybit`);
-          await this.markTradeAsClosed(trade, 'STOP_LOSS', exchange, apiKey, apiSecret, strategy.isTestnet);
+          await this.markTradeAsClosed(trade, 'STOP_LOSS', exchange, apiKey, apiSecret, resolvedStrategy.isTestnet);
           return;
         }
         return;
@@ -139,17 +145,17 @@ export class StopLossService implements OnModuleInit {
         exchange,
         apiKey,
         apiSecret,
-        strategy.isTestnet
+        resolvedStrategy.isTestnet
       );
 
       if (orderStatus === 'FILLED' || orderStatus === 'Filled') {
         this.logger.log(`[STOP LOSS EXECUTED] ${trade.symbol} - Order was filled`);
-        await this.markTradeAsClosed(trade, 'STOP_LOSS', exchange, apiKey, apiSecret, strategy.isTestnet);
+        await this.markTradeAsClosed(trade, 'STOP_LOSS', exchange, apiKey, apiSecret, resolvedStrategy.isTestnet);
         return;
       } else if (orderStatus === 'CANCELED' || orderStatus === 'EXPIRED' || orderStatus === 'Cancelled' || orderStatus === 'Deactivated') {
         this.logger.warn(`[STOP LOSS] Order ${trade.stopLossOrderId} was ${orderStatus}, attempting to recreate SL`);
 
-        const recreated = await this.recreateStopLoss(trade, strategy, exchange, apiKey, apiSecret);
+        const recreated = await this.recreateStopLoss(trade, resolvedStrategy, exchange, apiKey, apiSecret);
         if (!recreated) {
           this.logger.warn(`[STOP LOSS] Could not recreate SL for ${trade.symbol}, falling back to manual monitoring`);
           trade.stopLossOrderId = null;
@@ -161,12 +167,12 @@ export class StopLossService implements OnModuleInit {
       }
     }
 
-    if (!strategy.stopLossPercentage) return;
+    if (!resolvedStrategy.stopLossPercentage) return;
 
-    const currentPrice = await this.getCurrentPrice(trade, strategy);
+    const currentPrice = await this.getCurrentPrice(trade, resolvedStrategy);
     if (!currentPrice) return;
 
-    const stopLossPrice = this.calculateStopLoss(trade, strategy);
+    const stopLossPrice = this.calculateStopLoss(trade, resolvedStrategy);
 
     const shouldTrigger =
       (trade.side === 'BUY' && currentPrice <= stopLossPrice) ||
@@ -181,7 +187,7 @@ export class StopLossService implements OnModuleInit {
       this.logger.warn(`[STOP-LOSS TRIGGERED] ${trade.symbol}`);
       this.logger.warn(`├─ Entry: ${entryPrice.toFixed(2)} → Exit: ${currentPrice.toFixed(2)} (${lossPercent.toFixed(2)}%)`);
       this.logger.warn(`└─ SL Price: ${stopLossPrice.toFixed(2)}`);
-      await this.closePosition(trade, strategy, currentPrice, 'STOP_LOSS', apiKey, apiSecret);
+      await this.closePosition(trade, resolvedStrategy, currentPrice, 'STOP_LOSS', apiKey, apiSecret);
     }
   }
 

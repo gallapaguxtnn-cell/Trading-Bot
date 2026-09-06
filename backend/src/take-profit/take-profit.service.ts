@@ -30,6 +30,7 @@ import {
 import { floorToStep } from '../webhook/tp-planner.util';
 import { SymbolRulesService } from '../common/symbol-rules.service';
 import { normalizeQuantity, roundPriceToTick } from '../common/exchange-precision.util';
+import { CredentialsResolverService } from '../common/credentials-resolver.service';
 import axios from 'axios';
 import * as crypto from 'crypto';
 import Decimal from 'decimal.js';
@@ -55,6 +56,7 @@ export class TakeProfitService implements OnModuleInit {
     private positionSyncService: PositionSyncService,
     private eventEmitter: EventEmitter2,
     private symbolRulesService: SymbolRulesService,
+    private credentialsResolver: CredentialsResolverService,
   ) {
     this.fallbackEnabled = process.env.BINANCE_WS_FALLBACK_ENABLED !== 'false';
   }
@@ -158,32 +160,34 @@ export class TakeProfitService implements OnModuleInit {
 
     const strategy = await this.strategiesService.findOne(trade.strategyId);
     if (!strategy) return;
+    const credentials = await this.credentialsResolver.resolveCredentials(strategy);
+    const resolvedStrategy = { ...strategy, ...credentials };
 
-    const exchange = strategy.exchange || Exchange.BINANCE;
-    const apiKey = (await EncryptionUtil.decrypt(strategy.apiKey)).trim();
-    const apiSecret = (await EncryptionUtil.decrypt(strategy.apiSecret)).trim();
+    const exchange = resolvedStrategy.exchange || Exchange.BINANCE;
+    const apiKey = (await EncryptionUtil.decrypt(resolvedStrategy.apiKey)).trim();
+    const apiSecret = (await EncryptionUtil.decrypt(resolvedStrategy.apiSecret)).trim();
 
     if (trade.takeProfitOrderId && trade.takeProfitOrderId.startsWith('BYBIT_TRADING_STOP')) {
-      const positions = await this.bybitClient.getPositions(apiKey, apiSecret, strategy.isTestnet, trade.symbol);
+      const positions = await this.bybitClient.getPositions(apiKey, apiSecret, resolvedStrategy.isTestnet, trade.symbol);
       const position = positions.find(p =>
         p.symbol === trade.symbol &&
         ((trade.side === 'BUY' && p.side === 'Buy') || (trade.side === 'SELL' && p.side === 'Sell'))
       );
       if (!position || parseFloat(position.size) === 0) {
         this.logger.log(`[TAKE PROFIT EXECUTED] ${trade.symbol} - Position closed on Bybit`);
-        await this.markTradeAsClosed(trade, 'TAKE_PROFIT', exchange, apiKey, apiSecret, strategy.isTestnet);
+        await this.markTradeAsClosed(trade, 'TAKE_PROFIT', exchange, apiKey, apiSecret, resolvedStrategy.isTestnet);
       }
       return;
     }
 
     if (trade.takeProfitOrderId && trade.takeProfitOrderId.includes(':')) {
-      await this.checkExchangeTakeProfit(trade, strategy, exchange, apiKey, apiSecret);
+      await this.checkExchangeTakeProfit(trade, resolvedStrategy, exchange, apiKey, apiSecret);
       return;
     }
 
-    const tp1 = this.calculateTakeProfit(trade, strategy, 1);
-    const tp2 = this.calculateTakeProfit(trade, strategy, 2);
-    const tp3 = this.calculateTakeProfit(trade, strategy, 3);
+    const tp1 = this.calculateTakeProfit(trade, resolvedStrategy, 1);
+    const tp2 = this.calculateTakeProfit(trade, resolvedStrategy, 2);
+    const tp3 = this.calculateTakeProfit(trade, resolvedStrategy, 3);
 
     if (!tp1 && !tp2 && !tp3) return;
 
@@ -198,11 +202,11 @@ export class TakeProfitService implements OnModuleInit {
       return;
     }
 
-    const currentPrice = await this.getCurrentPrice(trade, strategy);
+    const currentPrice = await this.getCurrentPrice(trade, resolvedStrategy);
     if (!currentPrice) return;
 
-    const tp1Qty = strategy.takeProfitQuantity1 || 33;
-    const tp2Qty = strategy.takeProfitQuantity2 || 33;
+    const tp1Qty = resolvedStrategy.takeProfitQuantity1 || 33;
+    const tp2Qty = resolvedStrategy.takeProfitQuantity2 || 33;
     const lastTpLevel = trade.lastTpLevel || 0;
 
     const profitPercent = this.calculateProfitPercent(trade, currentPrice);
@@ -217,7 +221,7 @@ export class TakeProfitService implements OnModuleInit {
       trade.lastTpLevel = 1;
       trade.tpWarnings = clearTpMissingRetry(trade.tpWarnings) as any;
       trade.closeDetail = formatFallbackCloseDetail(tp1) as any;
-      await this.closePosition(trade, strategy, currentPrice, 'TAKE_PROFIT_FALLBACK_MARKET', tp1Qty / 100, apiKey, apiSecret, 1);
+      await this.closePosition(trade, resolvedStrategy, currentPrice, 'TAKE_PROFIT_FALLBACK_MARKET', tp1Qty / 100, apiKey, apiSecret, 1);
     } else if (lastTpLevel < 2 && tp2 && this.shouldTrigger(trade, currentPrice, tp2)) {
       const closePercent = tp2Qty / (100 - tp1Qty);
       this.logger.error(
@@ -228,7 +232,7 @@ export class TakeProfitService implements OnModuleInit {
       trade.lastTpLevel = 2;
       trade.tpWarnings = clearTpMissingRetry(trade.tpWarnings) as any;
       trade.closeDetail = formatFallbackCloseDetail(tp2) as any;
-      await this.closePosition(trade, strategy, currentPrice, 'TAKE_PROFIT_FALLBACK_MARKET', closePercent, apiKey, apiSecret, 2);
+      await this.closePosition(trade, resolvedStrategy, currentPrice, 'TAKE_PROFIT_FALLBACK_MARKET', closePercent, apiKey, apiSecret, 2);
     } else if (lastTpLevel < 3 && tp3 && this.shouldTrigger(trade, currentPrice, tp3)) {
       this.logger.error(
         `[TP FALLBACK MARKET] ${trade.symbol} TP3 apos ${TP_MISSING_RETRY_LIMIT} tentativas sem LIMIT na corretora — ` +
@@ -238,7 +242,7 @@ export class TakeProfitService implements OnModuleInit {
       trade.lastTpLevel = 3;
       trade.tpWarnings = clearTpMissingRetry(trade.tpWarnings) as any;
       trade.closeDetail = formatFallbackCloseDetail(tp3) as any;
-      await this.closePosition(trade, strategy, currentPrice, 'TAKE_PROFIT_FALLBACK_MARKET', 1.0, apiKey, apiSecret, 3);
+      await this.closePosition(trade, resolvedStrategy, currentPrice, 'TAKE_PROFIT_FALLBACK_MARKET', 1.0, apiKey, apiSecret, 3);
     }
   }
 

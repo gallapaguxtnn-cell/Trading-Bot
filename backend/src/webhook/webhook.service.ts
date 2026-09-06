@@ -26,6 +26,7 @@ import * as crypto from 'crypto';
 import Decimal from 'decimal.js';
 import { normalizeQuantity, roundPriceToTick } from '../common/exchange-precision.util';
 import { SymbolRulesService } from '../common/symbol-rules.service';
+import { CredentialsResolverService } from '../common/credentials-resolver.service';
 
 interface BinanceOrderResponse {
   orderId: number;
@@ -103,7 +104,8 @@ export class WebhookService {
     private readonly tradesService: TradesService,
     private readonly binanceWs: BinanceWebSocketService,
     private readonly signalLog: SignalLogService,
-    private readonly symbolRulesService: SymbolRulesService
+    private readonly symbolRulesService: SymbolRulesService,
+    private readonly credentialsResolver: CredentialsResolverService
   ) {}
 
   private sleep(ms: number): Promise<void> {
@@ -135,11 +137,13 @@ export class WebhookService {
 
   private async getAccountBalance(strategy: Strategy): Promise<number> {
     try {
-      const decryptedKey = (await EncryptionUtil.decrypt(strategy.apiKey)).trim();
-      const decryptedSecret = (await EncryptionUtil.decrypt(strategy.apiSecret)).trim();
+      const credentials = await this.credentialsResolver.resolveCredentials(strategy);
+      const resolvedStrategy = { ...strategy, ...credentials };
+      const decryptedKey = (await EncryptionUtil.decrypt(resolvedStrategy.apiKey)).trim();
+      const decryptedSecret = (await EncryptionUtil.decrypt(resolvedStrategy.apiSecret)).trim();
 
-      const exchange = strategy.exchange || Exchange.BINANCE;
-      const cacheKey = `balance:${exchange}:${strategy.id}:${strategy.isTestnet}`;
+      const exchange = resolvedStrategy.exchange || Exchange.BINANCE;
+      const cacheKey = `balance:${exchange}:${resolvedStrategy.id}:${resolvedStrategy.isTestnet}`;
 
       const cached = this.rateLimiter.getCached<number>(cacheKey);
       if (cached !== null) {
@@ -148,16 +152,16 @@ export class WebhookService {
       }
 
       if (exchange === Exchange.BYBIT) {
-        const balance = await this.bybitClient.getWalletBalance(decryptedKey, decryptedSecret, strategy.isTestnet);
+        const balance = await this.bybitClient.getWalletBalance(decryptedKey, decryptedSecret, resolvedStrategy.isTestnet);
         this.rateLimiter.setCached(cacheKey, balance, 10000);
-        this.logger.log(`[BALANCE] Bybit ${strategy.isTestnet ? 'Testnet' : 'Mainnet'}: ${balance.toFixed(2)} USDT`);
+        this.logger.log(`[BALANCE] Bybit ${resolvedStrategy.isTestnet ? 'Testnet' : 'Mainnet'}: ${balance.toFixed(2)} USDT`);
         return balance;
       }
 
       if (exchange === Exchange.BINANCE) {
         await this.sleep(2000);
 
-        const baseURL = strategy.isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
+        const baseURL = resolvedStrategy.isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
         const timestamp = Date.now();
         const queryString = `timestamp=${timestamp}`;
         const signature = crypto.createHmac('sha256', decryptedSecret).update(queryString).digest('hex');
@@ -195,7 +199,7 @@ export class WebhookService {
         const crossWalletBalance = parseFloat(usdtBalance.crossWalletBalance || '0');
 
         this.logger.log(
-          `[BALANCE] Binance ${strategy.isTestnet ? 'Testnet' : 'Mainnet'} Futures USDT: ` +
+          `[BALANCE] Binance ${resolvedStrategy.isTestnet ? 'Testnet' : 'Mainnet'} Futures USDT: ` +
           `Available=${availableBalance.toFixed(2)}, ` +
           `Wallet=${walletBalance.toFixed(2)}, ` +
           `Cross=${crossWalletBalance.toFixed(2)}`
@@ -217,9 +221,9 @@ export class WebhookService {
         this.rateLimiter.setCached(cacheKey, balance, 10000);
         return balance;
       } else {
-        const balance = await this.bybitClient.getWalletBalance(decryptedKey, decryptedSecret, strategy.isTestnet);
+        const balance = await this.bybitClient.getWalletBalance(decryptedKey, decryptedSecret, resolvedStrategy.isTestnet);
         this.rateLimiter.setCached(cacheKey, balance, 10000);
-        this.logger.log(`[BALANCE] Bybit ${strategy.isTestnet ? 'Testnet' : 'Mainnet'}: ${balance.toFixed(2)} USDT`);
+        this.logger.log(`[BALANCE] Bybit ${resolvedStrategy.isTestnet ? 'Testnet' : 'Mainnet'}: ${balance.toFixed(2)} USDT`);
 
         if (balance === 0) {
           this.logger.warn(`[BALANCE] WARNING: Account balance is 0 USDT. This will cause notional errors.`);
@@ -1623,19 +1627,22 @@ export class WebhookService {
     if (!trade || trade.status !== 'OPEN' || trade.type !== 'LIMIT' || !trade.exchangeOrderId) return;
 
     const strategy = await this.strategiesService.findOne(trade.strategyId);
-    if (!strategy || !strategy.apiKey || !strategy.apiSecret) return;
+    if (!strategy) return;
+    const credentials = await this.credentialsResolver.resolveCredentials(strategy);
+    const resolvedStrategy = { ...strategy, ...credentials };
+    if (!resolvedStrategy.apiKey || !resolvedStrategy.apiSecret) return;
 
-    const decryptedKey = (await EncryptionUtil.decrypt(strategy.apiKey)).trim();
-    const decryptedSecret = (await EncryptionUtil.decrypt(strategy.apiSecret)).trim();
+    const decryptedKey = (await EncryptionUtil.decrypt(resolvedStrategy.apiKey)).trim();
+    const decryptedSecret = (await EncryptionUtil.decrypt(resolvedStrategy.apiSecret)).trim();
 
     let needsStopLoss = !trade.stopLossOrderId;
     let needsTakeProfit = !trade.takeProfitOrderId;
 
-    if (!needsTakeProfit && strategy.exchange === Exchange.BYBIT) {
+    if (!needsTakeProfit && resolvedStrategy.exchange === Exchange.BYBIT) {
       const tracked = parseTrackedTpOrders(trade.takeProfitOrderId);
       if (tracked.length > 0) {
         try {
-          const openOrders = await this.bybitClient.getOpenOrders(decryptedKey, decryptedSecret, strategy.isTestnet, trade.symbol);
+          const openOrders = await this.bybitClient.getOpenOrders(decryptedKey, decryptedSecret, resolvedStrategy.isTestnet, trade.symbol);
           const liveOrderIds = new Set(openOrders.map(o => o.orderId));
           if (countLiveTrackedOrders(tracked, liveOrderIds) === 0) {
             this.logger.warn(
@@ -1661,10 +1668,10 @@ export class WebhookService {
         await this.tradesService.updateTrade(tradeId, { takeProfitOrderId: null as any });
       }
 
-      if (strategy.exchange === Exchange.BINANCE) {
-        this.scheduleProtectionOrders(trade.id, trade.symbol, trade.side, strategy, decryptedKey, decryptedSecret);
-      } else if (strategy.exchange === Exchange.BYBIT) {
-        this.scheduleBybitProtectionOrders(trade.id, trade.symbol, trade.side, strategy, decryptedKey, decryptedSecret, Number(trade.quantity));
+      if (resolvedStrategy.exchange === Exchange.BINANCE) {
+        this.scheduleProtectionOrders(trade.id, trade.symbol, trade.side, resolvedStrategy, decryptedKey, decryptedSecret);
+      } else if (resolvedStrategy.exchange === Exchange.BYBIT) {
+        this.scheduleBybitProtectionOrders(trade.id, trade.symbol, trade.side, resolvedStrategy, decryptedKey, decryptedSecret, Number(trade.quantity));
       }
       this.logger.log(`[RESUME PROTECTION] Re-scheduled protection for trade ${tradeId}`);
     } catch (err: any) {
@@ -1996,52 +2003,54 @@ export class WebhookService {
     if (!strategy) {
       throw new Error(`Strategy not found: ${signal.strategyId}`);
     }
+    const credentials = await this.credentialsResolver.resolveCredentials(strategy);
+    const resolvedStrategy = { ...strategy, ...credentials };
 
     this.logger.log(
-      `[STRATEGY CONFIG] ${strategy.name} | ` +
-      `Exchange: ${strategy.exchange || 'BINANCE'} | ` +
-      `Testnet: ${strategy.isTestnet} | ` +
-      `RealAccount: ${strategy.isRealAccount} | ` +
-      `UseAccountPercentage: ${strategy.useAccountPercentage} | ` +
-      `AccountPercentage: ${strategy.accountPercentage}% | ` +
-      `DefaultQuantity: ${strategy.defaultQuantity} | ` +
-      `Leverage: ${strategy.leverage}x | ` +
-      `EnableCompound: ${strategy.enableCompound} | ` +
-      `TradingMode: ${strategy.tradingMode}`
+      `[STRATEGY CONFIG] ${resolvedStrategy.name} | ` +
+      `Exchange: ${resolvedStrategy.exchange || 'BINANCE'} | ` +
+      `Testnet: ${resolvedStrategy.isTestnet} | ` +
+      `RealAccount: ${resolvedStrategy.isRealAccount} | ` +
+      `UseAccountPercentage: ${resolvedStrategy.useAccountPercentage} | ` +
+      `AccountPercentage: ${resolvedStrategy.accountPercentage}% | ` +
+      `DefaultQuantity: ${resolvedStrategy.defaultQuantity} | ` +
+      `Leverage: ${resolvedStrategy.leverage}x | ` +
+      `EnableCompound: ${resolvedStrategy.enableCompound} | ` +
+      `TradingMode: ${resolvedStrategy.tradingMode}`
     );
 
-    if (!strategy.isActive) {
-      this.logger.warn(`Strategy ${strategy.name} is paused. Ignoring signal.`);
+    if (!resolvedStrategy.isActive) {
+      this.logger.warn(`Strategy ${resolvedStrategy.name} is paused. Ignoring signal.`);
       return { status: 'skipped', message: 'Strategy is paused' };
     }
 
-    if (strategy.pauseNewOrders) {
-      this.logger.warn(`Strategy ${strategy.name} has new orders paused. Ignoring signal.`);
+    if (resolvedStrategy.pauseNewOrders) {
+      this.logger.warn(`Strategy ${resolvedStrategy.name} has new orders paused. Ignoring signal.`);
       return { status: 'skipped', message: 'New orders paused for this strategy' };
     }
 
-    if (strategy.tradingMode === TradingMode.SINGLE) {
-      const closedTradesCount = await this.tradesService.countClosedTrades(strategy.id);
+    if (resolvedStrategy.tradingMode === TradingMode.SINGLE) {
+      const closedTradesCount = await this.tradesService.countClosedTrades(resolvedStrategy.id);
       if (closedTradesCount > 0) {
-        this.logger.warn(`[SINGLE MODE] Strategy ${strategy.name} already completed a trade cycle. Ignoring new signals.`);
+        this.logger.warn(`[SINGLE MODE] Strategy ${resolvedStrategy.name} already completed a trade cycle. Ignoring new signals.`);
         return { status: 'skipped', message: 'Single mode: Trade cycle completed. Reset to continue trading.' };
       }
     }
 
-    const exchange = strategy.exchange || Exchange.BINANCE;
+    const exchange = resolvedStrategy.exchange || Exchange.BINANCE;
     const normalizedSymbol = this.normalizeSymbol(signal.symbol, exchange);
     const side = signal.action.toUpperCase() as 'BUY' | 'SELL';
 
     // --- POSITION MANAGEMENT ---
     const openTrades = await this.tradesService.findOpenTrades();
-    const activeTradesForSymbol = openTrades.filter(t => t.symbol === normalizedSymbol && t.strategyId === strategy.id);
+    const activeTradesForSymbol = openTrades.filter(t => t.symbol === normalizedSymbol && t.strategyId === resolvedStrategy.id);
     const activeTrade = activeTradesForSymbol.find(t => t.side === side);
     const oppositeActiveTrade = activeTradesForSymbol.find(t => t.side !== side);
 
     // Check for pending LIMIT orders in opposite direction that haven't been filled yet
     const oppositePendingOrder = openTrades.find(t =>
       t.symbol === normalizedSymbol &&
-      t.strategyId === strategy.id &&
+      t.strategyId === resolvedStrategy.id &&
       t.side !== side &&
       t.type === 'LIMIT' &&
       t.status === 'OPEN' &&
@@ -2049,7 +2058,7 @@ export class WebhookService {
     );
 
     if (activeTrade) {
-        if (strategy.allowAveraging) {
+        if (resolvedStrategy.allowAveraging) {
             this.logger.log(`[AVERAGING] Adding to existing ${side} position for ${normalizedSymbol}.`);
         } else {
             this.logger.warn(`[POSITION] Ignoring duplicate ${side} signal for ${normalizedSymbol}. Position already open and averaging disabled.`);
@@ -2061,15 +2070,15 @@ export class WebhookService {
     if (oppositePendingOrder && !oppositeActiveTrade) {
         this.logger.log(`[BUFFER CANCEL] Detected pending ${oppositePendingOrder.side} LIMIT order. Cancelling it due to opposite signal.`);
         try {
-            const decryptedKey = (await EncryptionUtil.decrypt(strategy.apiKey)).trim();
-            const decryptedSecret = (await EncryptionUtil.decrypt(strategy.apiSecret)).trim();
+            const decryptedKey = (await EncryptionUtil.decrypt(resolvedStrategy.apiKey)).trim();
+            const decryptedSecret = (await EncryptionUtil.decrypt(resolvedStrategy.apiSecret)).trim();
 
             // Cancel only this specific LIMIT order from the buffer
             if (oppositePendingOrder.exchangeOrderId) {
                 if (exchange === Exchange.BYBIT) {
-                    await this.bybitClient.cancelOrder(decryptedKey, decryptedSecret, strategy.isTestnet, normalizedSymbol, oppositePendingOrder.exchangeOrderId);
+                    await this.bybitClient.cancelOrder(decryptedKey, decryptedSecret, resolvedStrategy.isTestnet, normalizedSymbol, oppositePendingOrder.exchangeOrderId);
                 } else {
-                    await this.cancelBinanceOrderOrAlgo(normalizedSymbol, oppositePendingOrder.exchangeOrderId, decryptedKey, decryptedSecret, strategy.isTestnet);
+                    await this.cancelBinanceOrderOrAlgo(normalizedSymbol, oppositePendingOrder.exchangeOrderId, decryptedKey, decryptedSecret, resolvedStrategy.isTestnet);
                 }
                 this.logger.log(`[BUFFER CANCEL] Cancelled buffer order ${oppositePendingOrder.exchangeOrderId}`);
             }
@@ -2086,27 +2095,27 @@ export class WebhookService {
         }
     }
 
-    if (oppositeActiveTrade && !strategy.hedgeMode) {
+    if (oppositeActiveTrade && !resolvedStrategy.hedgeMode) {
             this.logger.log(`[ONE-WAY] Detected opposite ${oppositeActiveTrade.side} position. Closing it before opening new ${side} position.`);
 
             // Close existing position logic (Generic close via Market)
             try {
-                const decryptedKey = (await EncryptionUtil.decrypt(strategy.apiKey)).trim();
-                const decryptedSecret = (await EncryptionUtil.decrypt(strategy.apiSecret)).trim();
+                const decryptedKey = (await EncryptionUtil.decrypt(resolvedStrategy.apiKey)).trim();
+                const decryptedSecret = (await EncryptionUtil.decrypt(resolvedStrategy.apiSecret)).trim();
 
                 // Cancel all protection orders (TP/SL) for this position
                 this.logger.log(`[ONE-WAY] Cancelling all protection orders for ${normalizedSymbol}...`);
                 if (exchange === Exchange.BYBIT) {
-                    await this.bybitClient.cancelAllOrders(decryptedKey, decryptedSecret, strategy.isTestnet, normalizedSymbol);
+                    await this.bybitClient.cancelAllOrders(decryptedKey, decryptedSecret, resolvedStrategy.isTestnet, normalizedSymbol);
                 } else {
-                    await this.cancelAllBinanceOrders(decryptedKey, decryptedSecret, strategy.isTestnet, normalizedSymbol);
+                    await this.cancelAllBinanceOrders(decryptedKey, decryptedSecret, resolvedStrategy.isTestnet, normalizedSymbol);
                 }
 
                 // Only close active position if it exists
                 if (oppositeActiveTrade) {
                     let closeQty = 0;
                     try {
-                         closeQty = await this.getPositionSize(oppositeActiveTrade.symbol, exchange, decryptedKey, decryptedSecret, strategy.isTestnet);
+                         closeQty = await this.getPositionSize(oppositeActiveTrade.symbol, exchange, decryptedKey, decryptedSecret, resolvedStrategy.isTestnet);
                     } catch (e) {
                          this.logger.warn(`[ONE-WAY] Failed to fetch live position size, falling back to DB: ${e.message}`);
                          closeQty = parseFloat(oppositeActiveTrade.quantity as any);
@@ -2119,15 +2128,15 @@ export class WebhookService {
                         const closeSide = oppositeActiveTrade.side === 'BUY' ? 'SELL' : 'BUY';
                         this.logger.log(`[ONE-WAY] Closing ${oppositeActiveTrade.symbol} (${closeQty}) before reversal.`);
 
-                        const rules = await this.getSymbolRules(normalizedSymbol, strategy.isTestnet);
+                        const rules = await this.getSymbolRules(normalizedSymbol, resolvedStrategy.isTestnet);
 
                         if (exchange === Exchange.BYBIT) {
                             const originalSide = oppositeActiveTrade.side === 'BUY' ? 'Buy' : 'Sell';
                             const positionIdx = await this.bybitClient.getPositionIdx(
-                                decryptedKey, decryptedSecret, strategy.isTestnet, normalizedSymbol, originalSide, strategy.hedgeMode
+                                decryptedKey, decryptedSecret, resolvedStrategy.isTestnet, normalizedSymbol, originalSide, resolvedStrategy.hedgeMode
                             );
 
-                            await this.bybitClient.createOrder(decryptedKey, decryptedSecret, strategy.isTestnet, {
+                            await this.bybitClient.createOrder(decryptedKey, decryptedSecret, resolvedStrategy.isTestnet, {
                                 symbol: normalizedSymbol,
                                 side: closeSide === 'BUY' ? 'Buy' : 'Sell',
                                 orderType: 'Market',
@@ -2142,12 +2151,12 @@ export class WebhookService {
                             params.append('type', 'MARKET');
                             params.append('quantity', normalizeQuantity(closeQty, rules.qtyStep, rules.minQty));
                             params.append('reduceOnly', 'true');
-                            await this.createBinanceOrder(params, decryptedKey, decryptedSecret, strategy.isTestnet);
+                            await this.createBinanceOrder(params, decryptedKey, decryptedSecret, resolvedStrategy.isTestnet);
                         }
                         this.logger.log(`[ONE-WAY] Position closed successfully.`);
                     }
 
-                     const exitPrice = await this.getCurrentPrice(normalizedSymbol, exchange, strategy.isTestnet);
+                     const exitPrice = await this.getCurrentPrice(normalizedSymbol, exchange, resolvedStrategy.isTestnet);
                      const entryPrice = parseFloat(oppositeActiveTrade.entryPrice as any);
                      const quantity = parseFloat(oppositeActiveTrade.quantity as any);
                      let pnl: number;
@@ -2190,8 +2199,8 @@ export class WebhookService {
     let effectivePrice = signal.price;
 
     // Buffer / Percent Offset Logic (Conservative Entry)
-    if (strategy.bufferEntry && typeof strategy.bufferPercentage === 'number' && signal.price && signal.orderType !== OrderType.MARKET) {
-      if (strategy.bufferPercentage === 0) {
+    if (resolvedStrategy.bufferEntry && typeof resolvedStrategy.bufferPercentage === 'number' && signal.price && signal.orderType !== OrderType.MARKET) {
+      if (resolvedStrategy.bufferPercentage === 0) {
         // Buffer 0%: Entry at exact signal price using LIMIT order
         effectivePrice = signal.price;
         isLimitOrder = true;
@@ -2200,7 +2209,7 @@ export class WebhookService {
         this.logger.log(`[BUFFER] Entry at exact signal price ${effectivePrice} (0% buffer - LIMIT order)`);
       } else {
         // Buffer > 0%: Apply offset
-        const offset = signal.price * (strategy.bufferPercentage / 100);
+        const offset = signal.price * (resolvedStrategy.bufferPercentage / 100);
         if (side === 'BUY') {
           effectivePrice = signal.price - offset;  // BUY: entry BELOW signal price (waits for price to drop)
         } else {
@@ -2211,7 +2220,7 @@ export class WebhookService {
         signal.price = effectivePrice;
         signal.orderType = OrderType.LIMIT;
 
-        this.logger.log(`[BUFFER] Entry adjusted to ${effectivePrice} (${strategy.bufferPercentage}% buffer ${side === 'BUY' ? 'below' : 'above'} signal)`);
+        this.logger.log(`[BUFFER] Entry adjusted to ${effectivePrice} (${resolvedStrategy.bufferPercentage}% buffer ${side === 'BUY' ? 'below' : 'above'} signal)`);
       }
     }
 
@@ -2223,19 +2232,19 @@ export class WebhookService {
     let quantity: number;
     let notional = 0;
 
-    this.logger.log(`[QUANTITY CALC] Starting calculation - signal.quantity: ${signal.quantity}, signal.accountPercentage: ${signal.accountPercentage}, strategy.useAccountPercentage: ${strategy.useAccountPercentage}, strategy.accountPercentage: ${strategy.accountPercentage}, effectivePrice: ${effectivePrice}`);
+    this.logger.log(`[QUANTITY CALC] Starting calculation - signal.quantity: ${signal.quantity}, signal.accountPercentage: ${signal.accountPercentage}, resolvedStrategy.useAccountPercentage: ${resolvedStrategy.useAccountPercentage}, resolvedStrategy.accountPercentage: ${resolvedStrategy.accountPercentage}, effectivePrice: ${effectivePrice}`);
 
     // Validate that price is provided when needed for percentage-based calculations
-    const needsPriceForCalculation = !signal.quantity && (signal.accountPercentage || (strategy.useAccountPercentage && strategy.accountPercentage));
+    const needsPriceForCalculation = !signal.quantity && (signal.accountPercentage || (resolvedStrategy.useAccountPercentage && resolvedStrategy.accountPercentage));
     if (needsPriceForCalculation && !effectivePrice) {
       const errorMsg = `Price is required for percentage-based quantity calculation. ` +
         `Please include "price" field in your webhook payload. ` +
-        `Strategy: ${strategy.name} | Symbol: ${normalizedSymbol} | Side: ${side}`;
+        `Strategy: ${resolvedStrategy.name} | Symbol: ${normalizedSymbol} | Side: ${side}`;
 
       this.logger.error(`[PRICE ERROR] ${errorMsg}`);
 
       const tradeData: Partial<Trade> = {
-        strategyId: strategy.id,
+        strategyId: resolvedStrategy.id,
         symbol: normalizedSymbol,
         side,
         type: 'MARKET',
@@ -2255,57 +2264,57 @@ export class WebhookService {
       notional = quantity * effectivePrice!;
       this.logger.log(`[QUANTITY CALC] Using explicit quantity from signal: ${this.formatQuantityWithUsdt(quantity, effectivePrice!)}`);
     } else if (signal.accountPercentage && effectivePrice) {
-      const accountBalance = await this.getAccountBalance(strategy);
-      this.logger.log(`[QUANTITY CALC] Signal percentage mode - Balance: ${accountBalance.toFixed(2)} USDT, Percentage: ${signal.accountPercentage}%, Leverage: ${strategy.leverage}x`);
+      const accountBalance = await this.getAccountBalance(resolvedStrategy);
+      this.logger.log(`[QUANTITY CALC] Signal percentage mode - Balance: ${accountBalance.toFixed(2)} USDT, Percentage: ${signal.accountPercentage}%, Leverage: ${resolvedStrategy.leverage}x`);
 
-      const targetNotional = accountBalance * (signal.accountPercentage / 100) * strategy.leverage;
+      const targetNotional = accountBalance * (signal.accountPercentage / 100) * resolvedStrategy.leverage;
       quantity = targetNotional / effectivePrice;
       notional = targetNotional;
 
       this.logger.log(`[QUANTITY CALC] Result - Notional: ${notional.toFixed(2)} USDT, Quantity: ${this.formatQuantityWithUsdt(quantity, effectivePrice)}`);
-    } else if (strategy.useAccountPercentage && strategy.accountPercentage && effectivePrice) {
-      this.logger.log(`[QUANTITY CALC] Strategy percentage mode - enableCompound: ${strategy.enableCompound}`);
+    } else if (resolvedStrategy.useAccountPercentage && resolvedStrategy.accountPercentage && effectivePrice) {
+      this.logger.log(`[QUANTITY CALC] Strategy percentage mode - enableCompound: ${resolvedStrategy.enableCompound}`);
 
-      if (!strategy.enableCompound) {
-        const lastTradeWithQty = await this.tradesService.findLastTradeWithInitialQuantity(strategy.id);
+      if (!resolvedStrategy.enableCompound) {
+        const lastTradeWithQty = await this.tradesService.findLastTradeWithInitialQuantity(resolvedStrategy.id);
         if (lastTradeWithQty && lastTradeWithQty.initialQuantity) {
           quantity = parseFloat(lastTradeWithQty.initialQuantity as any);
           notional = quantity * effectivePrice;
           this.logger.log(`[COMPOUND OFF] Using fixed quantity from first trade: ${this.formatQuantityWithUsdt(quantity, effectivePrice)}, Notional: ${notional.toFixed(2)} USDT`);
         } else {
-          const accountBalance = await this.getAccountBalance(strategy);
-          this.logger.log(`[COMPOUND OFF] First trade - Balance: ${accountBalance.toFixed(2)} USDT, Percentage: ${strategy.accountPercentage}%, Leverage: ${strategy.leverage}x`);
+          const accountBalance = await this.getAccountBalance(resolvedStrategy);
+          this.logger.log(`[COMPOUND OFF] First trade - Balance: ${accountBalance.toFixed(2)} USDT, Percentage: ${resolvedStrategy.accountPercentage}%, Leverage: ${resolvedStrategy.leverage}x`);
 
-          const targetNotional = accountBalance * (strategy.accountPercentage / 100) * strategy.leverage;
+          const targetNotional = accountBalance * (resolvedStrategy.accountPercentage / 100) * resolvedStrategy.leverage;
           quantity = targetNotional / effectivePrice;
           notional = targetNotional;
 
           this.logger.log(`[COMPOUND OFF] First trade result - Notional: ${notional.toFixed(2)} USDT, Quantity: ${this.formatQuantityWithUsdt(quantity, effectivePrice)}`);
         }
       } else {
-        const accountBalance = await this.getAccountBalance(strategy);
-        this.logger.log(`[COMPOUND ON] Balance: ${accountBalance.toFixed(2)} USDT, Percentage: ${strategy.accountPercentage}%, Leverage: ${strategy.leverage}x`);
+        const accountBalance = await this.getAccountBalance(resolvedStrategy);
+        this.logger.log(`[COMPOUND ON] Balance: ${accountBalance.toFixed(2)} USDT, Percentage: ${resolvedStrategy.accountPercentage}%, Leverage: ${resolvedStrategy.leverage}x`);
 
-        const targetNotional = accountBalance * (strategy.accountPercentage / 100) * strategy.leverage;
+        const targetNotional = accountBalance * (resolvedStrategy.accountPercentage / 100) * resolvedStrategy.leverage;
         quantity = targetNotional / effectivePrice;
         notional = targetNotional;
 
         this.logger.log(`[COMPOUND ON] Result - Notional: ${notional.toFixed(2)} USDT, Quantity: ${this.formatQuantityWithUsdt(quantity, effectivePrice)}`);
       }
     } else {
-      quantity = strategy.defaultQuantity || 0.002;
+      quantity = resolvedStrategy.defaultQuantity || 0.002;
       notional = quantity * (effectivePrice || 0);
       this.logger.log(`[QUANTITY CALC] Using default quantity from strategy: ${this.formatQuantityWithUsdt(quantity, effectivePrice || 0)}, Notional: ${notional.toFixed(2)} USDT`);
     }
 
-    this.logger.log(`[QUANTITY CALC] FINAL VALUES - Quantity: ${quantity.toFixed(6)}, Notional: ${notional.toFixed(2)} USDT, Leverage: ${strategy.leverage}x`);
+    this.logger.log(`[QUANTITY CALC] FINAL VALUES - Quantity: ${quantity.toFixed(6)}, Notional: ${notional.toFixed(2)} USDT, Leverage: ${resolvedStrategy.leverage}x`);
 
     if (notional < 5) {
        this.logger.warn(
          `[WARNING] Calculated notional (${notional.toFixed(2)} USDT) is extremely low. ` +
          `Binance Minimum is usually 5-10 USDT (100 on some pairs/testnet). ` +
          `DEBUG: quantity=${quantity.toFixed(6)}, price=${effectivePrice}, ` +
-         `useAccountPercentage=${strategy.useAccountPercentage}, accountPercentage=${strategy.accountPercentage}%`
+         `useAccountPercentage=${resolvedStrategy.useAccountPercentage}, accountPercentage=${resolvedStrategy.accountPercentage}%`
        );
     }
 
@@ -2314,13 +2323,13 @@ export class WebhookService {
          `[NOTIONAL ERROR] Trade REJECTED - Notional too low! ` +
          `Calculated: ${notional.toFixed(2)} USDT | Minimum Required: 10 USDT | ` +
          `Symbol: ${normalizedSymbol} | Side: ${side} | ` +
-         `Quantity: ${quantity.toFixed(6)} | Price: ${effectivePrice} | Leverage: ${strategy.leverage}x | ` +
-         `Strategy Config: useAccountPercentage=${strategy.useAccountPercentage}, accountPercentage=${strategy.accountPercentage}%, ` +
-         `enableCompound=${strategy.enableCompound}, isTestnet=${strategy.isTestnet}`
+         `Quantity: ${quantity.toFixed(6)} | Price: ${effectivePrice} | Leverage: ${resolvedStrategy.leverage}x | ` +
+         `Strategy Config: useAccountPercentage=${resolvedStrategy.useAccountPercentage}, accountPercentage=${resolvedStrategy.accountPercentage}%, ` +
+         `enableCompound=${resolvedStrategy.enableCompound}, isTestnet=${resolvedStrategy.isTestnet}`
        );
 
        const tradeData: Partial<Trade> = {
-          strategyId: strategy.id,
+          strategyId: resolvedStrategy.id,
           symbol: normalizedSymbol,
           side,
           type: isLimitOrder ? 'LIMIT' : 'MARKET',
@@ -2337,9 +2346,9 @@ export class WebhookService {
        };
     }
 
-    const isAveragingTrade = activeTrade && strategy.allowAveraging;
-    const shouldSaveInitialQuantity = !strategy.enableCompound && strategy.useAccountPercentage &&
-      !(await this.tradesService.findLastTradeWithInitialQuantity(strategy.id));
+    const isAveragingTrade = activeTrade && resolvedStrategy.allowAveraging;
+    const shouldSaveInitialQuantity = !resolvedStrategy.enableCompound && resolvedStrategy.useAccountPercentage &&
+      !(await this.tradesService.findLastTradeWithInitialQuantity(resolvedStrategy.id));
 
     if (isAveragingTrade && activeTrade) {
       this.logger.log(
@@ -2350,7 +2359,7 @@ export class WebhookService {
     }
 
     const tradeData: Partial<Trade> = {
-      strategyId: strategy.id,
+      strategyId: resolvedStrategy.id,
       symbol: normalizedSymbol,
       side,
       type: isLimitOrder ? 'LIMIT' : 'MARKET',
@@ -2361,9 +2370,9 @@ export class WebhookService {
       initialQuantity: shouldSaveInitialQuantity ? quantity : undefined,
     };
 
-    if (!strategy.isTestnet && !strategy.isRealAccount) {
+    if (!resolvedStrategy.isTestnet && !resolvedStrategy.isRealAccount) {
       this.logger.warn(
-        `[BLOCKED] Strategy "${strategy.name}" has neither testnet nor real account enabled. ` +
+        `[BLOCKED] Strategy "${resolvedStrategy.name}" has neither testnet nor real account enabled. ` +
         `Please enable either testnet mode or real account mode to execute orders.`
       );
       tradeData.status = 'ERROR';
@@ -2376,10 +2385,10 @@ export class WebhookService {
       };
     }
 
-    const accountMode = strategy.isTestnet ? 'TESTNET' : 'MAINNET';
-    const executionMode = (!strategy.isTestnet && strategy.isRealAccount) ? '[REAL ACCOUNT]' : `[${accountMode}]`;
+    const accountMode = resolvedStrategy.isTestnet ? 'TESTNET' : 'MAINNET';
+    const executionMode = (!resolvedStrategy.isTestnet && resolvedStrategy.isRealAccount) ? '[REAL ACCOUNT]' : `[${accountMode}]`;
 
-    if (!strategy.isTestnet && strategy.isRealAccount) {
+    if (!resolvedStrategy.isTestnet && resolvedStrategy.isRealAccount) {
       this.logger.warn(`🚨 ${executionMode} EXECUTING REAL ORDER: ${side} ${this.formatQuantityWithUsdt(quantity, effectivePrice || 0)} on ${normalizedSymbol}`);
     } else {
       this.logger.log(`${executionMode} Executing: ${side} ${this.formatQuantityWithUsdt(quantity, effectivePrice || 0)} on ${normalizedSymbol}`);
@@ -2388,15 +2397,15 @@ export class WebhookService {
     let savedTrade: Trade | null = null;
 
     try {
-      const decryptedKey = (await EncryptionUtil.decrypt(strategy.apiKey)).trim();
-      const decryptedSecret = (await EncryptionUtil.decrypt(strategy.apiSecret)).trim();
+      const decryptedKey = (await EncryptionUtil.decrypt(resolvedStrategy.apiKey)).trim();
+      const decryptedSecret = (await EncryptionUtil.decrypt(resolvedStrategy.apiSecret)).trim();
 
-      this.logger.log(`[DEBUG] Targeting Exchange: ${exchange} (Testnet: ${strategy.isTestnet})`);
+      this.logger.log(`[DEBUG] Targeting Exchange: ${exchange} (Testnet: ${resolvedStrategy.isTestnet})`);
 
       // Check for existing open trade
-      if (strategy.id) {
+      if (resolvedStrategy.id) {
         const existingTrade = await this.tradesService.findOpenTradeBySymbolAndSide(
-          strategy.id,
+          resolvedStrategy.id,
           normalizedSymbol,
           side
         );
@@ -2413,7 +2422,7 @@ export class WebhookService {
         }
       }
 
-      this.logger.log(`[DB] Creating trade in database: Strategy=${strategy.id}, Symbol=${tradeData.symbol}, Side=${tradeData.side}, Qty=${tradeData.quantity}`);
+      this.logger.log(`[DB] Creating trade in database: Strategy=${resolvedStrategy.id}, Symbol=${tradeData.symbol}, Side=${tradeData.side}, Qty=${tradeData.quantity}`);
       savedTrade = await this.tradesService.create(tradeData);
 
       if (!savedTrade) {
@@ -2423,7 +2432,7 @@ export class WebhookService {
       this.logger.log(`[DB] Trade created successfully: ID=${savedTrade.id}, Status=${savedTrade.status}`);
 
       if (exchange === Exchange.BINANCE && this.binanceWs.isEnabled()) {
-        await this.binanceWs.subscribeMarketData(normalizedSymbol, strategy.isTestnet).catch(err => {
+        await this.binanceWs.subscribeMarketData(normalizedSymbol, resolvedStrategy.isTestnet).catch(err => {
           this.logger.warn(`[WS] Failed to subscribe to market data: ${err.message}`);
         });
       }
@@ -2436,7 +2445,7 @@ export class WebhookService {
 
       if (exchange === Exchange.BYBIT) {
         tradeDetails = await this.executeBybitOrder(
-          strategy,
+          resolvedStrategy,
           normalizedSymbol,
           side,
           quantity,
@@ -2448,16 +2457,16 @@ export class WebhookService {
       } else {
         await this.configureBinancePositionSettings(
           normalizedSymbol,
-          strategy.leverage || 1,
-          strategy.marginMode || MarginMode.ISOLATED,
+          resolvedStrategy.leverage || 1,
+          resolvedStrategy.marginMode || MarginMode.ISOLATED,
           decryptedKey,
           decryptedSecret,
-          strategy.isTestnet,
-          strategy.hedgeMode
+          resolvedStrategy.isTestnet,
+          resolvedStrategy.hedgeMode
         );
 
         tradeDetails = await this.executeBinanceOrder(
-          strategy,
+          resolvedStrategy,
           normalizedSymbol,
           side,
           quantity,
@@ -2482,9 +2491,9 @@ export class WebhookService {
         });
 
         if (exchange === Exchange.BINANCE) {
-          this.scheduleProtectionOrders(savedTrade.id, normalizedSymbol, side, strategy, decryptedKey, decryptedSecret);
+          this.scheduleProtectionOrders(savedTrade.id, normalizedSymbol, side, resolvedStrategy, decryptedKey, decryptedSecret);
         } else if (exchange === Exchange.BYBIT) {
-          this.scheduleBybitProtectionOrders(savedTrade.id, normalizedSymbol, side, strategy, decryptedKey, decryptedSecret, quantity);
+          this.scheduleBybitProtectionOrders(savedTrade.id, normalizedSymbol, side, resolvedStrategy, decryptedKey, decryptedSecret, quantity);
         }
 
         this.logger.log(`[LIMIT] Entry order placed (${tradeData.exchangeOrderId}). SL/TP will be created when position is confirmed.`);
@@ -2505,7 +2514,7 @@ export class WebhookService {
 
         const existingQtyForVerify = isAveragingTrade
           ? openTrades
-              .filter(t => t.symbol === normalizedSymbol && t.strategyId === strategy.id && t.side === side)
+              .filter(t => t.symbol === normalizedSymbol && t.strategyId === resolvedStrategy.id && t.side === side)
               .reduce((sum, t) => sum + parseFloat(t.quantity as any), 0)
           : 0;
         const expectedCombinedQty = existingQtyForVerify > 0 ? existingQtyForVerify + quantity : undefined;
@@ -2516,8 +2525,8 @@ export class WebhookService {
             side,
             decryptedKey,
             decryptedSecret,
-            strategy.isTestnet,
-            strategy.hedgeMode,
+            resolvedStrategy.isTestnet,
+            resolvedStrategy.hedgeMode,
             expectedCombinedQty
           );
           actualEntryPrice = positionInfo.entryPrice;
@@ -2558,7 +2567,7 @@ export class WebhookService {
           actualEntryPrice = await this.getBybitActualFillPrice(
             decryptedKey,
             decryptedSecret,
-            strategy.isTestnet,
+            resolvedStrategy.isTestnet,
             normalizedSymbol,
             tradeDetails.id,
             bybitSideForFill
@@ -2608,22 +2617,22 @@ export class WebhookService {
         // --- STOP LOSS ---
         this.logger.log(
           `[PROTECTION ORDERS] Strategy values from DB:\n` +
-          `  SL%: ${strategy.stopLossPercentage} (type: ${typeof strategy.stopLossPercentage})\n` +
-          `  TP1%: ${strategy.takeProfitPercentage1} (type: ${typeof strategy.takeProfitPercentage1})\n` +
-          `  TP2%: ${strategy.takeProfitPercentage2} (type: ${typeof strategy.takeProfitPercentage2})\n` +
-          `  TP3%: ${strategy.takeProfitPercentage3} (type: ${typeof strategy.takeProfitPercentage3})`
+          `  SL%: ${resolvedStrategy.stopLossPercentage} (type: ${typeof resolvedStrategy.stopLossPercentage})\n` +
+          `  TP1%: ${resolvedStrategy.takeProfitPercentage1} (type: ${typeof resolvedStrategy.takeProfitPercentage1})\n` +
+          `  TP2%: ${resolvedStrategy.takeProfitPercentage2} (type: ${typeof resolvedStrategy.takeProfitPercentage2})\n` +
+          `  TP3%: ${resolvedStrategy.takeProfitPercentage3} (type: ${typeof resolvedStrategy.takeProfitPercentage3})`
         );
         let stopLossPrice: number | null = null;
         if (signal.stopLoss) {
           stopLossPrice = signal.stopLoss;
           this.logger.log(`[SL] Using absolute stop loss from signal: ${stopLossPrice}`);
-        } else if (strategy.stopLossPercentage && strategy.stopLossPercentage > 0) {
-          stopLossPrice = this.calculateStopLossPrice(side, priceForProtectionOrders, strategy.stopLossPercentage);
+        } else if (resolvedStrategy.stopLossPercentage && resolvedStrategy.stopLossPercentage > 0) {
+          stopLossPrice = this.calculateStopLossPrice(side, priceForProtectionOrders, resolvedStrategy.stopLossPercentage);
         }
 
         if (stopLossPrice) {
           actualStopLossPrice = stopLossPrice;
-          const rules = await this.getSymbolRules(normalizedSymbol, strategy.isTestnet, exchange);
+          const rules = await this.getSymbolRules(normalizedSymbol, resolvedStrategy.isTestnet, exchange);
           const slPriceRounded = parseFloat(roundPriceToTick(stopLossPrice, rules.priceTick));
           const effectiveSlPercent = side === 'BUY'
             ? ((priceForProtectionOrders - slPriceRounded) / priceForProtectionOrders) * 100
@@ -2632,7 +2641,7 @@ export class WebhookService {
           this.logger.log(
             `[SL] Precision analysis:\n` +
             `  Entry Price: ${priceForProtectionOrders}\n` +
-            `  Target %: ${strategy.stopLossPercentage || 'N/A'}%\n` +
+            `  Target %: ${resolvedStrategy.stopLossPercentage || 'N/A'}%\n` +
             `  Calculated Price: ${stopLossPrice.toFixed(8)}\n` +
             `  Exchange Tick: ${rules.priceTick}\n` +
             `  Rounded Price: ${slPriceRounded.toFixed(8)}\n` +
@@ -2643,9 +2652,9 @@ export class WebhookService {
             const bybitSide = side === 'BUY' ? 'Buy' : 'Sell';
             try {
               const slOrder = await this.bybitClient.createStopLossOrder(
-                decryptedKey, decryptedSecret, strategy.isTestnet,
+                decryptedKey, decryptedSecret, resolvedStrategy.isTestnet,
                 normalizedSymbol, bybitSide, normalizeQuantity(quantity, rules.qtyStep, rules.minQty),
-                roundPriceToTick(stopLossPrice, rules.priceTick), strategy.hedgeMode
+                roundPriceToTick(stopLossPrice, rules.priceTick), resolvedStrategy.hedgeMode
               );
               stopLossOrderId = slOrder.orderId;
               this.logger.log(`[SL] Bybit Stop Loss order created: ${stopLossOrderId} at ${roundPriceToTick(stopLossPrice, rules.priceTick)}`);
@@ -2658,13 +2667,13 @@ export class WebhookService {
               `This entry (SL=${stopLossPrice}) will be monitored by software. ` +
               `Note: Bybit only allows 1 position-level SL, so averaging trades cannot use setTradingStop.`
             );
-          } else if (isAveragingTrade && activeTrade && !strategy.hedgeMode) {
+          } else if (isAveragingTrade && activeTrade && !resolvedStrategy.hedgeMode) {
             this.logger.log(
               `[SL] One-way mode averaging: Each entry has independent SL based on its own entry price. ` +
               `This entry (SL=${stopLossPrice}) will be monitored by software. ` +
               `Each trade manages its own Stop Loss independently.`
             );
-          } else if (isAveragingTrade && strategy.hedgeMode) {
+          } else if (isAveragingTrade && resolvedStrategy.hedgeMode) {
             this.logger.log(
               `[SL] Hedge mode averaging: Binance allows only 1 STOP per positionSide. ` +
               `This entry (SL=${stopLossPrice} based on entry ${priceForProtectionOrders}) will be monitored by software. ` +
@@ -2673,7 +2682,7 @@ export class WebhookService {
           } else {
             try {
               stopLossOrderId = await this.createBinanceStopLossOrder(
-                normalizedSymbol, side, quantity, stopLossPrice, decryptedKey, decryptedSecret, strategy.isTestnet, strategy.hedgeMode, detectedPositionSide
+                normalizedSymbol, side, quantity, stopLossPrice, decryptedKey, decryptedSecret, resolvedStrategy.isTestnet, resolvedStrategy.hedgeMode, detectedPositionSide
               );
               this.logger.log(`[SL] Successfully created Stop Loss order: ${stopLossOrderId}`);
             } catch (slError: any) {
@@ -2684,7 +2693,7 @@ export class WebhookService {
 
         // --- MULTI-PARTIAL TAKE PROFITS ---
         // Each entry (including averaging) creates its own independent TPs for its own quantity
-        const rules = await this.getSymbolRules(normalizedSymbol, strategy.isTestnet, exchange);
+        const rules = await this.getSymbolRules(normalizedSymbol, resolvedStrategy.isTestnet, exchange);
         const normalizedEntryQty = Number(normalizeQuantity(quantity, rules.qtyStep, rules.minQty));
         const quantityForTPs = actualEntryQty && actualEntryQty > 0 ? actualEntryQty : normalizedEntryQty;
         if (quantityForTPs !== quantity) {
@@ -2694,7 +2703,7 @@ export class WebhookService {
           );
         }
 
-        const enabledTps = buildEnabledTpConfigs(strategy);
+        const enabledTps = buildEnabledTpConfigs(resolvedStrategy);
         const tpPlan = planTakeProfits({
           quantity: quantityForTPs,
           tps: enabledTps.map(tp => ({
@@ -2728,7 +2737,7 @@ export class WebhookService {
           this.logger.log(`[BYBIT] Waiting for position to be confirmed before creating TP orders...`);
           const bybitSide = side === 'BUY' ? 'Buy' : 'Sell';
           const positionConfirmed = await this.bybitClient.waitForPosition(
-            decryptedKey, decryptedSecret, strategy.isTestnet, normalizedSymbol, bybitSide, 10, 500, strategy.hedgeMode
+            decryptedKey, decryptedSecret, resolvedStrategy.isTestnet, normalizedSymbol, bybitSide, 10, 500, resolvedStrategy.hedgeMode
           );
 
           if (!positionConfirmed) {
@@ -2736,7 +2745,7 @@ export class WebhookService {
           }
 
           bybitPositionIdx = await this.bybitClient.getPositionIdx(
-            decryptedKey, decryptedSecret, strategy.isTestnet, normalizedSymbol, bybitSide, strategy.hedgeMode
+            decryptedKey, decryptedSecret, resolvedStrategy.isTestnet, normalizedSymbol, bybitSide, resolvedStrategy.hedgeMode
           );
           this.logger.log(`[BYBIT] Using positionIdx ${bybitPositionIdx} for TP orders (original position side: ${bybitSide})`);
         }
@@ -2749,7 +2758,7 @@ export class WebhookService {
 
           if (tpQty <= 0) continue;
 
-          const rules = await this.getSymbolRules(normalizedSymbol, strategy.isTestnet, exchange);
+          const rules = await this.getSymbolRules(normalizedSymbol, resolvedStrategy.isTestnet, exchange);
           const tpPriceRounded = parseFloat(roundPriceToTick(tpPriceRaw, rules.priceTick));
           const effectivePercent = side === 'BUY'
             ? ((tpPriceRounded - priceForProtectionOrders) / priceForProtectionOrders) * 100
@@ -2769,7 +2778,7 @@ export class WebhookService {
           try {
             if (exchange === Exchange.BYBIT) {
               const bybitOrder = await withOneRetry(() => this.bybitClient.createOrder(
-                decryptedKey, decryptedSecret, strategy.isTestnet,
+                decryptedKey, decryptedSecret, resolvedStrategy.isTestnet,
                 {
                   symbol: normalizedSymbol,
                   side: side === 'BUY' ? 'Sell' : 'Buy',
@@ -2778,7 +2787,7 @@ export class WebhookService {
                   price: roundPriceToTick(tpPriceRaw, rules.priceTick),
                   positionIdx: bybitPositionIdx,
                   reduceOnly: true,
-                  hedgeMode: strategy.hedgeMode
+                  hedgeMode: resolvedStrategy.hedgeMode
                 }
               ), (ms) => this.sleep(ms));
               if (bybitOrder?.orderId) {
@@ -2786,7 +2795,7 @@ export class WebhookService {
               }
             } else {
               const tpOrderId = await withOneRetry(() => this.createBinanceTakeProfitOrder(
-                normalizedSymbol, side, tpQty, tpPriceRaw, decryptedKey, decryptedSecret, strategy.isTestnet, strategy.hedgeMode, detectedPositionSide
+                normalizedSymbol, side, tpQty, tpPriceRaw, decryptedKey, decryptedSecret, resolvedStrategy.isTestnet, resolvedStrategy.hedgeMode, detectedPositionSide
               ), (ms) => this.sleep(ms));
               tpOrderIds.push(`${tp.id}:${tpOrderId}`);
               this.logger.log(`[TP${tp.id}] Successfully created Take Profit order: ${tpOrderId}`);
@@ -2853,8 +2862,8 @@ export class WebhookService {
               tradeDetails.id,
               decryptedKey,
               decryptedSecret,
-              strategy.isTestnet,
-              strategy.hedgeMode,
+              resolvedStrategy.isTestnet,
+              resolvedStrategy.hedgeMode,
               isAveragingTrade ? quantity : undefined
             );
 
@@ -2913,7 +2922,7 @@ export class WebhookService {
         exchangeOrderId: tradeData.exchangeOrderId,
         stopLossOrderId: stopLossOrderId || undefined,
         takeProfitOrderId: takeProfitOrderId || undefined,
-        currentStopLoss: actualStopLossPrice ? parseFloat(roundPriceToTick(actualStopLossPrice, (await this.getSymbolRules(normalizedSymbol, strategy.isTestnet, exchange)).priceTick)) as any : undefined,
+        currentStopLoss: actualStopLossPrice ? parseFloat(roundPriceToTick(actualStopLossPrice, (await this.getSymbolRules(normalizedSymbol, resolvedStrategy.isTestnet, exchange)).priceTick)) as any : undefined,
         tpWarnings,
       });
 

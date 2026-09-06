@@ -7,6 +7,7 @@ import { TradesController } from './trades.controller';
 import { PositionSyncModule } from '../position-sync/position-sync.module';
 import { StrategiesModule } from '../strategies/strategies.module';
 import { ExchangeModule } from '../exchange/exchange.module';
+import { CommonModule } from '../common/common.module';
 
 @Module({
   imports: [
@@ -14,6 +15,7 @@ import { ExchangeModule } from '../exchange/exchange.module';
     forwardRef(() => PositionSyncModule),
     StrategiesModule,
     ExchangeModule,
+    CommonModule,
   ],
   controllers: [TradesController],
   providers: [TradesService],

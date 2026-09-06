@@ -20,6 +20,7 @@ import { AuditorModule } from './auditor/auditor.module';
 import { AiChatModule } from './ai-chat/ai-chat.module';
 import { ValidationReportsModule } from './validation-reports/validation-reports.module';
 import { PortfoliosModule } from './portfolios/portfolios.module';
+import { CommonModule } from './common/common.module';
 
 @Module({
   imports: [
@@ -73,6 +74,7 @@ import { PortfoliosModule } from './portfolios/portfolios.module';
     AiChatModule,
     ValidationReportsModule,
     PortfoliosModule,
+    CommonModule,
   ],
   controllers: [AppController],
   providers: [

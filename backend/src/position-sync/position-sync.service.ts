@@ -19,6 +19,7 @@ import { BinanceWebSocketService } from '../binance-ws/binance-ws.service';
 import { AccountUpdateEvent } from '../binance-ws/dto/binance-ws-events.dto';
 import { SymbolRulesService } from '../common/symbol-rules.service';
 import { normalizeQuantity } from '../common/exchange-precision.util';
+import { CredentialsResolverService } from '../common/credentials-resolver.service';
 import axios from 'axios';
 import * as crypto from 'crypto';
 
@@ -97,6 +98,7 @@ export class PositionSyncService implements OnModuleInit {
     private readonly binanceWs: BinanceWebSocketService,
     private readonly eventEmitter: EventEmitter2,
     private readonly symbolRulesService: SymbolRulesService,
+    private readonly credentialsResolver: CredentialsResolverService,
   ) {
     this.fallbackEnabled = process.env.BINANCE_WS_FALLBACK_ENABLED !== 'false';
     this.orphanMinNotionalUsdt = parseFloat(process.env.ORPHAN_MIN_NOTIONAL_USDT || '1') || 1;
@@ -128,7 +130,7 @@ export class PositionSyncService implements OnModuleInit {
     try {
       const activeStrategies = await this.strategiesRepository.find({
         where: { isActive: true },
-        select: ['id', 'name', 'asset', 'exchange', 'isTestnet', 'isRealAccount', 'apiKey', 'apiSecret']
+        select: ['id', 'name', 'asset', 'exchange', 'isTestnet', 'isRealAccount', 'apiKey', 'apiSecret', 'portfolioId']
       });
 
       for (const strategy of activeStrategies) {
@@ -176,7 +178,7 @@ export class PositionSyncService implements OnModuleInit {
 
     const activeStrategies = await this.strategiesRepository.find({
       where: { isActive: true },
-      select: ['id', 'name', 'asset', 'exchange', 'isTestnet', 'isRealAccount', 'apiKey', 'apiSecret']
+      select: ['id', 'name', 'asset', 'exchange', 'isTestnet', 'isRealAccount', 'apiKey', 'apiSecret', 'portfolioId']
     });
 
     for (const strategy of activeStrategies) {
@@ -196,19 +198,21 @@ export class PositionSyncService implements OnModuleInit {
   }
 
   private async syncStrategyPositions(strategy: Strategy): Promise<{ synced: number; closed: number; imported: number; consolidated: number }> {
-    if (!strategy.apiKey || !strategy.apiSecret) {
+    const credentials = await this.credentialsResolver.resolveCredentials(strategy);
+    const resolvedStrategy = { ...strategy, ...credentials };
+    if (!resolvedStrategy.apiKey || !resolvedStrategy.apiSecret) {
       return { synced: 0, closed: 0, imported: 0, consolidated: 0 };
     }
 
-    const exchange = strategy.exchange || Exchange.BINANCE;
-    const { apiKey, apiSecret } = await this.decryptCredentials(strategy);
+    const exchange = resolvedStrategy.exchange || Exchange.BINANCE;
+    const { apiKey, apiSecret } = await this.decryptCredentials(resolvedStrategy);
 
     let positions: NormalizedPosition[];
 
     if (exchange === Exchange.BYBIT) {
-      positions = await this.fetchBybitPositions(apiKey, apiSecret, strategy.isTestnet);
+      positions = await this.fetchBybitPositions(apiKey, apiSecret, resolvedStrategy.isTestnet);
     } else {
-      positions = await this.fetchBinancePositions(apiKey, apiSecret, strategy.isTestnet);
+      positions = await this.fetchBinancePositions(apiKey, apiSecret, resolvedStrategy.isTestnet);
     }
 
     const openPositions = positions.filter(p => p.size !== 0);
@@ -221,7 +225,7 @@ export class PositionSyncService implements OnModuleInit {
     for (const position of openPositions) {
       const existingTrades = await this.tradesRepository.find({
         where: {
-          strategyId: strategy.id,
+          strategyId: resolvedStrategy.id,
           symbol: position.symbol,
           side: position.side,
           status: 'OPEN'
@@ -231,7 +235,7 @@ export class PositionSyncService implements OnModuleInit {
 
       if (existingTrades.length === 0) {
         if (exchange === Exchange.BYBIT) {
-          const rules = await this.bybitClient.getSymbolRules(strategy.isTestnet, position.symbol);
+          const rules = await this.bybitClient.getSymbolRules(resolvedStrategy.isTestnet, position.symbol);
           const minQty = parseFloat(rules.minQty);
 
           if (position.size < minQty) {
@@ -253,7 +257,7 @@ export class PositionSyncService implements OnModuleInit {
 
         const recentlyClosed = await this.tradesRepository.find({
           where: {
-            strategyId: strategy.id,
+            strategyId: resolvedStrategy.id,
             symbol: position.symbol,
             side: position.side,
             status: 'CLOSED',
@@ -276,21 +280,21 @@ export class PositionSyncService implements OnModuleInit {
         }
 
         this.logger.warn(`[SYNC] Orphan position detected: ${position.symbol} (${position.side}) - importing...`);
-        await this.importOrphanPosition(strategy, position);
+        await this.importOrphanPosition(resolvedStrategy, position);
         imported++;
       } else if (existingTrades.length === 1) {
-        if (strategy.breakAgain || strategy.moveSLToBreakeven) {
-             await this.checkBreakAgain(existingTrades[0], position, strategy, apiKey, apiSecret);
+        if (resolvedStrategy.breakAgain || resolvedStrategy.moveSLToBreakeven) {
+             await this.checkBreakAgain(existingTrades[0], position, resolvedStrategy, apiKey, apiSecret);
         }
 
         await this.updateTradeFromPosition(existingTrades[0], position);
         synced++;
       } else {
-        if (strategy.breakAgain || strategy.moveSLToBreakeven) {
-          await this.checkBreakAgain(existingTrades[0], position, strategy, apiKey, apiSecret);
+        if (resolvedStrategy.breakAgain || resolvedStrategy.moveSLToBreakeven) {
+          await this.checkBreakAgain(existingTrades[0], position, resolvedStrategy, apiKey, apiSecret);
         }
 
-        await this.consolidateTrades(existingTrades, position, exchange, apiKey, apiSecret, strategy.isTestnet);
+        await this.consolidateTrades(existingTrades, position, exchange, apiKey, apiSecret, resolvedStrategy.isTestnet);
         consolidated += existingTrades.length - 1;
         synced++;
         this.logger.log(`[SYNC] Consolidated ${existingTrades.length} trades into 1 for ${position.symbol}`);
@@ -300,7 +304,7 @@ export class PositionSyncService implements OnModuleInit {
     for (const position of openPositions) {
       const duplicateCheck = await this.tradesRepository.find({
         where: {
-          strategyId: strategy.id,
+          strategyId: resolvedStrategy.id,
           symbol: position.symbol,
           side: position.side,
           status: 'OPEN'
@@ -310,14 +314,14 @@ export class PositionSyncService implements OnModuleInit {
 
       if (duplicateCheck.length > 1) {
         this.logger.warn(`[SYNC] Found ${duplicateCheck.length} duplicate trades for ${position.symbol} (${position.side}), consolidating...`);
-        await this.consolidateTrades(duplicateCheck, position, exchange, apiKey, apiSecret, strategy.isTestnet);
+        await this.consolidateTrades(duplicateCheck, position, exchange, apiKey, apiSecret, resolvedStrategy.isTestnet);
         consolidated += duplicateCheck.length - 1;
         this.logger.log(`[SYNC] Consolidated ${duplicateCheck.length} trades into 1 for ${position.symbol}`);
       }
     }
 
     const allLocalOpenTrades = await this.tradesRepository.find({
-      where: { strategyId: strategy.id, status: 'OPEN' }
+      where: { strategyId: resolvedStrategy.id, status: 'OPEN' }
     });
 
     const MIN_TRADE_AGE_SECONDS = 30;
@@ -344,7 +348,7 @@ export class PositionSyncService implements OnModuleInit {
             exchange,
             apiKey,
             apiSecret,
-            strategy.isTestnet
+            resolvedStrategy.isTestnet
           );
 
           const hasProtection = !!trade.stopLossOrderId && !!trade.takeProfitOrderId;
@@ -366,7 +370,7 @@ export class PositionSyncService implements OnModuleInit {
           }
         }
 
-        await this.closeTradeAsManual(trade, exchange, apiKey, apiSecret, strategy.isTestnet);
+        await this.closeTradeAsManual(trade, exchange, apiKey, apiSecret, resolvedStrategy.isTestnet);
         closed++;
         this.logger.log(`[SYNC] Closed trade ${trade.id} for ${trade.symbol} - no longer exists on exchange`);
       }
@@ -502,24 +506,26 @@ export class PositionSyncService implements OnModuleInit {
       } else {
         strategy = await this.strategiesRepository.findOne({
           where: { id: trade.strategyId },
-          select: ['id', 'name', 'exchange', 'isTestnet', 'isActive', 'pauseNewOrders', 'apiKey', 'apiSecret'],
+          select: ['id', 'name', 'exchange', 'isTestnet', 'isActive', 'pauseNewOrders', 'apiKey', 'apiSecret', 'portfolioId'],
         });
         strategyCache.set(trade.strategyId, strategy);
       }
 
       if (!strategy) continue;
       if (!shouldCancelPendingForStrategy(strategy)) continue;
-      if (!strategy.apiKey || !strategy.apiSecret) continue;
+      const credentials = await this.credentialsResolver.resolveCredentials(strategy);
+      const resolvedStrategy = { ...strategy, ...credentials };
+      if (!resolvedStrategy.apiKey || !resolvedStrategy.apiSecret) continue;
 
       try {
-        const exchange = strategy.exchange || Exchange.BINANCE;
-        const { apiKey, apiSecret } = await this.decryptCredentials(strategy);
-        const orderStatus = await this.checkOrderStatus(trade.exchangeOrderId, trade.symbol, exchange, apiKey, apiSecret, strategy.isTestnet);
+        const exchange = resolvedStrategy.exchange || Exchange.BINANCE;
+        const { apiKey, apiSecret } = await this.decryptCredentials(resolvedStrategy);
+        const orderStatus = await this.checkOrderStatus(trade.exchangeOrderId, trade.symbol, exchange, apiKey, apiSecret, resolvedStrategy.isTestnet);
         const s = (orderStatus || '').toLowerCase();
         const isPending = s === 'new' || s === 'partiallyfilled' || s === 'partially_filled';
         if (!isPending) continue;
 
-        await this.cancelLimitEntryOrder(trade, exchange, apiKey, apiSecret, strategy.isTestnet);
+        await this.cancelLimitEntryOrder(trade, exchange, apiKey, apiSecret, resolvedStrategy.isTestnet);
         trade.status = 'ERROR';
         trade.error = 'Ordem cancelada: estratégia pausada/desativada';
         trade.closeReason = 'SIGNAL';

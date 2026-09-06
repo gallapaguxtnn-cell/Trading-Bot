@@ -8,6 +8,7 @@ import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { BinanceWebSocketService } from './binance-ws/binance-ws.service';
 import { Strategy } from './strategies/strategy.entity';
+import { CredentialsResolverService } from './common/credentials-resolver.service';
 
 describe('AppController', () => {
   let appController: AppController;
@@ -19,6 +20,7 @@ describe('AppController', () => {
         AppService,
         { provide: BinanceWebSocketService, useValue: {} },
         { provide: getRepositoryToken(Strategy), useValue: {} },
+        { provide: CredentialsResolverService, useValue: { resolveCredentials: jest.fn() } },
       ],
     }).compile();
 

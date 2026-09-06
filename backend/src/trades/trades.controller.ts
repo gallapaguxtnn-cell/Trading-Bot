@@ -8,6 +8,7 @@ import { Exchange } from '../strategies/strategy.entity';
 import { BybitClientService } from '../exchange/bybit-client.service';
 import { Trade } from '../strategies/trade.entity';
 import { ExecutionType } from './trade-execution.entity';
+import { CredentialsResolverService } from '../common/credentials-resolver.service';
 import axios from 'axios';
 import * as crypto from 'crypto';
 import Decimal from 'decimal.js';
@@ -29,6 +30,7 @@ export class TradesController {
     private readonly positionSyncService: PositionSyncService,
     private readonly strategiesService: StrategiesService,
     private readonly bybitClient: BybitClientService,
+    private readonly credentialsResolver: CredentialsResolverService,
   ) {}
 
   @Get()
@@ -185,13 +187,15 @@ export class TradesController {
           continue;
         }
 
-        const exchange = strategy.exchange || Exchange.BINANCE;
-        const decryptedKey = (await EncryptionUtil.decrypt(strategy.apiKey)).trim();
-        const decryptedSecret = (await EncryptionUtil.decrypt(strategy.apiSecret)).trim();
+        const credentials = await this.credentialsResolver.resolveCredentials(strategy);
+        const resolvedStrategy = { ...strategy, ...credentials };
+        const exchange = resolvedStrategy.exchange || Exchange.BINANCE;
+        const decryptedKey = (await EncryptionUtil.decrypt(resolvedStrategy.apiKey)).trim();
+        const decryptedSecret = (await EncryptionUtil.decrypt(resolvedStrategy.apiSecret)).trim();
 
         const closeResult = await this.closeTradeOnExchange(
           trade,
-          strategy,
+          resolvedStrategy,
           exchange,
           decryptedKey,
           decryptedSecret
@@ -238,13 +242,15 @@ export class TradesController {
       return { success: false, message: 'Strategy not found - trade marked as closed' };
     }
 
-    const exchange = strategy.exchange || Exchange.BINANCE;
-    const decryptedKey = (await EncryptionUtil.decrypt(strategy.apiKey)).trim();
-    const decryptedSecret = (await EncryptionUtil.decrypt(strategy.apiSecret)).trim();
+    const credentials = await this.credentialsResolver.resolveCredentials(strategy);
+    const resolvedStrategy = { ...strategy, ...credentials };
+    const exchange = resolvedStrategy.exchange || Exchange.BINANCE;
+    const decryptedKey = (await EncryptionUtil.decrypt(resolvedStrategy.apiKey)).trim();
+    const decryptedSecret = (await EncryptionUtil.decrypt(resolvedStrategy.apiSecret)).trim();
 
     const result = await this.closeTradeOnExchange(
       trade,
-      strategy,
+      resolvedStrategy,
       exchange,
       decryptedKey,
       decryptedSecret

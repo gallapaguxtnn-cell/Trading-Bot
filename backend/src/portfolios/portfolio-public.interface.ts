@@ -11,3 +11,10 @@ export interface PortfolioPublic {
   createdAt: Date;
   updatedAt: Date;
 }
+
+export interface PortfolioSummary {
+  id: string;
+  name: string;
+  exchange: Exchange;
+  mode: PortfolioMode;
+}

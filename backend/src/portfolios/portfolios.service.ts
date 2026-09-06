@@ -1,8 +1,8 @@
 import { ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import { Portfolio, PortfolioMode } from './portfolio.entity';
-import { PortfolioPublic } from './portfolio-public.interface';
+import { PortfolioPublic, PortfolioSummary } from './portfolio-public.interface';
 import { Strategy, Exchange } from '../strategies/strategy.entity';
 import { EncryptionUtil } from '../utils/encryption.util';
 import { ExchangeService } from '../exchange/exchange.service';
@@ -79,6 +79,15 @@ export class PortfoliosService {
       updatedAt: portfolio.updatedAt,
       apiKeyMasked: await this.maskApiKey(portfolio.apiKey),
     };
+  }
+
+  async findSummariesByIds(ids: string[]): Promise<Map<string, PortfolioSummary>> {
+    if (ids.length === 0) return new Map();
+    const portfolios = await this.portfoliosRepository.find({
+      where: { id: In(ids) },
+      select: ['id', 'name', 'exchange', 'mode'],
+    });
+    return new Map(portfolios.map((p) => [p.id, { id: p.id, name: p.name, exchange: p.exchange, mode: p.mode }]));
   }
 
   findWithCredentials(id: string): Promise<Portfolio | null> {

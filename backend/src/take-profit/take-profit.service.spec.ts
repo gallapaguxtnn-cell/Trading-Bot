@@ -14,8 +14,25 @@ import { BybitClientService } from '../exchange/bybit-client.service';
 import { BinanceWebSocketService } from '../binance-ws/binance-ws.service';
 import { PositionSyncService } from '../position-sync/position-sync.service';
 import { SymbolRulesService } from '../common/symbol-rules.service';
+import { CredentialsResolverService } from '../common/credentials-resolver.service';
 import { BinanceRequestUtil } from '../utils/binance-request.util';
 import { Exchange } from '../strategies/strategy.entity';
+
+function passthroughCredentialsResolver() {
+  return {
+    resolveCredentials: jest.fn((strategy: any) =>
+      Promise.resolve({
+        apiKey: strategy.apiKey,
+        apiSecret: strategy.apiSecret,
+        exchange: strategy.exchange,
+        isTestnet: strategy.isTestnet,
+        isRealAccount: strategy.isRealAccount,
+        portfolioId: null,
+        source: 'strategy',
+      }),
+    ),
+  };
+}
 
 function makeTrade(overrides: Partial<Trade> = {}): Trade {
   return {
@@ -103,6 +120,7 @@ describe('TakeProfitService (FASE 1 -- fallback nao substitui o TP LIMIT)', () =
         { provide: PositionSyncService, useValue: {} },
         { provide: EventEmitter2, useValue: eventEmitter },
         { provide: SymbolRulesService, useValue: { getSymbolRules: jest.fn() } },
+        { provide: CredentialsResolverService, useValue: passthroughCredentialsResolver() },
       ],
     }).compile();
 
@@ -198,6 +216,7 @@ describe('TakeProfitService (FASE 4 -- closePosition)', () => {
         { provide: PositionSyncService, useValue: {} },
         { provide: EventEmitter2, useValue: { emit: jest.fn() } },
         { provide: SymbolRulesService, useValue: { getSymbolRules: jest.fn() } },
+        { provide: CredentialsResolverService, useValue: passthroughCredentialsResolver() },
       ],
     }).compile();
 
@@ -284,6 +303,7 @@ describe('TakeProfitService (FASE 3 do PLANO_FIX_ARREDONDAMENTO_GLOBAL -- create
         { provide: PositionSyncService, useValue: {} },
         { provide: EventEmitter2, useValue: { emit: jest.fn() } },
         { provide: SymbolRulesService, useValue: symbolRulesService },
+        { provide: CredentialsResolverService, useValue: passthroughCredentialsResolver() },
       ],
     }).compile();
 

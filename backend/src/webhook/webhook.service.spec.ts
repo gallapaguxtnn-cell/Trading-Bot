@@ -11,7 +11,24 @@ import { TradesService } from '../trades/trades.service';
 import { BinanceWebSocketService } from '../binance-ws/binance-ws.service';
 import { SignalLogService } from './signal-log.service';
 import { SymbolRulesService } from '../common/symbol-rules.service';
+import { CredentialsResolverService } from '../common/credentials-resolver.service';
 import { Exchange } from '../strategies/strategy.entity';
+
+function passthroughCredentialsResolver() {
+  return {
+    resolveCredentials: jest.fn((strategy: any) =>
+      Promise.resolve({
+        apiKey: strategy.apiKey,
+        apiSecret: strategy.apiSecret,
+        exchange: strategy.exchange,
+        isTestnet: strategy.isTestnet,
+        isRealAccount: strategy.isRealAccount,
+        portfolioId: null,
+        source: 'strategy',
+      }),
+    ),
+  };
+}
 
 describe('WebhookService', () => {
   let service: WebhookService;
@@ -38,6 +55,7 @@ describe('WebhookService', () => {
         { provide: BinanceWebSocketService, useValue: {} },
         { provide: SignalLogService, useValue: {} },
         { provide: SymbolRulesService, useValue: { getSymbolRules: jest.fn() } },
+        { provide: CredentialsResolverService, useValue: passthroughCredentialsResolver() },
       ],
     }).compile();
 
@@ -117,6 +135,7 @@ describe('WebhookService (FASE 2 -- fechar a janela de desprotecao)', () => {
         { provide: BinanceWebSocketService, useValue: {} },
         { provide: SignalLogService, useValue: {} },
         { provide: SymbolRulesService, useValue: { getSymbolRules: jest.fn() } },
+        { provide: CredentialsResolverService, useValue: passthroughCredentialsResolver() },
       ],
     }).compile();
 

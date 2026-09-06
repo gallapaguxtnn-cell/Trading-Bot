@@ -18,6 +18,23 @@ import { BybitClientService } from '../exchange/bybit-client.service';
 import { BinanceWebSocketService } from '../binance-ws/binance-ws.service';
 import { PositionSyncService } from '../position-sync/position-sync.service';
 import { SymbolRulesService } from '../common/symbol-rules.service';
+import { CredentialsResolverService } from '../common/credentials-resolver.service';
+
+function passthroughCredentialsResolver() {
+  return {
+    resolveCredentials: jest.fn((strategy: any) =>
+      Promise.resolve({
+        apiKey: strategy.apiKey,
+        apiSecret: strategy.apiSecret,
+        exchange: strategy.exchange,
+        isTestnet: strategy.isTestnet,
+        isRealAccount: strategy.isRealAccount,
+        portfolioId: null,
+        source: 'strategy',
+      }),
+    ),
+  };
+}
 
 describe('Cenario de aceite: PLANO_FIX_TP_MARKET_FALLBACK (print real SUIUSDT SHORT, 28/08)', () => {
   let takeProfitService: TakeProfitService;
@@ -107,6 +124,7 @@ describe('Cenario de aceite: PLANO_FIX_TP_MARKET_FALLBACK (print real SUIUSDT SH
         { provide: PositionSyncService, useValue: {} },
         { provide: EventEmitter2, useValue: eventEmitter },
         { provide: SymbolRulesService, useValue: { getSymbolRules: jest.fn() } },
+        { provide: CredentialsResolverService, useValue: passthroughCredentialsResolver() },
       ],
     }).compile();
 
@@ -166,6 +184,7 @@ describe('Cenario de aceite: PLANO_FIX_TP_MARKET_FALLBACK (print real SUIUSDT SH
           },
         },
         { provide: ExchangeService, useValue: {} },
+        { provide: CredentialsResolverService, useValue: passthroughCredentialsResolver() },
       ],
     }).compile();
 

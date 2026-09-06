@@ -13,6 +13,7 @@ import { ExchangeService } from '../exchange/exchange.service';
 import { BybitClientService } from '../exchange/bybit-client.service';
 import { BinanceWebSocketService } from '../binance-ws/binance-ws.service';
 import { SymbolRulesService } from '../common/symbol-rules.service';
+import { CredentialsResolverService } from '../common/credentials-resolver.service';
 import { Exchange } from '../strategies/strategy.entity';
 
 describe('StopLossService (FASE 3 -- arredondamento via SymbolRulesService, nunca toFixed fixo)', () => {
@@ -40,6 +41,7 @@ describe('StopLossService (FASE 3 -- arredondamento via SymbolRulesService, nunc
         { provide: BybitClientService, useValue: bybitClient },
         { provide: BinanceWebSocketService, useValue: {} },
         { provide: SymbolRulesService, useValue: symbolRulesService },
+        { provide: CredentialsResolverService, useValue: { resolveCredentials: jest.fn() } },
       ],
     }).compile();
 
@@ -131,5 +133,65 @@ describe('StopLossService (FASE 3 -- arredondamento via SymbolRulesService, nunc
       const params = new URLSearchParams(body);
       expect(params.get('quantity')).toBe('250');
     });
+  });
+});
+
+describe('StopLossService (FASE 2 -- CredentialsResolver)', () => {
+  let service: StopLossService;
+  let strategiesService: { findOne: jest.Mock };
+  let credentialsResolver: { resolveCredentials: jest.Mock };
+  let bybitClient: { getPositions: jest.Mock };
+
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    strategiesService = { findOne: jest.fn() };
+    credentialsResolver = { resolveCredentials: jest.fn() };
+    bybitClient = { getPositions: jest.fn().mockResolvedValue([]) };
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        StopLossService,
+        { provide: getRepositoryToken(Trade), useValue: { save: jest.fn() } },
+        { provide: TradesService, useValue: {} },
+        { provide: StrategiesService, useValue: strategiesService },
+        { provide: ExchangeService, useValue: {} },
+        { provide: BybitClientService, useValue: bybitClient },
+        { provide: BinanceWebSocketService, useValue: {} },
+        { provide: SymbolRulesService, useValue: { getSymbolRules: jest.fn() } },
+        { provide: CredentialsResolverService, useValue: credentialsResolver },
+      ],
+    }).compile();
+
+    service = module.get<StopLossService>(StopLossService);
+  });
+
+  it('checkStopLoss com portfolio: consulta a Bybit com as credenciais/exchange resolvidas do portfolio', async () => {
+    const trade = {
+      id: 'trade-1',
+      symbol: 'BTCUSDT',
+      side: 'BUY',
+      stopLossOrderId: 'BYBIT_TRADING_STOP',
+    } as unknown as Trade;
+    strategiesService.findOne.mockResolvedValue({
+      id: 's1',
+      exchange: Exchange.BINANCE,
+      isTestnet: true,
+      apiKey: 'legacy-key',
+      apiSecret: 'legacy-secret',
+      portfolioId: 'p1',
+    });
+    credentialsResolver.resolveCredentials.mockResolvedValue({
+      apiKey: 'portfolio-key',
+      apiSecret: 'portfolio-secret',
+      exchange: Exchange.BYBIT,
+      isTestnet: false,
+      isRealAccount: true,
+      portfolioId: 'p1',
+      source: 'portfolio',
+    });
+
+    await (service as any).checkStopLoss(trade);
+
+    expect(bybitClient.getPositions).toHaveBeenCalledWith('portfolio-key', 'portfolio-secret', false, 'BTCUSDT');
   });
 });
