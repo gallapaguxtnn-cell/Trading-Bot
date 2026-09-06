@@ -19,6 +19,8 @@ export enum MarginMode {
 export enum Exchange {
   BINANCE = 'binance',
   BYBIT = 'bybit',
+  OKX = 'okx',
+  BINGX = 'bingx',
 }
 
 @Entity()
@@ -52,6 +54,9 @@ export class Strategy {
 
   @Column({ type: 'text', nullable: true, select: false })
   apiSecret: string;
+
+  @Column({ type: 'uuid', nullable: true })
+  portfolioId: string | null;
 
   @Column({ type: 'int', default: 1 })
   leverage: number;
