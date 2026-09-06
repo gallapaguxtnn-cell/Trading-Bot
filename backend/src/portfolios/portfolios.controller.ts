@@ -1,14 +1,23 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post } from '@nestjs/common';
 import { PortfoliosService } from './portfolios.service';
+import { PortfolioMigrationService } from './portfolio-migration.service';
 import { Portfolio } from './portfolio.entity';
 
 @Controller('portfolios')
 export class PortfoliosController {
-  constructor(private readonly portfoliosService: PortfoliosService) {}
+  constructor(
+    private readonly portfoliosService: PortfoliosService,
+    private readonly portfolioMigrationService: PortfolioMigrationService,
+  ) {}
 
   @Get()
   findAll() {
     return this.portfoliosService.findAllPublic();
+  }
+
+  @Post('migrate-legacy')
+  migrateLegacy() {
+    return this.portfolioMigrationService.migrateLegacyStrategies();
   }
 
   @Get(':id')
