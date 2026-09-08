@@ -87,6 +87,9 @@ export class Trade {
   @Column({ type: 'text', nullable: true })
   tpWarnings: string | null;
 
+  @Column({ type: 'timestamptz', nullable: true })
+  protectionRepricedAt: Date | null;
+
   @CreateDateColumn()
   timestamp: Date;
 }

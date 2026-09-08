@@ -18,6 +18,7 @@ import { SignalDecision } from './signal-log.entity';
 import { BinanceRequestUtil } from '../utils/binance-request.util';
 import { resolveBybitActualFillPrice } from './bybit-fill-price.util';
 import { resolveProtectionPrice, resolveFinalEntryPrice } from './protection-price.util';
+import { shouldRepriceProtection } from './protection-reprice.util';
 import { planTakeProfits, buildEnabledTpConfigs, buildTpWarnings } from './tp-planner.util';
 import { withOneRetry } from './retry.util';
 import { parseTrackedTpOrders, countLiveTrackedOrders } from '../auditor/missing-tp-orders.util';
@@ -1166,17 +1167,57 @@ export class WebhookService {
           }
 
           let slOrderId: string | null = trade.stopLossOrderId || null;
+          let protectionWasRepriced = false;
 
-          // Only create SL if it doesn't already exist
-          if (!hasStopLoss && strategy.stopLossPercentage && strategy.stopLossPercentage > 0) {
-            const slPrice = this.calculateStopLossPrice(side, actualEntryPrice, strategy.stopLossPercentage);
-            try {
-              slOrderId = await this.createBinanceStopLossOrder(
-                symbol, side, actualQty, slPrice, decryptedKey, decryptedSecret, strategy.isTestnet, strategy.hedgeMode
-              );
-              this.logger.log(`[LIMIT SL/TP] SL created: ${slOrderId}`);
-            } catch (e: any) {
-              this.logger.warn(`[LIMIT SL/TP] SL creation failed: ${e.message}`);
+          if (strategy.stopLossPercentage && strategy.stopLossPercentage > 0) {
+            const targetSlPrice = this.calculateStopLossPrice(side, actualEntryPrice, strategy.stopLossPercentage);
+
+            if (!hasStopLoss) {
+              try {
+                slOrderId = await this.createBinanceStopLossOrder(
+                  symbol, side, actualQty, targetSlPrice, decryptedKey, decryptedSecret, strategy.isTestnet, strategy.hedgeMode
+                );
+                this.logger.log(`[LIMIT SL/TP] SL created: ${slOrderId}`);
+              } catch (e: any) {
+                this.logger.warn(`[LIMIT SL/TP] SL creation failed: ${e.message}`);
+              }
+            } else {
+              const currentSlPrice = trade.currentStopLoss !== null && trade.currentStopLoss !== undefined
+                ? Number(trade.currentStopLoss)
+                : null;
+              const { shouldReprice, diffPercent } = shouldRepriceProtection({ currentPrice: currentSlPrice, targetPrice: targetSlPrice });
+
+              if (currentSlPrice === null) {
+                this.logger.error(
+                  `[SL REPRICE] Trade ${tradeId} (${symbol}): SL ${trade.stopLossOrderId} existe mas currentStopLoss nao esta gravado -- ` +
+                  `nao e possivel verificar alinhamento. Mantendo o SL atual sem alteracao.`
+                );
+              } else if (shouldReprice) {
+                this.logger.warn(
+                  `[SL REPRICE] Trade ${tradeId} (${symbol}): SL desalinhado ${diffPercent!.toFixed(4)}pp. SL ${currentSlPrice} -> ${targetSlPrice.toFixed(8)}`
+                );
+                try {
+                  const newSlOrderId = await this.createBinanceStopLossOrder(
+                    symbol, side, actualQty, targetSlPrice, decryptedKey, decryptedSecret, strategy.isTestnet, strategy.hedgeMode
+                  );
+                  try {
+                    await this.cancelBinanceOrderOrAlgo(symbol, trade.stopLossOrderId!, decryptedKey, decryptedSecret, strategy.isTestnet);
+                  } catch (cancelErr: any) {
+                    this.logger.error(
+                      `[SL REPRICE] Falha ao cancelar o SL antigo ${trade.stopLossOrderId} apos criar o novo ${newSlOrderId}: ${cancelErr.message}. ` +
+                      `Duas ordens de SL podem estar ativas para o trade ${tradeId}.`
+                    );
+                  }
+                  slOrderId = newSlOrderId;
+                  protectionWasRepriced = true;
+                  this.logger.log(`[SL REPRICE] Trade ${tradeId}: novo SL ${newSlOrderId} em ${targetSlPrice.toFixed(8)}`);
+                } catch (e: any) {
+                  this.logger.error(
+                    `[SL REPRICE] CRITICO: falha ao reposicionar o SL do trade ${tradeId} (${symbol}): ${e.message}. ` +
+                    `Posicao segue protegida pelo SL antigo (desalinhado) em ${currentSlPrice}.`
+                  );
+                }
+              }
             }
           } else if (hasStopLoss) {
             this.logger.debug(`[LIMIT SL/TP] SL already exists, skipping creation`);
@@ -1230,7 +1271,56 @@ export class WebhookService {
               }
             }
           } else if (hasTakeProfit) {
-            this.logger.debug(`[LIMIT SL/TP] TPs already exist, skipping creation`);
+            const originalEntryPrice = trade.entryPrice !== null && trade.entryPrice !== undefined ? Number(trade.entryPrice) : null;
+            const { shouldReprice: tpShouldReprice, diffPercent: tpDiffPercent } = shouldRepriceProtection({
+              currentPrice: originalEntryPrice,
+              targetPrice: actualEntryPrice,
+            });
+
+            if (originalEntryPrice === null) {
+              this.logger.error(
+                `[TP REPRICE] Trade ${tradeId} (${symbol}): TP existe mas o entryPrice original nao esta disponivel -- ` +
+                `nao e possivel verificar alinhamento. Mantendo os TPs atuais.`
+              );
+            } else if (tpShouldReprice) {
+              this.logger.warn(
+                `[TP REPRICE] Trade ${tradeId} (${symbol}): entrada divergiu ${tpDiffPercent!.toFixed(4)}pp do sinal ` +
+                `(${originalEntryPrice} -> ${actualEntryPrice}). Recriando TPs sobre o fill.`
+              );
+              const oldTpOrders = parseTrackedTpOrders(trade.takeProfitOrderId);
+              const newTpOrderIds: string[] = [];
+              for (const tp of tpConfigs) {
+                const tpPrice = this.calculateTakeProfitPrice(side, actualEntryPrice, tp.percent);
+                const tpQty = Number(tp.quantity);
+                if (tpQty <= 0) continue;
+                try {
+                  const tpId = await withOneRetry(() => this.createBinanceTakeProfitOrder(
+                    symbol, side, tpQty, tpPrice, decryptedKey, decryptedSecret, strategy.isTestnet, strategy.hedgeMode
+                  ), (ms) => this.sleep(ms));
+                  newTpOrderIds.push(`${tp.id}:${tpId}`);
+                  this.logger.log(`[TP REPRICE] TP${tp.id} recriado: ${tpId} em ${tpPrice.toFixed(8)}`);
+                } catch (e: any) {
+                  this.logger.error(`[TP REPRICE] CRITICO: falha ao recriar TP${tp.id} do trade ${tradeId}: ${e.message}`);
+                  failedTps.push({ id: tp.id, reason: e.message });
+                }
+              }
+              if (newTpOrderIds.length > 0) {
+                for (const old of oldTpOrders) {
+                  try {
+                    await this.cancelBinanceOrderOrAlgo(symbol, old.orderId, decryptedKey, decryptedSecret, strategy.isTestnet);
+                  } catch (cancelErr: any) {
+                    this.logger.error(`[TP REPRICE] Falha ao cancelar o TP antigo ${old.orderId}: ${cancelErr.message}`);
+                  }
+                }
+                tpOrderIds.length = 0;
+                tpOrderIds.push(...newTpOrderIds);
+                protectionWasRepriced = true;
+              } else {
+                this.logger.error(`[TP REPRICE] Nenhum TP novo foi criado para o trade ${tradeId} -- mantendo os TPs antigos (desalinhados).`);
+              }
+            } else {
+              this.logger.debug(`[LIMIT SL/TP] TPs already exist and aligned, skipping creation`);
+            }
           }
 
           const tpWarnings = buildTpWarnings(tpPlan.discarded, failedTps);
@@ -1240,6 +1330,10 @@ export class WebhookService {
             quantity: actualQty as any,
             stopLossOrderId: slOrderId || undefined,
             takeProfitOrderId: tpOrderIds.length > 0 ? tpOrderIds.join('|') : undefined,
+            currentStopLoss: (strategy.stopLossPercentage && strategy.stopLossPercentage > 0
+              ? this.calculateStopLossPrice(side, actualEntryPrice, strategy.stopLossPercentage)
+              : undefined) as any,
+            protectionRepricedAt: protectionWasRepriced ? new Date() as any : undefined,
             tpWarnings,
           });
 
@@ -1431,23 +1525,67 @@ export class WebhookService {
           }
 
           let slOrderId: string | null = trade.stopLossOrderId || null;
+          let protectionWasRepriced = false;
 
-          // Only create SL if it doesn't already exist
-          if (!hasStopLoss && strategy.stopLossPercentage && strategy.stopLossPercentage > 0) {
-            const slPrice = this.calculateStopLossPrice(side, actualEntryPrice, strategy.stopLossPercentage);
-            const rules = await this.getSymbolRules(symbol, strategy.isTestnet, Exchange.BYBIT);
-            const slPriceRounded = roundPriceToTick(slPrice, rules.priceTick);
+          if (strategy.stopLossPercentage && strategy.stopLossPercentage > 0) {
+            const targetSlPrice = this.calculateStopLossPrice(side, actualEntryPrice, strategy.stopLossPercentage);
+            const slRules = await this.getSymbolRules(symbol, strategy.isTestnet, Exchange.BYBIT);
+            const targetSlPriceRounded = roundPriceToTick(targetSlPrice, slRules.priceTick);
 
-            try {
-              const slOrder = await this.bybitClient.createStopLossOrder(
-                decryptedKey, decryptedSecret, strategy.isTestnet,
-                symbol, bybitSide, normalizeQuantity(actualQty, rules.qtyStep, rules.minQty),
-                slPriceRounded, strategy.hedgeMode
-              );
-              slOrderId = slOrder.orderId;
-              this.logger.log(`[BYBIT LIMIT SL/TP] SL order created: ${slOrderId} at ${slPriceRounded}`);
-            } catch (e: any) {
-              this.logger.warn(`[BYBIT LIMIT SL/TP] SL creation failed: ${e.message}`);
+            if (!hasStopLoss) {
+              try {
+                const slOrder = await this.bybitClient.createStopLossOrder(
+                  decryptedKey, decryptedSecret, strategy.isTestnet,
+                  symbol, bybitSide, normalizeQuantity(actualQty, slRules.qtyStep, slRules.minQty),
+                  targetSlPriceRounded, strategy.hedgeMode
+                );
+                slOrderId = slOrder.orderId;
+                this.logger.log(`[BYBIT LIMIT SL/TP] SL order created: ${slOrderId} at ${targetSlPriceRounded}`);
+              } catch (e: any) {
+                this.logger.warn(`[BYBIT LIMIT SL/TP] SL creation failed: ${e.message}`);
+              }
+            } else {
+              const currentSlPrice = trade.currentStopLoss !== null && trade.currentStopLoss !== undefined
+                ? Number(trade.currentStopLoss)
+                : null;
+              const { shouldReprice, diffPercent } = shouldRepriceProtection({
+                currentPrice: currentSlPrice,
+                targetPrice: parseFloat(targetSlPriceRounded),
+              });
+
+              if (currentSlPrice === null) {
+                this.logger.error(
+                  `[SL REPRICE] Trade ${tradeId} (${symbol}): SL ${trade.stopLossOrderId} existe mas currentStopLoss nao esta gravado -- ` +
+                  `nao e possivel verificar alinhamento. Mantendo o SL atual sem alteracao.`
+                );
+              } else if (shouldReprice) {
+                this.logger.warn(
+                  `[SL REPRICE] Trade ${tradeId} (${symbol}): SL desalinhado ${diffPercent!.toFixed(4)}pp. SL ${currentSlPrice} -> ${targetSlPriceRounded}`
+                );
+                try {
+                  const newSlOrder = await this.bybitClient.createStopLossOrder(
+                    decryptedKey, decryptedSecret, strategy.isTestnet,
+                    symbol, bybitSide, normalizeQuantity(actualQty, slRules.qtyStep, slRules.minQty),
+                    targetSlPriceRounded, strategy.hedgeMode
+                  );
+                  try {
+                    await this.bybitClient.cancelOrder(decryptedKey, decryptedSecret, strategy.isTestnet, symbol, trade.stopLossOrderId!);
+                  } catch (cancelErr: any) {
+                    this.logger.error(
+                      `[SL REPRICE] Falha ao cancelar o SL antigo ${trade.stopLossOrderId} apos criar o novo ${newSlOrder.orderId}: ${cancelErr.message}. ` +
+                      `Duas ordens de SL podem estar ativas para o trade ${tradeId}.`
+                    );
+                  }
+                  slOrderId = newSlOrder.orderId;
+                  protectionWasRepriced = true;
+                  this.logger.log(`[SL REPRICE] Trade ${tradeId}: novo SL ${newSlOrder.orderId} em ${targetSlPriceRounded}`);
+                } catch (e: any) {
+                  this.logger.error(
+                    `[SL REPRICE] CRITICO: falha ao reposicionar o SL do trade ${tradeId} (${symbol}): ${e.message}. ` +
+                    `Posicao segue protegida pelo SL antigo (desalinhado) em ${currentSlPrice}.`
+                  );
+                }
+              }
             }
           } else if (hasStopLoss) {
             this.logger.debug(`[BYBIT LIMIT SL/TP] SL already exists, skipping creation`);
@@ -1518,7 +1656,69 @@ export class WebhookService {
             }
           }
           } else if (hasTakeProfit) {
-            this.logger.debug(`[BYBIT LIMIT SL/TP] TPs already exist, skipping creation`);
+            const originalEntryPrice = trade.entryPrice !== null && trade.entryPrice !== undefined ? Number(trade.entryPrice) : null;
+            const { shouldReprice: tpShouldReprice, diffPercent: tpDiffPercent } = shouldRepriceProtection({
+              currentPrice: originalEntryPrice,
+              targetPrice: actualEntryPrice,
+            });
+
+            if (originalEntryPrice === null) {
+              this.logger.error(
+                `[TP REPRICE] Trade ${tradeId} (${symbol}): TP existe mas o entryPrice original nao esta disponivel -- ` +
+                `nao e possivel verificar alinhamento. Mantendo os TPs atuais.`
+              );
+            } else if (tpShouldReprice) {
+              this.logger.warn(
+                `[TP REPRICE] Trade ${tradeId} (${symbol}): entrada divergiu ${tpDiffPercent!.toFixed(4)}pp do sinal ` +
+                `(${originalEntryPrice} -> ${actualEntryPrice}). Recriando TPs sobre o fill.`
+              );
+              const oldTpOrders = parseTrackedTpOrders(trade.takeProfitOrderId);
+              const newTpOrderIds: string[] = [];
+              const bybitPositionIdx = await this.bybitClient.getPositionIdx(
+                decryptedKey, decryptedSecret, strategy.isTestnet, symbol, bybitSide, strategy.hedgeMode
+              );
+              for (const tp of tpConfigs) {
+                const tpPrice = this.calculateTakeProfitPrice(side, actualEntryPrice, tp.percent);
+                const tpQty = Number(tp.quantity);
+                if (tpQty <= 0) continue;
+                try {
+                  const tpOrder = await withOneRetry(() => this.bybitClient.createOrder(
+                    decryptedKey, decryptedSecret, strategy.isTestnet,
+                    {
+                      symbol,
+                      side: side === 'BUY' ? 'Sell' : 'Buy',
+                      orderType: 'Limit',
+                      qty: tp.quantity,
+                      price: roundPriceToTick(tpPrice, rules.priceTick),
+                      positionIdx: bybitPositionIdx,
+                      reduceOnly: true,
+                      hedgeMode: strategy.hedgeMode
+                    }
+                  ), (ms) => this.sleep(ms));
+                  newTpOrderIds.push(`${tp.id}:${tpOrder.orderId}`);
+                  this.logger.log(`[TP REPRICE] TP${tp.id} recriado: ${tpOrder.orderId} em ${tpPrice.toFixed(8)}`);
+                } catch (e: any) {
+                  this.logger.error(`[TP REPRICE] CRITICO: falha ao recriar TP${tp.id} do trade ${tradeId}: ${e.message}`);
+                  failedTps.push({ id: tp.id, reason: e.message });
+                }
+              }
+              if (newTpOrderIds.length > 0) {
+                for (const old of oldTpOrders) {
+                  try {
+                    await this.bybitClient.cancelOrder(decryptedKey, decryptedSecret, strategy.isTestnet, symbol, old.orderId);
+                  } catch (cancelErr: any) {
+                    this.logger.error(`[TP REPRICE] Falha ao cancelar o TP antigo ${old.orderId}: ${cancelErr.message}`);
+                  }
+                }
+                tpOrderIds.length = 0;
+                tpOrderIds.push(...newTpOrderIds);
+                protectionWasRepriced = true;
+              } else {
+                this.logger.error(`[TP REPRICE] Nenhum TP novo foi criado para o trade ${tradeId} -- mantendo os TPs antigos (desalinhados).`);
+              }
+            } else {
+              this.logger.debug(`[BYBIT LIMIT SL/TP] TPs already exist and aligned, skipping creation`);
+            }
           }
 
           const actualSlPrice = slOrderId && strategy.stopLossPercentage
@@ -1534,6 +1734,7 @@ export class WebhookService {
             stopLossOrderId: slOrderId || undefined,
             takeProfitOrderId: tpOrderIds.length > 0 ? tpOrderIds.join('|') : undefined,
             currentStopLoss: actualSlPrice as any,
+            protectionRepricedAt: protectionWasRepriced ? new Date() as any : undefined,
             tpWarnings: buildTpWarnings(tpPlan.discarded, failedTps),
           });
 

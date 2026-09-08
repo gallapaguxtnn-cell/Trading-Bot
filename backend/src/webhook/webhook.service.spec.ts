@@ -212,3 +212,165 @@ describe('WebhookService (FASE 2 -- fechar a janela de desprotecao)', () => {
     expect(resumeSpy).not.toHaveBeenCalled();
   });
 });
+
+describe('WebhookService (FASE 2 -- reposicionar SL/TP desalinhado no fill monitor Bybit)', () => {
+  let service: WebhookService;
+  let tradesService: { findById: jest.Mock; updateTrade: jest.Mock };
+  let bybitClient: {
+    getOrderInfo: jest.Mock;
+    getOrderHistory: jest.Mock;
+    waitForPosition: jest.Mock;
+    createStopLossOrder: jest.Mock;
+    cancelOrder: jest.Mock;
+    getPositionIdx: jest.Mock;
+    createOrder: jest.Mock;
+  };
+  let symbolRulesService: { getSymbolRules: jest.Mock };
+
+  function makeTrade(overrides: Record<string, any> = {}) {
+    return {
+      id: 'trade-1',
+      status: 'OPEN',
+      exchangeOrderId: 'entry-1',
+      entryPrice: 0.796,
+      stopLossOrderId: 'sl-old',
+      takeProfitOrderId: null,
+      currentStopLoss: 0.8015,
+      ...overrides,
+    };
+  }
+
+  const strategy = { isTestnet: true, stopLossPercentage: 2, hedgeMode: false };
+
+  beforeEach(async () => {
+    jest.useFakeTimers({ doNotFake: ['nextTick'] });
+    tradesService = { findById: jest.fn(), updateTrade: jest.fn().mockResolvedValue(undefined) };
+    bybitClient = {
+      getOrderInfo: jest.fn(),
+      getOrderHistory: jest.fn(),
+      waitForPosition: jest.fn().mockResolvedValue(true),
+      createStopLossOrder: jest.fn(),
+      cancelOrder: jest.fn().mockResolvedValue(true),
+      getPositionIdx: jest.fn().mockResolvedValue(0),
+      createOrder: jest.fn(),
+    };
+    symbolRulesService = {
+      getSymbolRules: jest.fn().mockResolvedValue({ qtyStep: '1', priceTick: '0.0001', minQty: '1', minNotional: '5' }),
+    };
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        WebhookService,
+        { provide: ExchangeService, useValue: {} },
+        { provide: BybitClientService, useValue: bybitClient },
+        { provide: StrategiesService, useValue: { findOne: jest.fn() } },
+        { provide: TradesService, useValue: tradesService },
+        { provide: BinanceWebSocketService, useValue: {} },
+        { provide: SignalLogService, useValue: {} },
+        { provide: SymbolRulesService, useValue: symbolRulesService },
+        { provide: CredentialsResolverService, useValue: passthroughCredentialsResolver() },
+      ],
+    }).compile();
+
+    service = module.get<WebhookService>(WebhookService);
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('SL desalinhado (caso real SUIUSDT: SL 0.8015 vs alvo 0.81192 sobre o fill 0.796) -> cria o novo antes de cancelar o antigo e grava protectionRepricedAt', async () => {
+    tradesService.findById.mockResolvedValue(makeTrade());
+    bybitClient.getOrderInfo.mockResolvedValue({ orderStatus: 'Filled', avgPrice: '0.796', cumExecQty: '50' });
+    bybitClient.createStopLossOrder.mockResolvedValue({ orderId: 'sl-new' });
+
+    (service as any).scheduleBybitProtectionOrders('trade-1', 'SUIUSDT', 'SELL', strategy, 'key', 'secret', 50);
+    await jest.advanceTimersByTimeAsync(10000);
+
+    expect(bybitClient.createStopLossOrder).toHaveBeenCalledTimes(1);
+    const [, , , , , , triggerPrice] = bybitClient.createStopLossOrder.mock.calls[0];
+    expect(triggerPrice).toBe('0.8119');
+
+    const createOrderIndex = bybitClient.createStopLossOrder.mock.invocationCallOrder[0];
+    const cancelOrderIndex = bybitClient.cancelOrder.mock.invocationCallOrder[0];
+    expect(createOrderIndex).toBeLessThan(cancelOrderIndex);
+    expect(bybitClient.cancelOrder).toHaveBeenCalledWith('key', 'secret', true, 'SUIUSDT', 'sl-old');
+
+    const update = tradesService.updateTrade.mock.calls[0][1];
+    expect(update.stopLossOrderId).toBe('sl-new');
+    expect(update.protectionRepricedAt).toBeInstanceOf(Date);
+  });
+
+  it('SL alinhado com o alvo -> nao mexe (nao cria nem cancela nada)', async () => {
+    tradesService.findById.mockResolvedValue(makeTrade({ currentStopLoss: 0.81192 }));
+    bybitClient.getOrderInfo.mockResolvedValue({ orderStatus: 'Filled', avgPrice: '0.796', cumExecQty: '50' });
+
+    (service as any).scheduleBybitProtectionOrders('trade-1', 'SUIUSDT', 'SELL', strategy, 'key', 'secret', 50);
+    await jest.advanceTimersByTimeAsync(10000);
+
+    expect(bybitClient.createStopLossOrder).not.toHaveBeenCalled();
+    expect(bybitClient.cancelOrder).not.toHaveBeenCalled();
+    const update = tradesService.updateTrade.mock.calls[0][1];
+    expect(update.stopLossOrderId).toBe('sl-old');
+    expect(update.protectionRepricedAt).toBeUndefined();
+  });
+
+  it('reposicionamento falho (criacao do novo SL rejeitada) -> alerta critico, SL antigo preservado, nunca cancela o antigo', async () => {
+    tradesService.findById.mockResolvedValue(makeTrade());
+    bybitClient.getOrderInfo.mockResolvedValue({ orderStatus: 'Filled', avgPrice: '0.796', cumExecQty: '50' });
+    bybitClient.createStopLossOrder.mockRejectedValue(new Error('Bybit rejected: risk limit'));
+    const errorSpy = jest.spyOn((service as any).logger, 'error');
+
+    (service as any).scheduleBybitProtectionOrders('trade-1', 'SUIUSDT', 'SELL', strategy, 'key', 'secret', 50);
+    await jest.advanceTimersByTimeAsync(10000);
+
+    expect(bybitClient.cancelOrder).not.toHaveBeenCalled();
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('CRITICO'));
+    const update = tradesService.updateTrade.mock.calls[0][1];
+    expect(update.stopLossOrderId).toBe('sl-old');
+    expect(update.protectionRepricedAt).toBeUndefined();
+  });
+
+  it('SL existente mas currentStopLoss nao gravado (trade antigo) -> nao reposiciona e loga erro, sem tocar no SL', async () => {
+    tradesService.findById.mockResolvedValue(makeTrade({ currentStopLoss: null }));
+    bybitClient.getOrderInfo.mockResolvedValue({ orderStatus: 'Filled', avgPrice: '0.796', cumExecQty: '50' });
+    const errorSpy = jest.spyOn((service as any).logger, 'error');
+
+    (service as any).scheduleBybitProtectionOrders('trade-1', 'SUIUSDT', 'SELL', strategy, 'key', 'secret', 50);
+    await jest.advanceTimersByTimeAsync(10000);
+
+    expect(bybitClient.createStopLossOrder).not.toHaveBeenCalled();
+    expect(bybitClient.cancelOrder).not.toHaveBeenCalled();
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('SL REPRICE'));
+  });
+
+  it('TP existente e entrada divergiu do sinal -> recria os TPs sobre o fill e cancela os antigos', async () => {
+    tradesService.findById.mockResolvedValue(makeTrade({
+      entryPrice: 0.7858,
+      stopLossOrderId: null,
+      takeProfitOrderId: '1:tp-old-a',
+    }));
+    bybitClient.getOrderInfo.mockResolvedValue({ orderStatus: 'Filled', avgPrice: '0.796', cumExecQty: '50' });
+    bybitClient.createOrder.mockResolvedValue({ orderId: 'tp-new-a' });
+
+    (service as any).scheduleBybitProtectionOrders('trade-1', 'SUIUSDT', 'SELL', {
+      ...strategy,
+      stopLossPercentage: 0,
+      takeProfitPercentage1: 1,
+      takeProfitQuantity1: 100,
+      enableTakeProfit1: true,
+      takeProfitPercentage2: null,
+      enableTakeProfit2: false,
+      takeProfitPercentage3: null,
+      enableTakeProfit3: false,
+    }, 'key', 'secret', 50);
+    await jest.advanceTimersByTimeAsync(10000);
+
+    expect(bybitClient.createOrder).toHaveBeenCalled();
+    expect(bybitClient.cancelOrder).toHaveBeenCalledWith('key', 'secret', true, 'SUIUSDT', 'tp-old-a');
+    const update = tradesService.updateTrade.mock.calls[0][1];
+    expect(update.takeProfitOrderId).toContain('1:tp-new-a');
+    expect(update.takeProfitOrderId).not.toContain('tp-old-a');
+    expect(update.protectionRepricedAt).toBeInstanceOf(Date);
+  });
+});
