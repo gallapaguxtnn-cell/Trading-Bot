@@ -2598,12 +2598,20 @@ export class WebhookService {
         // - Averaging entry: ALWAYS use signal price (NOT the average position price)
         //   Example: First entry $100, second entry $110 → position avg is $105
         //   But we want TPs for second entry based on $110, not $105!
-        const { price: priceForProtectionOrders } = resolveProtectionPrice({
+        const { price: priceForProtectionOrders, usedActualFill: protectionUsedActualFill } = resolveProtectionPrice({
           isLimitOrder,
+          hasBuffer: !!resolvedStrategy.bufferEntry,
           isAveragingTrade,
           actualEntryPrice,
           signalPrice: entryPrice,
         });
+
+        if (isLimitOrder && !protectionUsedActualFill) {
+          this.logger.error(
+            `[PROTECTION ORDERS] LIMIT order sem preco real de preenchimento disponivel — SL/TP calculados sobre o preco do sinal ${entryPrice}. ` +
+            `Se a ordem tiver buffer e preencher distante do sinal, o fill monitor precisa reposicionar.`
+          );
+        }
 
         if (priceForProtectionOrders !== entryPrice) {
           this.logger.log(

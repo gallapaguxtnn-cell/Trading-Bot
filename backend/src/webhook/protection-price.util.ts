@@ -1,5 +1,6 @@
 export interface ProtectionPriceInput {
   isLimitOrder: boolean;
+  hasBuffer: boolean;
   isAveragingTrade: boolean;
   actualEntryPrice: number | undefined;
   signalPrice: number;
@@ -11,8 +12,8 @@ export interface ProtectionPriceResult {
 }
 
 export function resolveProtectionPrice(input: ProtectionPriceInput): ProtectionPriceResult {
-  const { isLimitOrder, isAveragingTrade, actualEntryPrice, signalPrice } = input;
-  if (!isLimitOrder && actualEntryPrice && !isAveragingTrade) {
+  const { actualEntryPrice, isAveragingTrade, signalPrice } = input;
+  if (actualEntryPrice && !isAveragingTrade) {
     return { price: actualEntryPrice, usedActualFill: true };
   }
   return { price: signalPrice, usedActualFill: false };

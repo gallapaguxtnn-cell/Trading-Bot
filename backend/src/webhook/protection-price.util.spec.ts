@@ -4,6 +4,7 @@ describe('resolveProtectionPrice', () => {
   it('Bybit MARKET com avgPrice disponivel -> usa o preco real de execucao (TP/SL sobre o fill)', () => {
     const result = resolveProtectionPrice({
       isLimitOrder: false,
+      hasBuffer: false,
       isAveragingTrade: false,
       actualEntryPrice: 0.65470,
       signalPrice: 0.65563,
@@ -14,6 +15,7 @@ describe('resolveProtectionPrice', () => {
   it('Bybit MARKET sem avgPrice disponivel -> cai no preco do sinal (sem quebrar)', () => {
     const result = resolveProtectionPrice({
       isLimitOrder: false,
+      hasBuffer: false,
       isAveragingTrade: false,
       actualEntryPrice: undefined,
       signalPrice: 0.65563,
@@ -24,6 +26,7 @@ describe('resolveProtectionPrice', () => {
   it('Binance MARKET com actualEntryPrice -> mesmo comportamento de sempre (usa o fill real)', () => {
     const result = resolveProtectionPrice({
       isLimitOrder: false,
+      hasBuffer: false,
       isAveragingTrade: false,
       actualEntryPrice: 100.05,
       signalPrice: 100,
@@ -31,19 +34,43 @@ describe('resolveProtectionPrice', () => {
     expect(result).toEqual({ price: 100.05, usedActualFill: true });
   });
 
-  it('LIMIT (qualquer corretora) -> sempre preco do sinal, mesmo com actualEntryPrice presente', () => {
+  it('LIMIT com buffer e fill 1,3% acima do sinal (caso SUIUSDT do incidente) -> usa o fill, nao o sinal', () => {
     const result = resolveProtectionPrice({
       isLimitOrder: true,
+      hasBuffer: true,
       isAveragingTrade: false,
-      actualEntryPrice: 100.05,
+      actualEntryPrice: 0.796,
+      signalPrice: 0.7858,
+    });
+    expect(result).toEqual({ price: 0.796, usedActualFill: true });
+  });
+
+  it('LIMIT sem fill disponivel ainda (ordem pendente) -> cai no preco do sinal', () => {
+    const result = resolveProtectionPrice({
+      isLimitOrder: true,
+      hasBuffer: true,
+      isAveragingTrade: false,
+      actualEntryPrice: undefined,
       signalPrice: 100,
     });
     expect(result).toEqual({ price: 100, usedActualFill: false });
   });
 
+  it('LIMIT sem buffer com actualEntryPrice -> tambem usa o fill (mesma regra, buffer nao muda a decisao)', () => {
+    const result = resolveProtectionPrice({
+      isLimitOrder: true,
+      hasBuffer: false,
+      isAveragingTrade: false,
+      actualEntryPrice: 100.05,
+      signalPrice: 100,
+    });
+    expect(result).toEqual({ price: 100.05, usedActualFill: true });
+  });
+
   it('averaging -> preco do sinal proposital, mesmo com actualEntryPrice presente (nao usa media pos-merge)', () => {
     const result = resolveProtectionPrice({
       isLimitOrder: false,
+      hasBuffer: false,
       isAveragingTrade: true,
       actualEntryPrice: 105,
       signalPrice: 110,
