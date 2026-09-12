@@ -195,3 +195,147 @@ describe('StopLossService (FASE 2 -- CredentialsResolver)', () => {
     expect(bybitClient.getPositions).toHaveBeenCalledWith('portfolio-key', 'portfolio-secret', false, 'BTCUSDT');
   });
 });
+
+describe('StopLossService (FASE 4 -- PnL do SL lido da corretora)', () => {
+  let service: StopLossService;
+  let tradesRepository: { save: jest.Mock };
+  let tradesService: { createExecution: jest.Mock };
+  let symbolRulesService: { getSymbolRules: jest.Mock };
+  let bybitClient: {
+    getOrderInfo: jest.Mock;
+    getOrderHistory: jest.Mock;
+    getLastTradePrice: jest.Mock;
+    getCurrentPrice: jest.Mock;
+    createOrder: jest.Mock;
+    getPositionIdx: jest.Mock;
+  };
+
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    tradesRepository = { save: jest.fn() };
+    tradesService = { createExecution: jest.fn() };
+    symbolRulesService = { getSymbolRules: jest.fn() };
+    bybitClient = {
+      getOrderInfo: jest.fn(),
+      getOrderHistory: jest.fn(),
+      getLastTradePrice: jest.fn(),
+      getCurrentPrice: jest.fn(),
+      createOrder: jest.fn(),
+      getPositionIdx: jest.fn().mockResolvedValue(0),
+    };
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        StopLossService,
+        { provide: getRepositoryToken(Trade), useValue: tradesRepository },
+        { provide: TradesService, useValue: tradesService },
+        { provide: StrategiesService, useValue: {} },
+        { provide: ExchangeService, useValue: {} },
+        { provide: BybitClientService, useValue: bybitClient },
+        { provide: BinanceWebSocketService, useValue: {} },
+        { provide: SymbolRulesService, useValue: symbolRulesService },
+        { provide: CredentialsResolverService, useValue: { resolveCredentials: jest.fn() } },
+      ],
+    }).compile();
+
+    service = module.get<StopLossService>(StopLossService);
+  });
+
+  it('caso real SUIUSDT: SL preenchido a 0.8015 (entry 0.796, 50 SUI, taxa 0.030) -> PnL exatamente -0.3050, lido da corretora', async () => {
+    bybitClient.getOrderInfo.mockResolvedValue({
+      orderId: 'sl-order-1',
+      orderStatus: 'Filled',
+      avgPrice: '0.8015',
+      cumExecQty: '50',
+      cumExecFee: '0.030',
+      updatedTime: `${Date.now()}`,
+    });
+
+    const trade = {
+      id: 'trade-1', symbol: 'SUIUSDT', side: 'SELL', quantity: 50, entryPrice: 0.796, pnl: null,
+      stopLossOrderId: 'sl-order-1',
+    } as unknown as Trade;
+
+    await (service as any).markTradeAsClosed(trade, 'STOP_LOSS', Exchange.BYBIT, 'key', 'secret', false, 'sl-order-1');
+
+    expect(bybitClient.getLastTradePrice).not.toHaveBeenCalled();
+
+    const execArg = tradesService.createExecution.mock.calls[0][0];
+    expect(execArg.tradeId).toBe('trade-1');
+    expect(execArg.price).toBe(0.8015);
+    expect(execArg.quantity).toBe(50);
+    expect(execArg.fee).toBe(0.03);
+    expect(execArg.pnl).toBeCloseTo(-0.305, 4);
+
+    const saved = tradesRepository.save.mock.calls[0][0];
+    expect(saved.exitPrice).toBe(0.8015);
+    expect(saved.pnl).toBeCloseTo(-0.305, 4);
+  });
+
+  it('sem orderId disponivel (ex.: stop nativo BYBIT_TRADING_STOP) -> cai no fallback local e loga erro, nunca silenciosamente', async () => {
+    const errorSpy = jest.spyOn((service as any).logger, 'error').mockImplementation(() => {});
+    bybitClient.getLastTradePrice.mockResolvedValue(0.81);
+
+    const trade = {
+      id: 'trade-2', symbol: 'SUIUSDT', side: 'SELL', quantity: 50, entryPrice: 0.796, pnl: null,
+      stopLossOrderId: 'BYBIT_TRADING_STOP',
+    } as unknown as Trade;
+
+    await (service as any).markTradeAsClosed(trade, 'STOP_LOSS', Exchange.BYBIT, 'key', 'secret', false, null);
+
+    expect(errorSpy).toHaveBeenCalled();
+    expect(bybitClient.getLastTradePrice).toHaveBeenCalled();
+    const execArg = tradesService.createExecution.mock.calls[0][0];
+    expect(execArg.fee).toBeNull();
+  });
+
+  it('falha ao consultar a ordem na corretora -> nao quebra o fechamento, usa fallback e loga erro', async () => {
+    const errorSpy = jest.spyOn((service as any).logger, 'error').mockImplementation(() => {});
+    bybitClient.getOrderInfo.mockResolvedValue(null);
+    bybitClient.getOrderHistory.mockResolvedValue(null);
+    bybitClient.getLastTradePrice.mockResolvedValue(0.8015);
+
+    const trade = {
+      id: 'trade-3', symbol: 'SUIUSDT', side: 'SELL', quantity: 50, entryPrice: 0.796, pnl: null,
+      stopLossOrderId: 'sl-order-3',
+    } as unknown as Trade;
+
+    await (service as any).markTradeAsClosed(trade, 'STOP_LOSS', Exchange.BYBIT, 'key', 'secret', false, 'sl-order-3');
+
+    expect(errorSpy).toHaveBeenCalled();
+    expect(bybitClient.getLastTradePrice).toHaveBeenCalled();
+    const saved = tradesRepository.save.mock.calls[0][0];
+    expect(saved.exitPrice).toBe(0.8015);
+  });
+
+  it('closePosition (gatilho manual por preco) Bybit: le o fill real da ordem a mercado e persiste a taxa separadamente', async () => {
+    symbolRulesService.getSymbolRules.mockResolvedValue({ qtyStep: '1', priceTick: '0.0001', minQty: '1', minNotional: '5' });
+    bybitClient.createOrder.mockResolvedValue({ orderId: 'close-order-1' });
+    bybitClient.getOrderInfo.mockResolvedValue({
+      orderId: 'close-order-1',
+      orderStatus: 'Filled',
+      avgPrice: '0.8015',
+      cumExecQty: '50',
+      cumExecFee: '0.030',
+      updatedTime: `${Date.now()}`,
+    });
+
+    const trade = {
+      id: 'trade-4', symbol: 'SUIUSDT', side: 'SELL', quantity: 50, entryPrice: 0.796, pnl: null,
+      stopLossOrderId: 'sl-order-4',
+    } as unknown as Trade;
+    const strategy = { exchange: Exchange.BYBIT, isTestnet: false, hedgeMode: false };
+
+    await (service as any).closePosition(trade, strategy, 0.8, 'STOP_LOSS', 'key', 'secret');
+
+    const execArg = tradesService.createExecution.mock.calls[0][0];
+    expect(execArg.price).toBe(0.8015);
+    expect(execArg.quantity).toBe(50);
+    expect(execArg.fee).toBe(0.03);
+    expect(execArg.pnl).toBeCloseTo(-0.305, 4);
+
+    const saved = tradesRepository.save.mock.calls[0][0];
+    expect(saved.exitPrice).toBe(0.8015);
+    expect(saved.pnl).toBeCloseTo(-0.305, 4);
+  }, 10000);
+});

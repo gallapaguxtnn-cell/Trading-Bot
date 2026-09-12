@@ -41,6 +41,9 @@ export class TradeExecution {
   @Column({ type: 'decimal', precision: 18, scale: 8, nullable: true })
   percentOfPosition: number | null;
 
+  @Column({ type: 'decimal', precision: 18, scale: 8, nullable: true })
+  fee: number | null;
+
   @Column({ type: 'timestamp', default: () => 'CURRENT_TIMESTAMP' })
   executedAt: Date;
 

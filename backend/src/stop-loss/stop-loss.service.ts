@@ -18,6 +18,7 @@ import { isPendingLimitEntry } from '../utils/trade-guards.util';
 import { SymbolRulesService } from '../common/symbol-rules.service';
 import { normalizeQuantity, roundPriceToTick } from '../common/exchange-precision.util';
 import { CredentialsResolverService } from '../common/credentials-resolver.service';
+import { OrderFill, mapBybitFill, mapBinanceFill, mapCcxtFill, tpPnl, sumCommission } from '../take-profit/fill.util';
 import axios from 'axios';
 import * as crypto from 'crypto';
 
@@ -82,7 +83,7 @@ export class StopLossService implements OnModuleInit {
     const apiKey = (await EncryptionUtil.decrypt(resolvedStrategy.apiKey)).trim();
     const apiSecret = (await EncryptionUtil.decrypt(resolvedStrategy.apiSecret)).trim();
 
-    await this.markTradeAsClosed(trade, 'STOP_LOSS', exchange, apiKey, apiSecret, resolvedStrategy.isTestnet);
+    await this.markTradeAsClosed(trade, 'STOP_LOSS', exchange, apiKey, apiSecret, resolvedStrategy.isTestnet, event.orderId);
   }
 
   @Cron('*/10 * * * * *')
@@ -150,7 +151,7 @@ export class StopLossService implements OnModuleInit {
 
       if (orderStatus === 'FILLED' || orderStatus === 'Filled') {
         this.logger.log(`[STOP LOSS EXECUTED] ${trade.symbol} - Order was filled`);
-        await this.markTradeAsClosed(trade, 'STOP_LOSS', exchange, apiKey, apiSecret, resolvedStrategy.isTestnet);
+        await this.markTradeAsClosed(trade, 'STOP_LOSS', exchange, apiKey, apiSecret, resolvedStrategy.isTestnet, trade.stopLossOrderId);
         return;
       } else if (orderStatus === 'CANCELED' || orderStatus === 'EXPIRED' || orderStatus === 'Cancelled' || orderStatus === 'Deactivated') {
         this.logger.warn(`[STOP LOSS] Order ${trade.stopLossOrderId} was ${orderStatus}, attempting to recreate SL`);
@@ -417,18 +418,57 @@ export class StopLossService implements OnModuleInit {
     exchange: Exchange,
     apiKey: string,
     apiSecret: string,
-    isTestnet: boolean
+    isTestnet: boolean,
+    orderId?: string | null
   ): Promise<void> {
-    const exitPrice = await this.getLastTradePrice(trade.symbol, exchange, apiKey, apiSecret, isTestnet);
-    const currentPrice = exitPrice || await this.getCurrentPrice(trade, { exchange, isTestnet } as any);
+    const entryPrice = parseFloat(trade.entryPrice as any);
+    let fill: OrderFill | null = null;
+
+    if (orderId) {
+      fill = await this.fetchOrderFill(orderId, trade.symbol, exchange, apiKey, apiSecret, isTestnet);
+    }
+
+    let exitPrice: number;
+    let closedQty: number;
+    let fee: number | null = null;
+    let pnl: number;
+
+    if (fill?.avgPrice != null) {
+      exitPrice = fill.avgPrice;
+      closedQty = fill.executedQty ?? parseFloat(trade.quantity as any);
+      fee = fill.fee;
+      pnl = tpPnl(trade.side, entryPrice, exitPrice, closedQty, fee).net;
+    } else {
+      this.logger.error(
+        `[SL PNL] ${trade.symbol}: nao foi possivel ler o resultado real da ordem de stop na corretora (orderId=${orderId ?? 'indisponivel'}) -- usando ultimo preco negociado e calculo local sem taxas como fallback.`
+      );
+      const lastPrice = await this.getLastTradePrice(trade.symbol, exchange, apiKey, apiSecret, isTestnet);
+      exitPrice = lastPrice || await this.getCurrentPrice(trade, { exchange, isTestnet } as any);
+      closedQty = parseFloat(trade.quantity as any);
+      pnl = this.calculatePnL(trade, exitPrice);
+    }
 
     await this.cancelTradeSpecificTpOrders(trade, exchange, apiKey, apiSecret, isTestnet);
 
-    const pnl = this.calculatePnL(trade, currentPrice);
     const totalPnl = (parseFloat(trade.pnl as any) || 0) + pnl;
 
+    try {
+      await this.tradesService.createExecution({
+        tradeId: trade.id,
+        type: ExecutionType.STOP_LOSS,
+        price: exitPrice,
+        quantity: closedQty,
+        pnl,
+        fee,
+        percentOfPosition: 100,
+        exchangeOrderId: orderId || trade.stopLossOrderId || undefined,
+      });
+    } catch (e: any) {
+      this.logger.warn(`[SL] Falha ao gravar execucao: ${e.message}`);
+    }
+
     trade.status = 'CLOSED';
-    trade.exitPrice = currentPrice as any;
+    trade.exitPrice = exitPrice as any;
     trade.pnl = totalPnl;
     trade.closeReason = reason;
     trade.closedAt = new Date();
@@ -437,6 +477,72 @@ export class StopLossService implements OnModuleInit {
     await this.tradesRepository.save(trade);
 
     this.logger.log(`[CLOSED] ${trade.symbol} via ${reason} | P&L: ${totalPnl > 0 ? '+' : ''}${totalPnl.toFixed(2)} USDT`);
+  }
+
+  private async fetchOrderFill(
+    orderId: string,
+    symbol: string,
+    exchange: Exchange,
+    apiKey: string,
+    apiSecret: string,
+    isTestnet: boolean
+  ): Promise<OrderFill | null> {
+    try {
+      if (exchange === Exchange.BYBIT) {
+        let orderInfo = await this.bybitClient.getOrderInfo(apiKey, apiSecret, isTestnet, symbol, orderId);
+
+        if (!orderInfo) {
+          orderInfo = await this.bybitClient.getOrderHistory(apiKey, apiSecret, isTestnet, symbol, orderId);
+        }
+
+        return mapBybitFill(orderInfo as unknown as Record<string, unknown> | null);
+      }
+
+      const baseUrl = isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
+      const timestamp = Date.now();
+      const queryString = `symbol=${symbol}&orderId=${orderId}&timestamp=${timestamp}`;
+      const signature = crypto.createHmac('sha256', apiSecret).update(queryString).digest('hex');
+
+      const response = await BinanceRequestUtil.get(
+        `${baseUrl}/fapi/v1/order?${queryString}&signature=${signature}`,
+        { headers: { 'X-MBX-APIKEY': apiKey } }
+      );
+
+      const fill = mapBinanceFill(response.data as Record<string, unknown>);
+      if (fill && fill.fee == null && fill.status && /FILLED/i.test(fill.status)) {
+        const fee = await this.fetchBinanceCommission(orderId, symbol, apiKey, apiSecret, isTestnet);
+        if (fee != null) fill.fee = fee;
+      }
+      return fill;
+    } catch (error: any) {
+      this.logger.warn(`[SL] Failed to fetch order fill (${orderId}): ${error.message}`);
+      return null;
+    }
+  }
+
+  private async fetchBinanceCommission(
+    orderId: string,
+    symbol: string,
+    apiKey: string,
+    apiSecret: string,
+    isTestnet: boolean
+  ): Promise<number | null> {
+    try {
+      const baseUrl = isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
+      const timestamp = Date.now();
+      const queryString = `symbol=${symbol}&orderId=${orderId}&timestamp=${timestamp}`;
+      const signature = crypto.createHmac('sha256', apiSecret).update(queryString).digest('hex');
+
+      const response = await BinanceRequestUtil.get(
+        `${baseUrl}/fapi/v1/userTrades?${queryString}&signature=${signature}`,
+        { headers: { 'X-MBX-APIKEY': apiKey } }
+      );
+
+      return sumCommission(response.data as Array<Record<string, unknown>>);
+    } catch (error: any) {
+      this.logger.warn(`[SL] Failed to fetch Binance commission (${orderId}): ${error.message}`);
+      return null;
+    }
   }
 
   private async getLastTradePrice(
@@ -538,6 +644,7 @@ export class StopLossService implements OnModuleInit {
       const exchange = strategy.exchange || Exchange.BINANCE;
       const closeSide = trade.side === 'BUY' ? 'SELL' : 'BUY';
       const quantity = parseFloat(trade.quantity as any);
+      let fill: OrderFill | null = null;
 
       if (exchange === Exchange.BYBIT) {
         const rules = await this.symbolRulesService.getSymbolRules(trade.symbol, strategy.isTestnet, Exchange.BYBIT);
@@ -556,7 +663,7 @@ export class StopLossService implements OnModuleInit {
         );
 
         const bybitSide = closeSide === 'BUY' ? 'Buy' : 'Sell';
-        await this.bybitClient.createOrder(
+        const bybitOrder = await this.bybitClient.createOrder(
           apiKey,
           apiSecret,
           strategy.isTestnet,
@@ -571,6 +678,11 @@ export class StopLossService implements OnModuleInit {
           }
         );
         this.logger.warn(`[BYBIT] Closed ${trade.symbol} via ${reason}`);
+
+        if (bybitOrder?.orderId) {
+          await new Promise(resolve => setTimeout(resolve, 500));
+          fill = await this.fetchOrderFill(bybitOrder.orderId, trade.symbol, Exchange.BYBIT, apiKey, apiSecret, strategy.isTestnet);
+        }
       } else if (strategy.isTestnet && exchange === Exchange.BINANCE) {
         const rules = await this.symbolRulesService.getSymbolRules(trade.symbol, strategy.isTestnet, Exchange.BINANCE);
         const closeQty = normalizeQuantity(quantity, rules.qtyStep, rules.minQty);
@@ -600,12 +712,18 @@ export class StopLossService implements OnModuleInit {
         const signature = crypto.createHmac('sha256', apiSecret).update(queryString).digest('hex');
         const body = `${queryString}&signature=${signature}`;
 
-        await BinanceRequestUtil.post(`${baseURL}/fapi/v1/order`, body, {
+        const closeResponse = await BinanceRequestUtil.post(`${baseURL}/fapi/v1/order`, body, {
           headers: {
             'X-MBX-APIKEY': apiKey,
             'Content-Type': 'application/x-www-form-urlencoded'
           }
         });
+
+        fill = mapBinanceFill(closeResponse.data as Record<string, unknown>);
+        if (fill && fill.fee == null && closeResponse.data?.orderId) {
+          const fee = await this.fetchBinanceCommission(closeResponse.data.orderId.toString(), trade.symbol, apiKey, apiSecret, strategy.isTestnet);
+          if (fee != null) fill.fee = fee;
+        }
 
         this.logger.warn(`[BINANCE] Closed ${trade.symbol} via ${reason}`);
       } else {
@@ -622,28 +740,48 @@ export class StopLossService implements OnModuleInit {
           ccxtParams.positionSide = positionSide;
         }
 
-        await exchangeInstance.createMarketOrder(trade.symbol, closeSide.toLowerCase(), quantity, ccxtParams);
+        const closeOrder = await exchangeInstance.createMarketOrder(trade.symbol, closeSide.toLowerCase(), quantity, ccxtParams);
+        fill = mapCcxtFill(closeOrder as unknown as Record<string, unknown>);
         this.logger.warn(`[CLOSED] ${trade.symbol} via ${reason}`);
       }
 
       await this.cancelTradeSpecificTpOrders(trade, exchange, apiKey, apiSecret, strategy.isTestnet);
 
-      const pnl = this.calculatePnL(trade, exitPrice);
+      const entryPrice = parseFloat(trade.entryPrice as any);
+      const fillPrice = fill?.avgPrice ?? exitPrice;
+      const fillQty = fill?.executedQty ?? quantity;
+      let pnl: number;
+      let fee: number | null = null;
+
+      if (fill?.avgPrice != null) {
+        fee = fill.fee;
+        pnl = tpPnl(trade.side, entryPrice, fillPrice, fillQty, fee).net;
+      } else {
+        this.logger.error(
+          `[SL PNL] ${trade.symbol}: nao foi possivel confirmar o fill real do fechamento na corretora -- usando preco estimado e calculo local sem taxas como fallback.`
+        );
+        pnl = this.calculatePnL(trade, exitPrice);
+      }
+
       const totalPnl = (parseFloat(trade.pnl as any) || 0) + pnl;
 
-      // Save execution record for stop loss
-      await this.tradesService.createExecution({
-        tradeId: trade.id,
-        type: ExecutionType.STOP_LOSS,
-        price: exitPrice,
-        quantity: quantity,
-        pnl: pnl,
-        percentOfPosition: 100,
-        exchangeOrderId: trade.stopLossOrderId || undefined
-      });
+      try {
+        await this.tradesService.createExecution({
+          tradeId: trade.id,
+          type: ExecutionType.STOP_LOSS,
+          price: fillPrice,
+          quantity: fillQty,
+          pnl,
+          fee,
+          percentOfPosition: 100,
+          exchangeOrderId: trade.stopLossOrderId || undefined
+        });
+      } catch (e: any) {
+        this.logger.warn(`[SL] Falha ao gravar execucao: ${e.message}`);
+      }
 
       trade.status = 'CLOSED';
-      trade.exitPrice = exitPrice as any;
+      trade.exitPrice = fillPrice as any;
       trade.pnl = totalPnl;
       trade.closeReason = reason;
       trade.closedAt = new Date();
@@ -651,7 +789,7 @@ export class StopLossService implements OnModuleInit {
 
       await this.tradesRepository.save(trade);
 
-      this.logger.warn(`└─ Closed: ${this.formatQuantityWithUsdt(quantity, exitPrice)} | P&L: ${totalPnl > 0 ? '+' : ''}${totalPnl.toFixed(2)} USDT`);
+      this.logger.warn(`└─ Closed: ${this.formatQuantityWithUsdt(fillQty, fillPrice)} | P&L: ${totalPnl > 0 ? '+' : ''}${totalPnl.toFixed(2)} USDT`);
 
     } catch (error) {
       this.logger.error(`Failed to close position: ${error.message}`);
