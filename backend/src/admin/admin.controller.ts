@@ -6,6 +6,7 @@ interface ResetTradesDto {
   confirm?: string;
   portfolioId?: string;
   executedBy?: string;
+  cancelOrphanOrders?: boolean;
 }
 
 @Controller('admin')

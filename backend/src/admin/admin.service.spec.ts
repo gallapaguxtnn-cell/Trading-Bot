@@ -12,8 +12,10 @@ import { AdminService } from './admin.service';
 import { Trade } from '../strategies/trade.entity';
 import { TradeExecution } from '../trades/trade-execution.entity';
 import { SignalLog } from '../webhook/signal-log.entity';
-import { Strategy } from '../strategies/strategy.entity';
+import { Strategy, Exchange } from '../strategies/strategy.entity';
 import { AuditLog, AuditCategory } from '../auditor/audit-log.entity';
+import { CredentialsResolverService } from '../common/credentials-resolver.service';
+import { BybitClientService } from '../exchange/bybit-client.service';
 
 function makeTrade(overrides: Record<string, unknown> = {}) {
   return {
@@ -21,7 +23,22 @@ function makeTrade(overrides: Record<string, unknown> = {}) {
     status: 'CLOSED',
     pnl: 10,
     portfolioId: null,
+    strategyId: 's1',
+    symbol: 'BTCUSDT',
+    exchangeOrderId: null,
     timestamp: new Date('2026-08-19T05:00:00Z'),
+    ...overrides,
+  };
+}
+
+function makeStrategy(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 's1',
+    exchange: Exchange.BYBIT,
+    isTestnet: true,
+    apiKey: 'enc-key',
+    apiSecret: 'enc-secret',
+    portfolioId: null,
     ...overrides,
   };
 }
@@ -33,6 +50,8 @@ describe('AdminService.resetTrades', () => {
   let signalLogRepository: { count: jest.Mock; find: jest.Mock; delete: jest.Mock; clear: jest.Mock };
   let strategyRepository: { find: jest.Mock };
   let auditRepository: { create: jest.Mock; save: jest.Mock };
+  let credentialsResolver: { resolveCredentials: jest.Mock };
+  let bybitClient: { getOrderInfo: jest.Mock; getOrderHistory: jest.Mock; cancelOrder: jest.Mock };
 
   beforeEach(async () => {
     jest.clearAllMocks();
@@ -41,6 +60,12 @@ describe('AdminService.resetTrades', () => {
     signalLogRepository = { count: jest.fn().mockResolvedValue(0), find: jest.fn().mockResolvedValue([]), delete: jest.fn(), clear: jest.fn() };
     strategyRepository = { find: jest.fn().mockResolvedValue([]) };
     auditRepository = { create: jest.fn((x) => x), save: jest.fn() };
+    credentialsResolver = { resolveCredentials: jest.fn() };
+    bybitClient = {
+      getOrderInfo: jest.fn().mockResolvedValue(null),
+      getOrderHistory: jest.fn().mockResolvedValue(null),
+      cancelOrder: jest.fn().mockResolvedValue(true),
+    };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -50,6 +75,8 @@ describe('AdminService.resetTrades', () => {
         { provide: getRepositoryToken(SignalLog), useValue: signalLogRepository },
         { provide: getRepositoryToken(Strategy), useValue: strategyRepository },
         { provide: getRepositoryToken(AuditLog), useValue: auditRepository },
+        { provide: CredentialsResolverService, useValue: credentialsResolver },
+        { provide: BybitClientService, useValue: bybitClient },
       ],
     }).compile();
 
@@ -125,6 +152,103 @@ describe('AdminService.resetTrades', () => {
     expect(tradeRepository.find).toHaveBeenCalledWith({ where: { portfolioId: 'p1' } });
     expect(signalLogRepository.delete).toHaveBeenCalledWith({ strategyId: expect.anything() });
     expect(signalLogRepository.clear).not.toHaveBeenCalled();
+  });
+
+  it('dryRun inclui liveOrders quando ha ordem exchangeOrderId ainda ativa na corretora', async () => {
+    tradeRepository.find.mockResolvedValue([
+      makeTrade({ id: 't1', status: 'ERROR', exchangeOrderId: 'order-123' }),
+    ]);
+    strategyRepository.find.mockResolvedValue([makeStrategy()]);
+    credentialsResolver.resolveCredentials.mockResolvedValue({
+      apiKey: 'plain-key',
+      apiSecret: 'plain-secret',
+      exchange: Exchange.BYBIT,
+      isTestnet: true,
+      isRealAccount: false,
+      portfolioId: null,
+      siteId: null,
+      source: 'strategy',
+    });
+    bybitClient.getOrderInfo.mockResolvedValue({ orderId: 'order-123', orderStatus: 'New' });
+
+    const result = await service.resetTrades({ dryRun: true });
+
+    expect((result as any).liveOrders).toEqual([
+      { tradeId: 't1', symbol: 'BTCUSDT', orderId: 'order-123', status: 'New', exchange: Exchange.BYBIT },
+    ]);
+  });
+
+  it('reset real com ordem New na corretora -- RECUSA mesmo com confirm correto, nao apaga nada', async () => {
+    tradeRepository.find.mockResolvedValue([
+      makeTrade({ id: 't1', status: 'ERROR', exchangeOrderId: 'order-123' }),
+    ]);
+    strategyRepository.find.mockResolvedValue([makeStrategy()]);
+    credentialsResolver.resolveCredentials.mockResolvedValue({
+      apiKey: 'plain-key',
+      apiSecret: 'plain-secret',
+      exchange: Exchange.BYBIT,
+      isTestnet: true,
+      isRealAccount: false,
+      portfolioId: null,
+      siteId: null,
+      source: 'strategy',
+    });
+    bybitClient.getOrderInfo.mockResolvedValue({ orderId: 'order-123', orderStatus: 'New' });
+
+    await expect(service.resetTrades({ dryRun: false, confirm: 'RESET' })).rejects.toThrow(ConflictException);
+    expect(tradeRepository.delete).not.toHaveBeenCalled();
+    expect(fs.writeFileSync).not.toHaveBeenCalled();
+    expect(bybitClient.cancelOrder).not.toHaveBeenCalled();
+  });
+
+  it('reset real com cancelOrphanOrders=true: cancela a ordem viva, registra e prossegue com o apagamento', async () => {
+    tradeRepository.find.mockResolvedValue([
+      makeTrade({ id: 't1', status: 'ERROR', exchangeOrderId: 'order-123' }),
+    ]);
+    strategyRepository.find.mockResolvedValue([makeStrategy()]);
+    credentialsResolver.resolveCredentials.mockResolvedValue({
+      apiKey: 'plain-key',
+      apiSecret: 'plain-secret',
+      exchange: Exchange.BYBIT,
+      isTestnet: true,
+      isRealAccount: false,
+      portfolioId: null,
+      siteId: 'BRA_BTL',
+      source: 'strategy',
+    });
+    bybitClient.getOrderInfo.mockResolvedValue({ orderId: 'order-123', orderStatus: 'New' });
+
+    const result = await service.resetTrades({ dryRun: false, confirm: 'RESET', cancelOrphanOrders: true });
+
+    expect(bybitClient.cancelOrder).toHaveBeenCalledWith('plain-key', 'plain-secret', true, 'BTCUSDT', 'order-123', 'BRA_BTL');
+    expect(tradeRepository.delete).toHaveBeenCalled();
+    expect((result as any).cancelledOrphanOrders).toEqual([
+      { tradeId: 't1', symbol: 'BTCUSDT', orderId: 'order-123', status: 'New', exchange: Exchange.BYBIT },
+    ]);
+  });
+
+  it('ordem ja resolvida na corretora (nao New/PartiallyFilled/Untriggered): nao bloqueia o reset', async () => {
+    tradeRepository.find.mockResolvedValue([
+      makeTrade({ id: 't1', status: 'CLOSED', exchangeOrderId: 'order-123' }),
+    ]);
+    strategyRepository.find.mockResolvedValue([makeStrategy()]);
+    credentialsResolver.resolveCredentials.mockResolvedValue({
+      apiKey: 'plain-key',
+      apiSecret: 'plain-secret',
+      exchange: Exchange.BYBIT,
+      isTestnet: true,
+      isRealAccount: false,
+      portfolioId: null,
+      siteId: null,
+      source: 'strategy',
+    });
+    bybitClient.getOrderInfo.mockResolvedValue(null);
+    bybitClient.getOrderHistory.mockResolvedValue({ orderId: 'order-123', orderStatus: 'Filled' });
+
+    const result = await service.resetTrades({ dryRun: false, confirm: 'RESET' });
+
+    expect(result).toMatchObject({ success: true, deletedTrades: 1 });
+    expect(bybitClient.cancelOrder).not.toHaveBeenCalled();
   });
 
   it('sem trades: reset real nao lanca e reporta zero remocoes', async () => {

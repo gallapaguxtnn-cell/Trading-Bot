@@ -141,7 +141,7 @@ export async function fetchAlerts(portfolioId?: string) {
   return res.json();
 }
 
-export async function resetTrades(payload: { dryRun?: boolean; confirm?: string; portfolioId?: string } = {}) {
+export async function resetTrades(payload: { dryRun?: boolean; confirm?: string; portfolioId?: string; cancelOrphanOrders?: boolean } = {}) {
   const res = await fetch(`${API_URL}/api/admin/reset-trades`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

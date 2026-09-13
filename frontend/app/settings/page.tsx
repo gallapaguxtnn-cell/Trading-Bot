@@ -3,6 +3,14 @@
 import { useState, useEffect } from 'react';
 import { fetchPortfolios, Portfolio, resetTrades, migrateLegacyPortfolios, backfillTradePortfolioIds } from '@/lib/api';
 
+interface LiveOrphanOrder {
+  tradeId: string;
+  symbol: string;
+  orderId: string;
+  status: string;
+  exchange: string;
+}
+
 interface DryRunResult {
   dryRun: true;
   countsByStatus: Record<string, number>;
@@ -12,6 +20,7 @@ interface DryRunResult {
   executionsCount: number;
   signalLogsCount: number;
   openTradesBlocking: number;
+  liveOrders: LiveOrphanOrder[];
 }
 
 export default function SettingsPage() {
@@ -42,9 +51,13 @@ export default function SettingsPage() {
     }
   };
 
-  const handleRealReset = async () => {
+  const handleRealReset = async (cancelOrphanOrders = false) => {
     if (!dryRunResult || dryRunResult.openTradesBlocking > 0) return;
-    if (!confirm(`Isso vai apagar ${dryRunResult.tradesCount} trade(s), ${dryRunResult.executionsCount} execução(ões) e ${dryRunResult.signalLogsCount} signal log(s) PERMANENTEMENTE. Estratégias, portfólios e credenciais são preservados. Continuar?`)) return;
+    if (dryRunResult.liveOrders.length > 0 && !cancelOrphanOrders) return;
+    const orphanWarning = cancelOrphanOrders
+      ? ` Isso também vai CANCELAR ${dryRunResult.liveOrders.length} ordem(ns) viva(s) na corretora antes de apagar.`
+      : '';
+    if (!confirm(`Isso vai apagar ${dryRunResult.tradesCount} trade(s), ${dryRunResult.executionsCount} execução(ões) e ${dryRunResult.signalLogsCount} signal log(s) PERMANENTEMENTE. Estratégias, portfólios e credenciais são preservados.${orphanWarning} Continuar?`)) return;
     const typed = window.prompt('Digite RESET (maiúsculo) para confirmar a execução real:');
     if (typed !== 'RESET') {
       alert('Confirmação incorreta. Reset cancelado.');
@@ -52,8 +65,9 @@ export default function SettingsPage() {
     }
     setIsResetting(true);
     try {
-      const result = await resetTrades({ dryRun: false, confirm: 'RESET', portfolioId: resetPortfolioId || undefined });
-      alert(`Reset concluído: ${result.deletedTrades} trade(s), ${result.deletedExecutions} execução(ões), ${result.deletedSignalLogs} signal log(s) removidos. Backup: ${result.backupFile}`);
+      const result = await resetTrades({ dryRun: false, confirm: 'RESET', portfolioId: resetPortfolioId || undefined, cancelOrphanOrders });
+      const orphanMsg = result.cancelledOrphanOrders?.length ? ` ${result.cancelledOrphanOrders.length} ordem(ns) órfã(s) cancelada(s) na corretora.` : '';
+      alert(`Reset concluído: ${result.deletedTrades} trade(s), ${result.deletedExecutions} execução(ões), ${result.deletedSignalLogs} signal log(s) removidos.${orphanMsg} Backup: ${result.backupFile}`);
       setDryRunResult(null);
     } catch (error: unknown) {
       const msg = error instanceof Error ? error.message : 'Erro desconhecido';
@@ -230,9 +244,27 @@ export default function SettingsPage() {
                   <p className="text-red-400 font-semibold">
                     RECUSADO: {dryRunResult.openTradesBlocking} trade(s) OPEN. Feche as posições antes de resetar.
                   </p>
+                ) : dryRunResult.liveOrders.length > 0 ? (
+                  <div className="space-y-2">
+                    <p className="text-red-400 font-semibold">
+                      RECUSADO: {dryRunResult.liveOrders.length} ordem(ns) ainda viva(s) na corretora — apagar o trade agora deixaria a ordem órfã (pode preencher depois e virar posição sem SL/TP).
+                    </p>
+                    <ul className="text-[11px] text-muted-foreground space-y-0.5 font-mono">
+                      {dryRunResult.liveOrders.map((o) => (
+                        <li key={o.orderId}>{o.symbol} · orderId={o.orderId} · status={o.status} · {o.exchange}</li>
+                      ))}
+                    </ul>
+                    <button
+                      onClick={() => handleRealReset(true)}
+                      disabled={isResetting}
+                      className="px-3 py-1.5 rounded-md text-xs font-bold bg-red-500/15 text-red-400 border border-red-500/30 hover:bg-red-500/25 transition-all disabled:opacity-50"
+                    >
+                      {isResetting ? 'Resetando...' : 'Cancelar ordens órfãs e Resetar'}
+                    </button>
+                  </div>
                 ) : (
                   <button
-                    onClick={handleRealReset}
+                    onClick={() => handleRealReset(false)}
                     disabled={isResetting}
                     className="px-3 py-1.5 rounded-md text-xs font-bold bg-red-500/15 text-red-400 border border-red-500/30 hover:bg-red-500/25 transition-all disabled:opacity-50"
                   >

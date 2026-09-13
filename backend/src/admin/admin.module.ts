@@ -7,9 +7,15 @@ import { TradeExecution } from '../trades/trade-execution.entity';
 import { SignalLog } from '../webhook/signal-log.entity';
 import { Strategy } from '../strategies/strategy.entity';
 import { AuditLog } from '../auditor/audit-log.entity';
+import { CommonModule } from '../common/common.module';
+import { ExchangeModule } from '../exchange/exchange.module';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Trade, TradeExecution, SignalLog, Strategy, AuditLog])],
+  imports: [
+    TypeOrmModule.forFeature([Trade, TradeExecution, SignalLog, Strategy, AuditLog]),
+    CommonModule,
+    ExchangeModule,
+  ],
   controllers: [AdminController],
   providers: [AdminService],
 })
