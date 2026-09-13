@@ -83,7 +83,7 @@ export class StopLossService implements OnModuleInit {
     const apiKey = (await EncryptionUtil.decrypt(resolvedStrategy.apiKey)).trim();
     const apiSecret = (await EncryptionUtil.decrypt(resolvedStrategy.apiSecret)).trim();
 
-    await this.markTradeAsClosed(trade, 'STOP_LOSS', exchange, apiKey, apiSecret, resolvedStrategy.isTestnet, event.orderId);
+    await this.markTradeAsClosed(trade, 'STOP_LOSS', exchange, apiKey, apiSecret, resolvedStrategy.isTestnet, event.orderId, resolvedStrategy.siteId);
   }
 
   @Cron('*/10 * * * * *')
@@ -126,7 +126,7 @@ export class StopLossService implements OnModuleInit {
 
     if (trade.stopLossOrderId && trade.stopLossOrderId.trim() !== '') {
       if (trade.stopLossOrderId.startsWith('BYBIT_TRADING_STOP')) {
-        const positions = await this.bybitClient.getPositions(apiKey, apiSecret, resolvedStrategy.isTestnet, trade.symbol);
+        const positions = await this.bybitClient.getPositions(apiKey, apiSecret, resolvedStrategy.isTestnet, trade.symbol, resolvedStrategy.siteId);
         const position = positions.find(p =>
           p.symbol === trade.symbol &&
           ((trade.side === 'BUY' && p.side === 'Buy') || (trade.side === 'SELL' && p.side === 'Sell'))
@@ -134,7 +134,7 @@ export class StopLossService implements OnModuleInit {
 
         if (!position || parseFloat(position.size) === 0) {
           this.logger.log(`[STOP LOSS EXECUTED] ${trade.symbol} - Position closed on Bybit`);
-          await this.markTradeAsClosed(trade, 'STOP_LOSS', exchange, apiKey, apiSecret, resolvedStrategy.isTestnet);
+          await this.markTradeAsClosed(trade, 'STOP_LOSS', exchange, apiKey, apiSecret, resolvedStrategy.isTestnet, undefined, resolvedStrategy.siteId);
           return;
         }
         return;
@@ -146,12 +146,13 @@ export class StopLossService implements OnModuleInit {
         exchange,
         apiKey,
         apiSecret,
-        resolvedStrategy.isTestnet
+        resolvedStrategy.isTestnet,
+        resolvedStrategy.siteId
       );
 
       if (orderStatus === 'FILLED' || orderStatus === 'Filled') {
         this.logger.log(`[STOP LOSS EXECUTED] ${trade.symbol} - Order was filled`);
-        await this.markTradeAsClosed(trade, 'STOP_LOSS', exchange, apiKey, apiSecret, resolvedStrategy.isTestnet, trade.stopLossOrderId);
+        await this.markTradeAsClosed(trade, 'STOP_LOSS', exchange, apiKey, apiSecret, resolvedStrategy.isTestnet, trade.stopLossOrderId, resolvedStrategy.siteId);
         return;
       } else if (orderStatus === 'CANCELED' || orderStatus === 'EXPIRED' || orderStatus === 'Cancelled' || orderStatus === 'Deactivated') {
         this.logger.warn(`[STOP LOSS] Order ${trade.stopLossOrderId} was ${orderStatus}, attempting to recreate SL`);
@@ -301,14 +302,15 @@ export class StopLossService implements OnModuleInit {
     exchange: Exchange,
     apiKey: string,
     apiSecret: string,
-    isTestnet: boolean
+    isTestnet: boolean,
+    siteId?: string | null
   ): Promise<string | null> {
     try {
       if (exchange === Exchange.BYBIT) {
-        let orderInfo = await this.bybitClient.getOrderInfo(apiKey, apiSecret, isTestnet, symbol, orderId);
+        let orderInfo = await this.bybitClient.getOrderInfo(apiKey, apiSecret, isTestnet, symbol, orderId, siteId);
 
         if (!orderInfo) {
-          orderInfo = await this.bybitClient.getOrderHistory(apiKey, apiSecret, isTestnet, symbol, orderId);
+          orderInfo = await this.bybitClient.getOrderHistory(apiKey, apiSecret, isTestnet, symbol, orderId, siteId);
         }
 
         return orderInfo?.orderStatus || null;
@@ -362,7 +364,8 @@ export class StopLossService implements OnModuleInit {
     exchange: Exchange,
     apiKey: string,
     apiSecret: string,
-    isTestnet: boolean
+    isTestnet: boolean,
+    siteId?: string | null
   ): Promise<void> {
     if (!trade.takeProfitOrderId) return;
 
@@ -377,7 +380,8 @@ export class StopLossService implements OnModuleInit {
             isTestnet,
             trade.symbol,
             bybitSide,
-            strategy.hedgeMode
+            strategy.hedgeMode,
+            siteId
           );
           this.logger.log(`[SL] Cleared Bybit trading stop for ${trade.symbol} after SL execution`);
         } catch (e: any) {
@@ -403,7 +407,7 @@ export class StopLossService implements OnModuleInit {
             headers: { 'X-MBX-APIKEY': apiKey }
           });
         } else if (exchange === Exchange.BYBIT) {
-          await this.bybitClient.cancelOrder(apiKey, apiSecret, isTestnet, trade.symbol, orderId);
+          await this.bybitClient.cancelOrder(apiKey, apiSecret, isTestnet, trade.symbol, orderId, siteId);
         }
         this.logger.log(`[SL] Cancelled TP order ${orderId} after SL execution`);
       } catch (e: any) {
@@ -419,13 +423,14 @@ export class StopLossService implements OnModuleInit {
     apiKey: string,
     apiSecret: string,
     isTestnet: boolean,
-    orderId?: string | null
+    orderId?: string | null,
+    siteId?: string | null
   ): Promise<void> {
     const entryPrice = parseFloat(trade.entryPrice as any);
     let fill: OrderFill | null = null;
 
     if (orderId) {
-      fill = await this.fetchOrderFill(orderId, trade.symbol, exchange, apiKey, apiSecret, isTestnet);
+      fill = await this.fetchOrderFill(orderId, trade.symbol, exchange, apiKey, apiSecret, isTestnet, siteId);
     }
 
     let exitPrice: number;
@@ -442,13 +447,13 @@ export class StopLossService implements OnModuleInit {
       this.logger.error(
         `[SL PNL] ${trade.symbol}: nao foi possivel ler o resultado real da ordem de stop na corretora (orderId=${orderId ?? 'indisponivel'}) -- usando ultimo preco negociado e calculo local sem taxas como fallback.`
       );
-      const lastPrice = await this.getLastTradePrice(trade.symbol, exchange, apiKey, apiSecret, isTestnet);
+      const lastPrice = await this.getLastTradePrice(trade.symbol, exchange, apiKey, apiSecret, isTestnet, siteId);
       exitPrice = lastPrice || await this.getCurrentPrice(trade, { exchange, isTestnet } as any);
       closedQty = parseFloat(trade.quantity as any);
       pnl = this.calculatePnL(trade, exitPrice);
     }
 
-    await this.cancelTradeSpecificTpOrders(trade, exchange, apiKey, apiSecret, isTestnet);
+    await this.cancelTradeSpecificTpOrders(trade, exchange, apiKey, apiSecret, isTestnet, siteId);
 
     const totalPnl = (parseFloat(trade.pnl as any) || 0) + pnl;
 
@@ -485,14 +490,15 @@ export class StopLossService implements OnModuleInit {
     exchange: Exchange,
     apiKey: string,
     apiSecret: string,
-    isTestnet: boolean
+    isTestnet: boolean,
+    siteId?: string | null
   ): Promise<OrderFill | null> {
     try {
       if (exchange === Exchange.BYBIT) {
-        let orderInfo = await this.bybitClient.getOrderInfo(apiKey, apiSecret, isTestnet, symbol, orderId);
+        let orderInfo = await this.bybitClient.getOrderInfo(apiKey, apiSecret, isTestnet, symbol, orderId, siteId);
 
         if (!orderInfo) {
-          orderInfo = await this.bybitClient.getOrderHistory(apiKey, apiSecret, isTestnet, symbol, orderId);
+          orderInfo = await this.bybitClient.getOrderHistory(apiKey, apiSecret, isTestnet, symbol, orderId, siteId);
         }
 
         return mapBybitFill(orderInfo as unknown as Record<string, unknown> | null);
@@ -550,11 +556,12 @@ export class StopLossService implements OnModuleInit {
     exchange: Exchange,
     apiKey: string,
     apiSecret: string,
-    isTestnet: boolean
+    isTestnet: boolean,
+    siteId?: string | null
   ): Promise<number | null> {
     try {
       if (exchange === Exchange.BYBIT) {
-        return await this.bybitClient.getLastTradePrice(apiKey, apiSecret, isTestnet, symbol);
+        return await this.bybitClient.getLastTradePrice(apiKey, apiSecret, isTestnet, symbol, siteId);
       }
 
       const baseUrl = isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
@@ -659,7 +666,7 @@ export class StopLossService implements OnModuleInit {
 
         const originalSide = trade.side === 'BUY' ? 'Buy' : 'Sell';
         const positionIdx = await this.bybitClient.getPositionIdx(
-          apiKey, apiSecret, strategy.isTestnet, trade.symbol, originalSide, strategy.hedgeMode
+          apiKey, apiSecret, strategy.isTestnet, trade.symbol, originalSide, strategy.hedgeMode, strategy.siteId
         );
 
         const bybitSide = closeSide === 'BUY' ? 'Buy' : 'Sell';
@@ -675,13 +682,14 @@ export class StopLossService implements OnModuleInit {
             positionIdx,
             reduceOnly: true,
             hedgeMode: strategy.hedgeMode
-          }
+          },
+          strategy.siteId
         );
         this.logger.warn(`[BYBIT] Closed ${trade.symbol} via ${reason}`);
 
         if (bybitOrder?.orderId) {
           await new Promise(resolve => setTimeout(resolve, 500));
-          fill = await this.fetchOrderFill(bybitOrder.orderId, trade.symbol, Exchange.BYBIT, apiKey, apiSecret, strategy.isTestnet);
+          fill = await this.fetchOrderFill(bybitOrder.orderId, trade.symbol, Exchange.BYBIT, apiKey, apiSecret, strategy.isTestnet, strategy.siteId);
         }
       } else if (strategy.isTestnet && exchange === Exchange.BINANCE) {
         const rules = await this.symbolRulesService.getSymbolRules(trade.symbol, strategy.isTestnet, Exchange.BINANCE);
@@ -745,7 +753,7 @@ export class StopLossService implements OnModuleInit {
         this.logger.warn(`[CLOSED] ${trade.symbol} via ${reason}`);
       }
 
-      await this.cancelTradeSpecificTpOrders(trade, exchange, apiKey, apiSecret, strategy.isTestnet);
+      await this.cancelTradeSpecificTpOrders(trade, exchange, apiKey, apiSecret, strategy.isTestnet, strategy.siteId);
 
       const entryPrice = parseFloat(trade.entryPrice as any);
       const fillPrice = fill?.avgPrice ?? exitPrice;

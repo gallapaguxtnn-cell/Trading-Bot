@@ -14,6 +14,7 @@ const PORTFOLIO_PUBLIC_COLUMNS = [
   'exchange',
   'mode',
   'isActive',
+  'bybitSiteId',
   'createdAt',
   'updatedAt',
 ] as const;
@@ -52,6 +53,7 @@ export class PortfoliosService {
         exchange: portfolio.exchange,
         mode: portfolio.mode,
         isActive: portfolio.isActive,
+        bybitSiteId: portfolio.bybitSiteId,
         createdAt: portfolio.createdAt,
         updatedAt: portfolio.updatedAt,
         apiKeyMasked: await this.maskApiKey(portfolio.apiKey),
@@ -75,6 +77,7 @@ export class PortfoliosService {
       exchange: portfolio.exchange,
       mode: portfolio.mode,
       isActive: portfolio.isActive,
+      bybitSiteId: portfolio.bybitSiteId,
       createdAt: portfolio.createdAt,
       updatedAt: portfolio.updatedAt,
       apiKeyMasked: await this.maskApiKey(portfolio.apiKey),
@@ -152,7 +155,8 @@ export class PortfoliosService {
 
     try {
       if (portfolio.exchange === Exchange.BYBIT) {
-        const balance = await this.bybitClient.getWalletBalance(apiKey, apiSecret, isTestnet);
+        const siteId = portfolio.bybitSiteId || process.env.BYBIT_SITE_ID || null;
+        const balance = await this.bybitClient.getWalletBalance(apiKey, apiSecret, isTestnet, siteId);
         return { success: true, balance };
       }
       if (portfolio.exchange === Exchange.BINANCE) {

@@ -67,6 +67,65 @@ describe('BybitClientService (header x-site-id)', () => {
   });
 });
 
+describe('BybitClientService (siteId por chamada, opcional no fim da assinatura)', () => {
+  const originalEnv = process.env.BYBIT_SITE_ID;
+
+  afterEach(() => {
+    if (originalEnv === undefined) {
+      delete process.env.BYBIT_SITE_ID;
+    } else {
+      process.env.BYBIT_SITE_ID = originalEnv;
+    }
+  });
+
+  it('sem siteId no parametro, comportamento identico ao de hoje (usa env da instancia)', () => {
+    process.env.BYBIT_SITE_ID = 'ENV_SITE';
+    const service = new BybitClientService(makeConfigService());
+    const headers = (service as any).getHeaders('key', 'secret', 'params');
+
+    expect(headers['x-site-id']).toBe('ENV_SITE');
+  });
+
+  it('siteId explicito por chamada tem prioridade sobre a env da instancia', () => {
+    process.env.BYBIT_SITE_ID = 'ENV_SITE';
+    const service = new BybitClientService(makeConfigService());
+    const headers = (service as any).getHeaders('key', 'secret', 'params', 'BRA_BTL');
+
+    expect(headers['x-site-id']).toBe('BRA_BTL');
+  });
+
+  it('duas chamadas com siteId diferentes na mesma instancia nao vazam estado entre si (dois portfolios simultaneos)', () => {
+    delete process.env.BYBIT_SITE_ID;
+    const service = new BybitClientService(makeConfigService());
+
+    const braHeaders = (service as any).getHeaders('key1', 'secret1', 'params', 'BRA_BTL');
+    const defaultHeaders = (service as any).getHeaders('key2', 'secret2', 'params', null);
+    const argHeaders = (service as any).getHeaders('key3', 'secret3', 'params', 'ARG_BTL');
+
+    expect(braHeaders['x-site-id']).toBe('BRA_BTL');
+    expect(defaultHeaders['x-site-id']).toBeUndefined();
+    expect(argHeaders['x-site-id']).toBe('ARG_BTL');
+  });
+
+  it('createOrder repassa o siteId da chamada para o header, sem afetar o HMAC', async () => {
+    (axios.post as jest.Mock).mockResolvedValueOnce({
+      data: { retCode: 0, result: { orderId: '1', orderLinkId: 'x' } },
+    });
+
+    const service = new BybitClientService(makeConfigService());
+    await service.createOrder(
+      'key',
+      'secret',
+      false,
+      { symbol: 'SUIUSDT', side: 'Buy', orderType: 'Market', qty: '1', positionIdx: 0 },
+      'BRA_BTL'
+    );
+
+    const sentHeaders = (axios.post as jest.Mock).mock.calls[0][2].headers;
+    expect(sentHeaders['x-site-id']).toBe('BRA_BTL');
+  });
+});
+
 describe('BybitClientService (mensagem de erro retCode 10003)', () => {
   function formatRetMsg(service: BybitClientService, retCode: number | undefined, retMsg: string | undefined) {
     return (service as any).formatRetMsg(retCode, retMsg);

@@ -8,6 +8,7 @@ export interface PortfolioPublic {
   mode: PortfolioMode;
   isActive: boolean;
   apiKeyMasked: string;
+  bybitSiteId: string | null;
   createdAt: Date;
   updatedAt: Date;
 }

@@ -9,6 +9,8 @@ const API_URL = getApiUrl();
 export type PortfolioExchange = 'binance' | 'bybit' | 'okx' | 'bingx';
 export type PortfolioMode = 'DEMO' | 'REAL';
 
+export type BybitSiteId = 'BRA_BTL' | 'ARG_BTL';
+
 export interface Portfolio {
   id: string;
   name: string;
@@ -16,6 +18,7 @@ export interface Portfolio {
   mode: PortfolioMode;
   isActive: boolean;
   apiKeyMasked: string;
+  bybitSiteId: BybitSiteId | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -27,6 +30,7 @@ export interface PortfolioPayload {
   apiKey?: string;
   apiSecret?: string;
   isActive?: boolean;
+  bybitSiteId?: BybitSiteId | null;
 }
 
 async function parseErrorMessage(res: Response, fallback: string): Promise<string> {

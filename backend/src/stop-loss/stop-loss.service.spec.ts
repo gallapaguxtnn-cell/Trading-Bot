@@ -102,6 +102,7 @@ describe('StopLossService (FASE 3 -- arredondamento via SymbolRulesService, nunc
       expect(bybitClient.createOrder).toHaveBeenCalledWith(
         'key', 'secret', true,
         expect.objectContaining({ qty: '250', orderType: 'Market', reduceOnly: true }),
+        undefined,
       );
     });
 
@@ -192,7 +193,7 @@ describe('StopLossService (FASE 2 -- CredentialsResolver)', () => {
 
     await (service as any).checkStopLoss(trade);
 
-    expect(bybitClient.getPositions).toHaveBeenCalledWith('portfolio-key', 'portfolio-secret', false, 'BTCUSDT');
+    expect(bybitClient.getPositions).toHaveBeenCalledWith('portfolio-key', 'portfolio-secret', false, 'BTCUSDT', undefined);
   });
 });
 

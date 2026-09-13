@@ -11,6 +11,7 @@ import {
   Portfolio,
   PortfolioExchange,
   PortfolioMode,
+  BybitSiteId,
 } from '@/lib/api';
 
 const EXCHANGE_OPTIONS: Array<{ value: PortfolioExchange; label: string; disabled?: boolean }> = [
@@ -20,12 +21,19 @@ const EXCHANGE_OPTIONS: Array<{ value: PortfolioExchange; label: string; disable
   { value: 'bingx', label: 'BingX (em breve)', disabled: true },
 ];
 
+const BYBIT_SITE_ID_OPTIONS: Array<{ value: '' | BybitSiteId; label: string }> = [
+  { value: '', label: 'Padrão' },
+  { value: 'BRA_BTL', label: 'Brasil internacional' },
+  { value: 'ARG_BTL', label: 'Argentina internacional' },
+];
+
 const DEFAULT_FORM = {
   name: '',
   exchange: 'bybit' as PortfolioExchange,
   mode: 'DEMO' as PortfolioMode,
   apiKey: '',
   apiSecret: '',
+  bybitSiteId: '' as '' | BybitSiteId,
 };
 
 export default function PortfoliosPage() {
@@ -65,6 +73,7 @@ export default function PortfoliosPage() {
       mode: portfolio.mode,
       apiKey: '',
       apiSecret: '',
+      bybitSiteId: portfolio.bybitSiteId ?? '',
     });
     setModalOpen(true);
   }
@@ -82,6 +91,7 @@ export default function PortfoliosPage() {
       name: formData.name,
       exchange: formData.exchange,
       mode: formData.mode,
+      bybitSiteId: formData.exchange === 'bybit' && formData.bybitSiteId ? formData.bybitSiteId : null,
     };
     if (formData.apiKey) payload.apiKey = formData.apiKey;
     if (formData.apiSecret) payload.apiSecret = formData.apiSecret;
@@ -164,6 +174,11 @@ export default function PortfoliosPage() {
                     <span className="text-[10px] px-1.5 py-0.5 bg-secondary rounded text-muted-foreground uppercase mt-1 inline-block">
                       {p.exchange}
                     </span>
+                    {p.bybitSiteId && (
+                      <span className="text-[10px] px-1.5 py-0.5 bg-sky-500/15 text-sky-400 rounded uppercase mt-1 ml-1 inline-block">
+                        {p.bybitSiteId}
+                      </span>
+                    )}
                   </div>
                   <span className={`px-2 py-0.5 rounded text-[10px] font-bold border ${
                     p.mode === 'DEMO'
@@ -254,6 +269,26 @@ export default function PortfoliosPage() {
                   ))}
                 </select>
               </div>
+
+              {formData.exchange === 'bybit' && (
+                <div className="space-y-1">
+                  <label className={labelClass}>Entidade Bybit</label>
+                  <select
+                    className={inputClass}
+                    value={formData.bybitSiteId}
+                    onChange={(e) => setFormData((prev) => ({ ...prev, bybitSiteId: e.target.value as '' | BybitSiteId }))}
+                  >
+                    {BYBIT_SITE_ID_OPTIONS.map((opt) => (
+                      <option key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="text-[10px] text-muted-foreground">
+                    Contas internacionais (Brasil/Argentina) exigem esse header — sem ele a Bybit recusa a API key.
+                  </p>
+                </div>
+              )}
 
               <div className="space-y-1">
                 <label className={labelClass}>Modo</label>

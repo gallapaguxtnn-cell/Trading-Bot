@@ -168,14 +168,14 @@ export class TakeProfitService implements OnModuleInit {
     const apiSecret = (await EncryptionUtil.decrypt(resolvedStrategy.apiSecret)).trim();
 
     if (trade.takeProfitOrderId && trade.takeProfitOrderId.startsWith('BYBIT_TRADING_STOP')) {
-      const positions = await this.bybitClient.getPositions(apiKey, apiSecret, resolvedStrategy.isTestnet, trade.symbol);
+      const positions = await this.bybitClient.getPositions(apiKey, apiSecret, resolvedStrategy.isTestnet, trade.symbol, resolvedStrategy.siteId);
       const position = positions.find(p =>
         p.symbol === trade.symbol &&
         ((trade.side === 'BUY' && p.side === 'Buy') || (trade.side === 'SELL' && p.side === 'Sell'))
       );
       if (!position || parseFloat(position.size) === 0) {
         this.logger.log(`[TAKE PROFIT EXECUTED] ${trade.symbol} - Position closed on Bybit`);
-        await this.markTradeAsClosed(trade, 'TAKE_PROFIT', exchange, apiKey, apiSecret, resolvedStrategy.isTestnet);
+        await this.markTradeAsClosed(trade, 'TAKE_PROFIT', exchange, apiKey, apiSecret, resolvedStrategy.isTestnet, undefined, resolvedStrategy.siteId);
       }
       return;
     }
@@ -267,7 +267,7 @@ export class TakeProfitService implements OnModuleInit {
         continue;
       }
 
-      const fill = await this.fetchOrderFill(orderId, trade.symbol, exchange, apiKey, apiSecret, strategy.isTestnet);
+      const fill = await this.fetchOrderFill(orderId, trade.symbol, exchange, apiKey, apiSecret, strategy.isTestnet, strategy.siteId);
       const status = fill?.status ?? null;
 
       this.logger.log(`[TP${level}] Order status for ${orderId}: ${status}`);
@@ -360,7 +360,7 @@ export class TakeProfitService implements OnModuleInit {
       if (!allLevelsFilled && positionFullyClosed) {
         const minQty = await this.getMinQtyForSymbol(trade.symbol, strategy.isTestnet, exchange);
         const exchangePositionSize = await this.positionSyncService.getPositionSize(
-          exchange, trade.symbol, trade.side, apiKey, apiSecret, strategy.isTestnet
+          exchange, trade.symbol, trade.side, apiKey, apiSecret, strategy.isTestnet, strategy.siteId
         );
         const decision = decideTakeProfitClose({ exchangePositionSize, minQty });
         shouldClose = decision.shouldClose;
@@ -397,8 +397,8 @@ export class TakeProfitService implements OnModuleInit {
           await this.tradesRepository.save(trade);
           this.logger.log(`└─ Trade fully closed via TP${highestProcessed} | Total P&L: ${accumulatedPnl > 0 ? '+' : ''}${accumulatedPnl.toFixed(2)} USDT`);
 
-          await this.cancelTradeStopLoss(trade, exchange, apiKey, apiSecret, strategy.isTestnet);
-          await this.cancelRemainingTpOrders(trade, filledLevels, exchange, apiKey, apiSecret, strategy.isTestnet);
+          await this.cancelTradeStopLoss(trade, exchange, apiKey, apiSecret, strategy.isTestnet, strategy.siteId);
+          await this.cancelRemainingTpOrders(trade, filledLevels, exchange, apiKey, apiSecret, strategy.isTestnet, strategy.siteId);
         } else {
           const realQty = confirmedRemainingQty ?? newQty;
           trade.quantity = realQty as any;
@@ -408,7 +408,7 @@ export class TakeProfitService implements OnModuleInit {
           await this.tradesRepository.save(trade);
 
           if (strategy.moveSLToBreakeven || strategy.breakAgain) {
-            await this.positionSyncService.checkBreakAgain(trade, undefined, strategy, apiKey, apiSecret);
+            await this.positionSyncService.checkBreakAgain(trade, undefined, strategy, apiKey, apiSecret, strategy.siteId);
           }
 
           if (exchange === Exchange.BINANCE && trade.stopLossOrderId) {
@@ -425,7 +425,7 @@ export class TakeProfitService implements OnModuleInit {
 
         // Check if breakeven or break again should be triggered
         if (strategy.moveSLToBreakeven || strategy.breakAgain) {
-          await this.positionSyncService.checkBreakAgain(trade, undefined, strategy, apiKey, apiSecret);
+          await this.positionSyncService.checkBreakAgain(trade, undefined, strategy, apiKey, apiSecret, strategy.siteId);
         }
 
         if (exchange === Exchange.BINANCE && trade.stopLossOrderId) {
@@ -452,7 +452,8 @@ export class TakeProfitService implements OnModuleInit {
     exchange: Exchange,
     apiKey: string,
     apiSecret: string,
-    isTestnet: boolean
+    isTestnet: boolean,
+    siteId?: string | null
   ): Promise<void> {
     if (!trade.takeProfitOrderId) return;
 
@@ -472,7 +473,7 @@ export class TakeProfitService implements OnModuleInit {
           await this.cancelBinanceOrder(orderId, trade.symbol, apiKey, apiSecret, isTestnet);
           this.logger.log(`[TP${level}] Cancelled unfilled TP order ${orderId}`);
         } else if (exchange === Exchange.BYBIT) {
-          await this.bybitClient.cancelOrder(apiKey, apiSecret, isTestnet, trade.symbol, orderId);
+          await this.bybitClient.cancelOrder(apiKey, apiSecret, isTestnet, trade.symbol, orderId, siteId);
           this.logger.log(`[TP${level}] Cancelled unfilled Bybit TP order ${orderId}`);
         }
       } catch (e: any) {
@@ -489,7 +490,8 @@ export class TakeProfitService implements OnModuleInit {
     exchange: Exchange,
     apiKey: string,
     apiSecret: string,
-    isTestnet: boolean
+    isTestnet: boolean,
+    siteId?: string | null
   ): Promise<void> {
     if (!trade.stopLossOrderId) return;
 
@@ -505,12 +507,13 @@ export class TakeProfitService implements OnModuleInit {
               isTestnet,
               trade.symbol,
               bybitSide,
-              strategy.hedgeMode
+              strategy.hedgeMode,
+              siteId
             );
             this.logger.log(`[SL] Cleared Bybit trading stop for ${trade.symbol} after all TPs filled`);
           }
         } else {
-          await this.bybitClient.cancelOrder(apiKey, apiSecret, isTestnet, trade.symbol, trade.stopLossOrderId);
+          await this.bybitClient.cancelOrder(apiKey, apiSecret, isTestnet, trade.symbol, trade.stopLossOrderId, siteId);
           this.logger.log(`[SL] Cancelled Bybit SL order ${trade.stopLossOrderId} after all TPs filled`);
         }
       } else if (exchange === Exchange.BINANCE) {
@@ -752,14 +755,15 @@ export class TakeProfitService implements OnModuleInit {
     exchange: Exchange,
     apiKey: string,
     apiSecret: string,
-    isTestnet: boolean
+    isTestnet: boolean,
+    siteId?: string | null
   ): Promise<OrderFill | null> {
     try {
       if (exchange === Exchange.BYBIT) {
-        let orderInfo = await this.bybitClient.getOrderInfo(apiKey, apiSecret, isTestnet, symbol, orderId);
+        let orderInfo = await this.bybitClient.getOrderInfo(apiKey, apiSecret, isTestnet, symbol, orderId, siteId);
 
         if (!orderInfo) {
-          orderInfo = await this.bybitClient.getOrderHistory(apiKey, apiSecret, isTestnet, symbol, orderId);
+          orderInfo = await this.bybitClient.getOrderHistory(apiKey, apiSecret, isTestnet, symbol, orderId, siteId);
         }
 
         return mapBybitFill(orderInfo as unknown as Record<string, unknown> | null);
@@ -830,14 +834,15 @@ export class TakeProfitService implements OnModuleInit {
     apiKey: string,
     apiSecret: string,
     isTestnet: boolean,
-    orderId?: string
+    orderId?: string,
+    siteId?: string | null
   ): Promise<void> {
     let fill: OrderFill | null = null;
     if (orderId) {
-      fill = await this.fetchOrderFill(orderId, trade.symbol, exchange, apiKey, apiSecret, isTestnet);
+      fill = await this.fetchOrderFill(orderId, trade.symbol, exchange, apiKey, apiSecret, isTestnet, siteId);
     }
 
-    const lastPrice = await this.getLastTradePrice(trade.symbol, exchange, apiKey, apiSecret, isTestnet);
+    const lastPrice = await this.getLastTradePrice(trade.symbol, exchange, apiKey, apiSecret, isTestnet, siteId);
     const marketPrice = lastPrice || await this.getCurrentPrice(trade, { exchange, isTestnet } as any);
 
     const exitPrice = fill?.avgPrice ?? marketPrice;
@@ -864,11 +869,12 @@ export class TakeProfitService implements OnModuleInit {
     exchange: Exchange,
     apiKey: string,
     apiSecret: string,
-    isTestnet: boolean
+    isTestnet: boolean,
+    siteId?: string | null
   ): Promise<number | null> {
     try {
       if (exchange === Exchange.BYBIT) {
-        return await this.bybitClient.getLastTradePrice(apiKey, apiSecret, isTestnet, symbol);
+        return await this.bybitClient.getLastTradePrice(apiKey, apiSecret, isTestnet, symbol, siteId);
       }
 
       const baseUrl = isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
@@ -1023,7 +1029,7 @@ export class TakeProfitService implements OnModuleInit {
 
         const originalSide = trade.side === 'BUY' ? 'Buy' : 'Sell';
         const positionIdx = await this.bybitClient.getPositionIdx(
-          apiKey, apiSecret, strategy.isTestnet, trade.symbol, originalSide, strategy.hedgeMode
+          apiKey, apiSecret, strategy.isTestnet, trade.symbol, originalSide, strategy.hedgeMode, strategy.siteId
         );
 
         const bybitSide = closeSide === 'BUY' ? 'Buy' : 'Sell';
@@ -1040,13 +1046,14 @@ export class TakeProfitService implements OnModuleInit {
             positionIdx,
             reduceOnly: true,
             hedgeMode: strategy.hedgeMode
-          }
+          },
+          strategy.siteId
         );
         this.logger.log(`[BYBIT] Closed ${closeQtyStr} ${trade.symbol} via ${reason}`);
 
         if (bybitOrder?.orderId) {
           await new Promise(resolve => setTimeout(resolve, 500));
-          ccxtFill = await this.fetchOrderFill(bybitOrder.orderId, trade.symbol, Exchange.BYBIT, apiKey, apiSecret, strategy.isTestnet);
+          ccxtFill = await this.fetchOrderFill(bybitOrder.orderId, trade.symbol, Exchange.BYBIT, apiKey, apiSecret, strategy.isTestnet, strategy.siteId);
         }
       } else if (strategy.isTestnet && exchange === Exchange.BINANCE) {
         const stepSize = await this.getQtyStepForSymbol(trade.symbol, strategy.isTestnet);
@@ -1130,7 +1137,7 @@ export class TakeProfitService implements OnModuleInit {
 
         await this.tradesRepository.save(trade);
 
-        await this.cancelTradeStopLoss(trade, exchange, apiKey, apiSecret, strategy.isTestnet);
+        await this.cancelTradeStopLoss(trade, exchange, apiKey, apiSecret, strategy.isTestnet, strategy.siteId);
 
         this.logger.log(`├─ Closed: ${this.formatQuantityWithUsdt(fillQty, fillPrice)} (100%)`);
         this.logger.log(`└─ P&L: ${pnl > 0 ? '+' : ''}${pnl.toFixed(2)} USDT`);

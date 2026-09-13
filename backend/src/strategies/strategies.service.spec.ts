@@ -143,7 +143,7 @@ describe('StrategiesService (FASE 2 -- CredentialsResolver)', () => {
 
     const result = await service.getOpenOrders('s1');
 
-    expect(bybitClient.getOpenOrders).toHaveBeenCalledWith('portfolio-key', 'portfolio-secret', false);
+    expect(bybitClient.getOpenOrders).toHaveBeenCalledWith('portfolio-key', 'portfolio-secret', false, undefined, undefined);
     expect(result.strategy.exchange).toBe('bybit');
     expect(result.strategy.isTestnet).toBe(false);
   });

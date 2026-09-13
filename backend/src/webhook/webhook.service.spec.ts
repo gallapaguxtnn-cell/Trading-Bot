@@ -294,7 +294,7 @@ describe('WebhookService (FASE 2 -- reposicionar SL/TP desalinhado no fill monit
     const createOrderIndex = bybitClient.createStopLossOrder.mock.invocationCallOrder[0];
     const cancelOrderIndex = bybitClient.cancelOrder.mock.invocationCallOrder[0];
     expect(createOrderIndex).toBeLessThan(cancelOrderIndex);
-    expect(bybitClient.cancelOrder).toHaveBeenCalledWith('key', 'secret', true, 'SUIUSDT', 'sl-old');
+    expect(bybitClient.cancelOrder).toHaveBeenCalledWith('key', 'secret', true, 'SUIUSDT', 'sl-old', undefined);
 
     const update = tradesService.updateTrade.mock.calls[0][1];
     expect(update.stopLossOrderId).toBe('sl-new');
@@ -367,7 +367,7 @@ describe('WebhookService (FASE 2 -- reposicionar SL/TP desalinhado no fill monit
     await jest.advanceTimersByTimeAsync(10000);
 
     expect(bybitClient.createOrder).toHaveBeenCalled();
-    expect(bybitClient.cancelOrder).toHaveBeenCalledWith('key', 'secret', true, 'SUIUSDT', 'tp-old-a');
+    expect(bybitClient.cancelOrder).toHaveBeenCalledWith('key', 'secret', true, 'SUIUSDT', 'tp-old-a', undefined);
     const update = tradesService.updateTrade.mock.calls[0][1];
     expect(update.takeProfitOrderId).toContain('1:tp-new-a');
     expect(update.takeProfitOrderId).not.toContain('tp-old-a');

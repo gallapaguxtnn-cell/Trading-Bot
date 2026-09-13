@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
+import { ConfigService } from '@nestjs/config';
 import { Repository } from 'typeorm';
 import { Portfolio, PortfolioMode } from '../portfolios/portfolio.entity';
 import { Strategy, Exchange } from '../strategies/strategy.entity';
@@ -11,6 +12,7 @@ export interface ResolvedCredentials {
   isTestnet: boolean;
   isRealAccount: boolean;
   portfolioId: string | null;
+  siteId: string | null;
   source: 'portfolio' | 'strategy';
 }
 
@@ -26,7 +28,17 @@ export class CredentialsResolverService {
   constructor(
     @InjectRepository(Portfolio)
     private readonly portfoliosRepository: Repository<Portfolio>,
+    private readonly configService: ConfigService,
   ) {}
+
+  private resolveSiteId(portfolioSiteId?: string | null): string | null {
+    return (
+      portfolioSiteId ||
+      this.configService.get<string>('BYBIT_SITE_ID') ||
+      process.env.BYBIT_SITE_ID ||
+      null
+    );
+  }
 
   async resolveCredentials(strategy: StrategyCredentialsInput): Promise<ResolvedCredentials> {
     if (strategy.portfolioId) {
@@ -46,6 +58,7 @@ export class CredentialsResolverService {
           isTestnet,
           isRealAccount: !isTestnet,
           portfolioId: portfolio.id,
+          siteId: this.resolveSiteId(portfolio.bybitSiteId),
           source: 'portfolio',
         };
       }
@@ -62,6 +75,7 @@ export class CredentialsResolverService {
       isTestnet: strategy.isTestnet,
       isRealAccount: strategy.isRealAccount,
       portfolioId: null,
+      siteId: this.resolveSiteId(null),
       source: 'strategy',
     };
   }

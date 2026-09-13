@@ -210,7 +210,7 @@ export class PositionSyncService implements OnModuleInit {
     let positions: NormalizedPosition[];
 
     if (exchange === Exchange.BYBIT) {
-      positions = await this.fetchBybitPositions(apiKey, apiSecret, resolvedStrategy.isTestnet);
+      positions = await this.fetchBybitPositions(apiKey, apiSecret, resolvedStrategy.isTestnet, resolvedStrategy.siteId);
     } else {
       positions = await this.fetchBinancePositions(apiKey, apiSecret, resolvedStrategy.isTestnet);
     }
@@ -284,17 +284,17 @@ export class PositionSyncService implements OnModuleInit {
         imported++;
       } else if (existingTrades.length === 1) {
         if (resolvedStrategy.breakAgain || resolvedStrategy.moveSLToBreakeven) {
-             await this.checkBreakAgain(existingTrades[0], position, resolvedStrategy, apiKey, apiSecret);
+             await this.checkBreakAgain(existingTrades[0], position, resolvedStrategy, apiKey, apiSecret, resolvedStrategy.siteId);
         }
 
         await this.updateTradeFromPosition(existingTrades[0], position);
         synced++;
       } else {
         if (resolvedStrategy.breakAgain || resolvedStrategy.moveSLToBreakeven) {
-          await this.checkBreakAgain(existingTrades[0], position, resolvedStrategy, apiKey, apiSecret);
+          await this.checkBreakAgain(existingTrades[0], position, resolvedStrategy, apiKey, apiSecret, resolvedStrategy.siteId);
         }
 
-        await this.consolidateTrades(existingTrades, position, exchange, apiKey, apiSecret, resolvedStrategy.isTestnet);
+        await this.consolidateTrades(existingTrades, position, exchange, apiKey, apiSecret, resolvedStrategy.isTestnet, resolvedStrategy.siteId);
         consolidated += existingTrades.length - 1;
         synced++;
         this.logger.log(`[SYNC] Consolidated ${existingTrades.length} trades into 1 for ${position.symbol}`);
@@ -314,7 +314,7 @@ export class PositionSyncService implements OnModuleInit {
 
       if (duplicateCheck.length > 1) {
         this.logger.warn(`[SYNC] Found ${duplicateCheck.length} duplicate trades for ${position.symbol} (${position.side}), consolidating...`);
-        await this.consolidateTrades(duplicateCheck, position, exchange, apiKey, apiSecret, resolvedStrategy.isTestnet);
+        await this.consolidateTrades(duplicateCheck, position, exchange, apiKey, apiSecret, resolvedStrategy.isTestnet, resolvedStrategy.siteId);
         consolidated += duplicateCheck.length - 1;
         this.logger.log(`[SYNC] Consolidated ${duplicateCheck.length} trades into 1 for ${position.symbol}`);
       }
@@ -348,7 +348,8 @@ export class PositionSyncService implements OnModuleInit {
             exchange,
             apiKey,
             apiSecret,
-            resolvedStrategy.isTestnet
+            resolvedStrategy.isTestnet,
+            resolvedStrategy.siteId
           );
 
           const hasProtection = !!trade.stopLossOrderId && !!trade.takeProfitOrderId;
@@ -370,7 +371,7 @@ export class PositionSyncService implements OnModuleInit {
           }
         }
 
-        await this.closeTradeAsManual(trade, exchange, apiKey, apiSecret, resolvedStrategy.isTestnet);
+        await this.closeTradeAsManual(trade, exchange, apiKey, apiSecret, resolvedStrategy.isTestnet, resolvedStrategy.siteId);
         closed++;
         this.logger.log(`[SYNC] Closed trade ${trade.id} for ${trade.symbol} - no longer exists on exchange`);
       }
@@ -385,11 +386,12 @@ export class PositionSyncService implements OnModuleInit {
     side: 'BUY' | 'SELL',
     apiKey: string,
     apiSecret: string,
-    isTestnet: boolean
+    isTestnet: boolean,
+    siteId?: string | null
   ): Promise<number | null> {
     try {
       const positions = exchange === Exchange.BYBIT
-        ? await this.fetchBybitPositions(apiKey, apiSecret, isTestnet)
+        ? await this.fetchBybitPositions(apiKey, apiSecret, isTestnet, siteId)
         : await this.fetchBinancePositions(apiKey, apiSecret, isTestnet);
       const position = positions.find(p => p.symbol === symbol && p.side === side);
       return position ? position.size : 0;
@@ -453,10 +455,11 @@ export class PositionSyncService implements OnModuleInit {
   private async fetchBybitPositions(
     apiKey: string,
     apiSecret: string,
-    isTestnet: boolean
+    isTestnet: boolean,
+    siteId?: string | null
   ): Promise<NormalizedPosition[]> {
     try {
-      const positions = await this.bybitClient.getPositions(apiKey, apiSecret, isTestnet);
+      const positions = await this.bybitClient.getPositions(apiKey, apiSecret, isTestnet, undefined, siteId);
 
       return positions
         .filter(pos => pos.side !== 'None' && safeParseFloat(pos.size) !== 0)
@@ -520,12 +523,12 @@ export class PositionSyncService implements OnModuleInit {
       try {
         const exchange = resolvedStrategy.exchange || Exchange.BINANCE;
         const { apiKey, apiSecret } = await this.decryptCredentials(resolvedStrategy);
-        const orderStatus = await this.checkOrderStatus(trade.exchangeOrderId, trade.symbol, exchange, apiKey, apiSecret, resolvedStrategy.isTestnet);
+        const orderStatus = await this.checkOrderStatus(trade.exchangeOrderId, trade.symbol, exchange, apiKey, apiSecret, resolvedStrategy.isTestnet, resolvedStrategy.siteId);
         const s = (orderStatus || '').toLowerCase();
         const isPending = s === 'new' || s === 'partiallyfilled' || s === 'partially_filled';
         if (!isPending) continue;
 
-        await this.cancelLimitEntryOrder(trade, exchange, apiKey, apiSecret, resolvedStrategy.isTestnet);
+        await this.cancelLimitEntryOrder(trade, exchange, apiKey, apiSecret, resolvedStrategy.isTestnet, resolvedStrategy.siteId);
         trade.status = 'ERROR';
         trade.error = 'Ordem cancelada: estratégia pausada/desativada';
         trade.closeReason = 'SIGNAL';
@@ -544,14 +547,15 @@ export class PositionSyncService implements OnModuleInit {
     exchange: Exchange,
     apiKey: string,
     apiSecret: string,
-    isTestnet: boolean
+    isTestnet: boolean,
+    siteId?: string | null
   ): Promise<string | null> {
     try {
       if (exchange === Exchange.BYBIT) {
-        let orderInfo = await this.bybitClient.getOrderInfo(apiKey, apiSecret, isTestnet, symbol, orderId);
+        let orderInfo = await this.bybitClient.getOrderInfo(apiKey, apiSecret, isTestnet, symbol, orderId, siteId);
 
         if (!orderInfo) {
-          orderInfo = await this.bybitClient.getOrderHistory(apiKey, apiSecret, isTestnet, symbol, orderId);
+          orderInfo = await this.bybitClient.getOrderHistory(apiKey, apiSecret, isTestnet, symbol, orderId, siteId);
         }
 
         return orderInfo?.orderStatus || null;
@@ -579,12 +583,13 @@ export class PositionSyncService implements OnModuleInit {
     exchange: Exchange,
     apiKey: string,
     apiSecret: string,
-    isTestnet: boolean
+    isTestnet: boolean,
+    siteId?: string | null
   ): Promise<void> {
     if (!trade.exchangeOrderId) return;
     try {
       if (exchange === Exchange.BYBIT) {
-        await this.bybitClient.cancelOrder(apiKey, apiSecret, isTestnet, trade.symbol, trade.exchangeOrderId);
+        await this.bybitClient.cancelOrder(apiKey, apiSecret, isTestnet, trade.symbol, trade.exchangeOrderId, siteId);
       } else {
         const baseUrl = isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
         const timestamp = Date.now();
@@ -607,7 +612,8 @@ export class PositionSyncService implements OnModuleInit {
     exchange: Exchange,
     apiKey?: string,
     apiSecret?: string,
-    isTestnet?: boolean
+    isTestnet?: boolean,
+    siteId?: string | null
   ): Promise<Trade> {
     trades.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
 
@@ -623,7 +629,7 @@ export class PositionSyncService implements OnModuleInit {
 
     for (const trade of duplicateTrades) {
       if (apiKey && apiSecret && isTestnet !== undefined) {
-        await this.cancelOpenOrders(trade, exchange, apiKey, apiSecret, isTestnet);
+        await this.cancelOpenOrders(trade, exchange, apiKey, apiSecret, isTestnet, siteId);
       }
 
       // Mark as closed - these weren't actually closed separately
@@ -657,10 +663,11 @@ export class PositionSyncService implements OnModuleInit {
     exchange: Exchange,
     apiKey: string,
     apiSecret: string,
-    isTestnet: boolean
+    isTestnet: boolean,
+    siteId?: string | null
   ): Promise<number | null> {
     if (exchange === Exchange.BYBIT) {
-      return await this.bybitClient.getLastTradePrice(apiKey, apiSecret, isTestnet, symbol);
+      return await this.bybitClient.getLastTradePrice(apiKey, apiSecret, isTestnet, symbol, siteId);
     }
 
     const baseUrl = isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
@@ -691,11 +698,12 @@ export class PositionSyncService implements OnModuleInit {
     exchange: Exchange,
     apiKey: string,
     apiSecret: string,
-    isTestnet: boolean
+    isTestnet: boolean,
+    siteId?: string | null
   ): Promise<void> {
-    await this.cancelOpenOrders(trade, exchange, apiKey, apiSecret, isTestnet);
+    await this.cancelOpenOrders(trade, exchange, apiKey, apiSecret, isTestnet, siteId);
 
-    const exitPrice = await this.getLastTradePrice(trade.symbol, exchange, apiKey, apiSecret, isTestnet);
+    const exitPrice = await this.getLastTradePrice(trade.symbol, exchange, apiKey, apiSecret, isTestnet, siteId);
     const currentPrice = exitPrice || await this.getCurrentPrice(trade.symbol, exchange, isTestnet);
 
     const entryPrice = parseFloat(trade.entryPrice as any);
@@ -743,7 +751,8 @@ export class PositionSyncService implements OnModuleInit {
     exchange: Exchange,
     apiKey: string,
     apiSecret: string,
-    isTestnet: boolean
+    isTestnet: boolean,
+    siteId?: string | null
   ): Promise<void> {
     if (exchange === Exchange.BYBIT) {
       if (trade.stopLossOrderId) {
@@ -757,7 +766,8 @@ export class PositionSyncService implements OnModuleInit {
               isTestnet,
               trade.symbol,
               bybitSide,
-              strategy?.hedgeMode
+              strategy?.hedgeMode,
+              siteId
             );
             this.logger.log(`[CANCEL] Cleared Bybit trading stop for ${trade.symbol}`);
           } catch (error: any) {
@@ -765,7 +775,7 @@ export class PositionSyncService implements OnModuleInit {
           }
         } else {
           try {
-            await this.bybitClient.cancelOrder(apiKey, apiSecret, isTestnet, trade.symbol, trade.stopLossOrderId);
+            await this.bybitClient.cancelOrder(apiKey, apiSecret, isTestnet, trade.symbol, trade.stopLossOrderId, siteId);
             this.logger.log(`[CANCEL] Cancelled Bybit SL order ${trade.stopLossOrderId}`);
           } catch (error: any) {
             if (error.response?.data?.retCode !== 110001) {
@@ -783,7 +793,7 @@ export class PositionSyncService implements OnModuleInit {
             if (!orderId || orderId === 'null' || orderId === 'undefined') continue;
 
             try {
-              await this.bybitClient.cancelOrder(apiKey, apiSecret, isTestnet, trade.symbol, orderId);
+              await this.bybitClient.cancelOrder(apiKey, apiSecret, isTestnet, trade.symbol, orderId, siteId);
               this.logger.log(`[CANCEL] Cancelled Bybit TP order ${orderId}`);
             } catch (error: any) {
               if (error.response?.data?.retCode !== 110001) {
@@ -793,7 +803,7 @@ export class PositionSyncService implements OnModuleInit {
           }
         } else if (!trade.takeProfitOrderId.startsWith('BYBIT_TRADING_STOP')) {
           try {
-            await this.bybitClient.cancelOrder(apiKey, apiSecret, isTestnet, trade.symbol, trade.takeProfitOrderId);
+            await this.bybitClient.cancelOrder(apiKey, apiSecret, isTestnet, trade.symbol, trade.takeProfitOrderId, siteId);
             this.logger.log(`[CANCEL] Cancelled Bybit TP order ${trade.takeProfitOrderId}`);
           } catch (error: any) {
             if (error.response?.data?.retCode !== 110001) {
@@ -979,7 +989,8 @@ export class PositionSyncService implements OnModuleInit {
     position: NormalizedPosition | undefined,
     strategy: Strategy,
     apiKey: string,
-    apiSecret: string
+    apiSecret: string,
+    siteId?: string | null
   ): Promise<void> {
     try {
         const entryPrice = safeParseFloat(trade.entryPrice as any);
@@ -1083,7 +1094,8 @@ export class PositionSyncService implements OnModuleInit {
                      side === 'BUY' ? 'Buy' : 'Sell',
                      formattedStopLoss,
                      undefined,
-                     strategy.hedgeMode
+                     strategy.hedgeMode,
+                     siteId
                  );
                  this.logger.log(
                    `[BYBIT] Updated position-level SL via setTradingStop to ${formattedStopLoss} (first entry only)`

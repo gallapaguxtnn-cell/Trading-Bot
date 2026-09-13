@@ -276,7 +276,7 @@ export class TradesController {
     try {
       this.logger.log(`[CLOSE] Starting to close trade ${trade.id} for ${trade.symbol} (hedgeMode: ${strategy.hedgeMode})`);
 
-      await this.cancelAllOrders(trade.symbol, exchange, apiKey, apiSecret, strategy.isTestnet, strategy.hedgeMode, trade.side);
+      await this.cancelAllOrders(trade.symbol, exchange, apiKey, apiSecret, strategy.isTestnet, strategy.hedgeMode, trade.side, strategy.siteId);
 
       const positionSize = await this.getPositionSize(
         trade.symbol,
@@ -285,7 +285,8 @@ export class TradesController {
         apiSecret,
         strategy.isTestnet,
         strategy.hedgeMode,
-        trade.side
+        trade.side,
+        strategy.siteId
       );
 
       this.logger.log(`[CLOSE] Position size on exchange: ${positionSize}`);
@@ -319,7 +320,7 @@ export class TradesController {
       if (exchange === Exchange.BYBIT) {
         const originalSide = trade.side === 'BUY' ? 'Buy' : 'Sell';
         const positionIdx = await this.bybitClient.getPositionIdx(
-          apiKey, apiSecret, strategy.isTestnet, trade.symbol, originalSide, strategy.hedgeMode
+          apiKey, apiSecret, strategy.isTestnet, trade.symbol, originalSide, strategy.hedgeMode, strategy.siteId
         );
 
         await this.bybitClient.createOrder(apiKey, apiSecret, strategy.isTestnet, {
@@ -330,7 +331,7 @@ export class TradesController {
           positionIdx,
           reduceOnly: true,
           hedgeMode: strategy.hedgeMode
-        });
+        }, strategy.siteId);
       } else {
         await this.closeBinancePosition(
           trade.symbol,
@@ -391,11 +392,12 @@ export class TradesController {
     apiSecret: string,
     isTestnet: boolean,
     hedgeMode: boolean = false,
-    tradeSide?: string
+    tradeSide?: string,
+    siteId?: string | null
   ): Promise<void> {
     try {
       if (exchange === Exchange.BYBIT) {
-        await this.bybitClient.cancelAllOrders(apiKey, apiSecret, isTestnet, symbol);
+        await this.bybitClient.cancelAllOrders(apiKey, apiSecret, isTestnet, symbol, siteId);
       } else {
         const baseURL = isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
 
@@ -541,11 +543,12 @@ export class TradesController {
     apiSecret: string,
     isTestnet: boolean,
     hedgeMode: boolean = false,
-    tradeSide?: string
+    tradeSide?: string,
+    siteId?: string | null
   ): Promise<number> {
     try {
       if (exchange === Exchange.BYBIT) {
-        const positions = await this.bybitClient.getPositions(apiKey, apiSecret, isTestnet, symbol);
+        const positions = await this.bybitClient.getPositions(apiKey, apiSecret, isTestnet, symbol, siteId);
         const position = positions.find((p: any) => p.symbol === symbol && parseFloat(p.size) > 0);
         return position ? Math.abs(parseFloat(position.size)) : 0;
       } else {

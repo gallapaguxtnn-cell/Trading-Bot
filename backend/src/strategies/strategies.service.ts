@@ -201,7 +201,7 @@ export class StrategiesService {
         if (!trade.exchangeOrderId) continue;
         try {
           if (exchange === Exchange.BYBIT) {
-            await this.bybitClient.cancelOrder(apiKey, apiSecret, resolvedStrategy.isTestnet, trade.symbol, trade.exchangeOrderId);
+            await this.bybitClient.cancelOrder(apiKey, apiSecret, resolvedStrategy.isTestnet, trade.symbol, trade.exchangeOrderId, resolvedStrategy.siteId);
           } else {
             const baseUrl = resolvedStrategy.isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
             const ts = Date.now();
@@ -278,7 +278,7 @@ export class StrategiesService {
 
     try {
       if (exchange === Exchange.BYBIT) {
-        const orders = await this.bybitClient.getOpenOrders(apiKey, apiSecret, resolvedStrategy.isTestnet);
+        const orders = await this.bybitClient.getOpenOrders(apiKey, apiSecret, resolvedStrategy.isTestnet, undefined, resolvedStrategy.siteId);
         result.openOrders = orders.map((order: any) => ({
           orderId: order.orderId,
           symbol: order.symbol,
@@ -289,7 +289,7 @@ export class StrategiesService {
           status: order.orderStatus,
         }));
 
-        const positions = await this.bybitClient.getPositions(apiKey, apiSecret, resolvedStrategy.isTestnet);
+        const positions = await this.bybitClient.getPositions(apiKey, apiSecret, resolvedStrategy.isTestnet, undefined, resolvedStrategy.siteId);
         result.openPositions = positions
           .filter((pos: any) => parseFloat(pos.size) > 0)
           .map((pos: any) => ({

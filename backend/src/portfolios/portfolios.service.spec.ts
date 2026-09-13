@@ -89,7 +89,7 @@ describe('PortfoliosService', () => {
       expect(result[0].apiKeyMasked).toBe('asdad••••••');
       expect(result[0]).not.toHaveProperty('apiSecret');
       expect(Object.keys(result[0]).sort()).toEqual(
-        ['apiKeyMasked', 'createdAt', 'exchange', 'id', 'isActive', 'mode', 'name', 'updatedAt'].sort(),
+        ['apiKeyMasked', 'bybitSiteId', 'createdAt', 'exchange', 'id', 'isActive', 'mode', 'name', 'updatedAt'].sort(),
       );
     });
 
@@ -223,8 +223,23 @@ describe('PortfoliosService', () => {
 
       const result = await service.testConnection('p1');
 
-      expect(bybitClient.getWalletBalance).toHaveBeenCalledWith('key123', 'secret123', true);
+      expect(bybitClient.getWalletBalance).toHaveBeenCalledWith('key123', 'secret123', true, null);
       expect(result).toEqual({ success: true, balance: 1234.5 });
+    });
+
+    it('bybit: repassa o bybitSiteId do portfolio (conta internacional BRA_BTL) para o header x-site-id', async () => {
+      const encKey = await EncryptionUtil.encrypt('key123');
+      const encSecret = await EncryptionUtil.encrypt('secret123');
+      const qb = createQueryBuilderMock(
+        { id: 'p1', exchange: Exchange.BYBIT, mode: PortfolioMode.DEMO, apiKey: encKey, apiSecret: encSecret, bybitSiteId: 'BRA_BTL' },
+        false,
+      );
+      portfoliosRepository.createQueryBuilder.mockReturnValue(qb);
+      bybitClient.getWalletBalance.mockResolvedValue(500);
+
+      await service.testConnection('p1');
+
+      expect(bybitClient.getWalletBalance).toHaveBeenCalledWith('key123', 'secret123', true, 'BRA_BTL');
     });
 
     it('binance: usa isTestnet=false para modo REAL e le o saldo USDT via ccxt', async () => {

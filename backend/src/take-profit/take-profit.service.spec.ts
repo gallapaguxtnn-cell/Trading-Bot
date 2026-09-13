@@ -164,6 +164,7 @@ describe('TakeProfitService (FASE 1 -- fallback nao substitui o TP LIMIT)', () =
     expect(bybitClient.createOrder).toHaveBeenCalledWith(
       'fake-key', 'fake-secret', true,
       expect.objectContaining({ symbol: 'SUIUSDT', orderType: 'Market', reduceOnly: true }),
+      undefined,
     );
 
     const savedTrade = tradesRepository.save.mock.calls[0][0];
@@ -256,7 +257,7 @@ describe('TakeProfitService (FASE 4 -- closePosition)', () => {
 
     await (service as any).closePosition(trade, makeStrategy(), 0.75, 'TAKE_PROFIT_FALLBACK_MARKET', 1.0, 'k', 's', 3);
 
-    expect(bybitClient.createOrder).toHaveBeenCalledWith('k', 's', true, expect.objectContaining({ qty: '250' }));
+    expect(bybitClient.createOrder).toHaveBeenCalledWith('k', 's', true, expect.objectContaining({ qty: '250' }), undefined);
   });
 
   it('usa o preco REALMENTE executado (avgPrice da corretora) para exitPrice e PnL, nao o exitPrice estimado passado como parametro', async () => {

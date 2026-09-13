@@ -29,6 +29,9 @@ export class Portfolio {
   @Column({ default: true })
   isActive: boolean;
 
+  @Column({ type: 'text', nullable: true })
+  bybitSiteId: string | null;
+
   @CreateDateColumn()
   createdAt: Date;
 

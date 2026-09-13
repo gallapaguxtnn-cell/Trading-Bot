@@ -129,7 +129,7 @@ export class BybitClientService implements OnModuleInit {
     return signature;
   }
 
-  private getHeaders(apiKey: string, apiSecret: string, params: string): Record<string, string> {
+  private getHeaders(apiKey: string, apiSecret: string, params: string, siteId?: string | null): Record<string, string> {
     const timestamp = Date.now().toString();
     const signature = this.generateSignature(timestamp, apiKey, apiSecret, params);
 
@@ -141,8 +141,9 @@ export class BybitClientService implements OnModuleInit {
       'Content-Type': 'application/json',
     };
 
-    if (this.siteId) {
-      headers['x-site-id'] = this.siteId;
+    const effectiveSiteId = siteId ?? this.siteId;
+    if (effectiveSiteId) {
+      headers['x-site-id'] = effectiveSiteId;
     }
 
     return headers;
@@ -163,14 +164,15 @@ export class BybitClientService implements OnModuleInit {
       positionIdx?: number;
       reduceOnly?: boolean;
       hedgeMode?: boolean;
-    }
+    },
+    siteId?: string | null
   ): Promise<BybitOrderResponse> {
     const baseUrl = this.getBaseUrl(isTestnet);
     const endpoint = '/v5/order/create';
 
     let positionIdx = params.positionIdx;
     if (positionIdx === undefined) {
-      positionIdx = await this.getPositionIdx(apiKey, apiSecret, isTestnet, params.symbol, params.side, params.hedgeMode);
+      positionIdx = await this.getPositionIdx(apiKey, apiSecret, isTestnet, params.symbol, params.side, params.hedgeMode, siteId);
     }
 
     const body: Record<string, any> = {
@@ -199,7 +201,7 @@ export class BybitClientService implements OnModuleInit {
     }
 
     const bodyString = JSON.stringify(body);
-    const headers = this.getHeaders(apiKey, apiSecret, bodyString);
+    const headers = this.getHeaders(apiKey, apiSecret, bodyString, siteId);
     const axiosConfig = { ...this.getAxiosConfig(), headers };
 
     try {
@@ -222,7 +224,8 @@ export class BybitClientService implements OnModuleInit {
     apiSecret: string,
     isTestnet: boolean,
     symbol: string,
-    leverage: number
+    leverage: number,
+    siteId?: string | null
   ): Promise<void> {
     const baseUrl = this.getBaseUrl(isTestnet);
     const endpoint = '/v5/position/set-leverage';
@@ -235,7 +238,7 @@ export class BybitClientService implements OnModuleInit {
     };
 
     const bodyString = JSON.stringify(body);
-    const headers = this.getHeaders(apiKey, apiSecret, bodyString);
+    const headers = this.getHeaders(apiKey, apiSecret, bodyString, siteId);
     const axiosConfig = { ...this.getAxiosConfig(), headers };
 
     try {
@@ -263,7 +266,8 @@ export class BybitClientService implements OnModuleInit {
     isTestnet: boolean,
     symbol: string,
     marginMode: 'ISOLATED' | 'CROSS',
-    leverage: number
+    leverage: number,
+    siteId?: string | null
   ): Promise<void> {
     const baseUrl = this.getBaseUrl(isTestnet);
     const endpoint = '/v5/position/switch-isolated';
@@ -279,7 +283,7 @@ export class BybitClientService implements OnModuleInit {
     };
 
     const bodyString = JSON.stringify(body);
-    const headers = this.getHeaders(apiKey, apiSecret, bodyString);
+    const headers = this.getHeaders(apiKey, apiSecret, bodyString, siteId);
     const axiosConfig = { ...this.getAxiosConfig(), headers };
 
     try {
@@ -305,7 +309,8 @@ export class BybitClientService implements OnModuleInit {
     apiKey: string,
     apiSecret: string,
     isTestnet: boolean,
-    symbol?: string
+    symbol?: string,
+    siteId?: string | null
   ): Promise<BybitPosition[]> {
     const baseUrl = this.getBaseUrl(isTestnet);
     const endpoint = '/v5/position/list';
@@ -320,7 +325,7 @@ export class BybitClientService implements OnModuleInit {
     }
 
     const queryString = new URLSearchParams(params).toString();
-    const headers = this.getHeaders(apiKey, apiSecret, queryString);
+    const headers = this.getHeaders(apiKey, apiSecret, queryString, siteId);
     const axiosConfig = { ...this.getAxiosConfig(), headers };
 
     try {
@@ -341,10 +346,11 @@ export class BybitClientService implements OnModuleInit {
     apiKey: string,
     apiSecret: string,
     isTestnet: boolean,
-    symbol: string
+    symbol: string,
+    siteId?: string | null
   ): Promise<'HEDGE' | 'ONE_WAY' | null> {
     try {
-      const positions = await this.getPositions(apiKey, apiSecret, isTestnet, symbol);
+      const positions = await this.getPositions(apiKey, apiSecret, isTestnet, symbol, siteId);
 
       if (positions && positions.length > 0) {
         const hasHedgeMode = positions.some((pos: any) =>
@@ -377,7 +383,8 @@ export class BybitClientService implements OnModuleInit {
     isTestnet: boolean,
     symbol: string,
     side: 'Buy' | 'Sell',
-    hedgeMode?: boolean
+    hedgeMode?: boolean,
+    siteId?: string | null
   ): Promise<number> {
     if (hedgeMode !== undefined) {
       const idx = hedgeMode ? (side === 'Buy' ? 1 : 2) : 0;
@@ -385,7 +392,7 @@ export class BybitClientService implements OnModuleInit {
       return idx;
     }
 
-    const mode = await this.detectPositionMode(apiKey, apiSecret, isTestnet, symbol);
+    const mode = await this.detectPositionMode(apiKey, apiSecret, isTestnet, symbol, siteId);
 
     if (mode === 'HEDGE') {
       this.logger.debug(`[BYBIT] Detected HEDGE mode → positionIdx=${side === 'Buy' ? 1 : 2}`);
@@ -414,13 +421,14 @@ export class BybitClientService implements OnModuleInit {
     side: 'Buy' | 'Sell',
     maxRetries: number = 10,
     delayMs: number = 500,
-    hedgeMode?: boolean
+    hedgeMode?: boolean,
+    siteId?: string | null
   ): Promise<boolean> {
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
-        const positions = await this.getPositions(apiKey, apiSecret, isTestnet, symbol);
+        const positions = await this.getPositions(apiKey, apiSecret, isTestnet, symbol, siteId);
 
-        const targetPositionIdx = await this.getPositionIdx(apiKey, apiSecret, isTestnet, symbol, side, hedgeMode);
+        const targetPositionIdx = await this.getPositionIdx(apiKey, apiSecret, isTestnet, symbol, side, hedgeMode, siteId);
 
         const hasPosition = positions.some((pos: any) => {
           const hasSize = parseFloat(pos.size || '0') > 0;
@@ -453,7 +461,8 @@ export class BybitClientService implements OnModuleInit {
     apiSecret: string,
     isTestnet: boolean,
     symbol: string,
-    orderId: string
+    orderId: string,
+    siteId?: string | null
   ): Promise<BybitOrderInfo | null> {
     const baseUrl = this.getBaseUrl(isTestnet);
     const endpoint = '/v5/order/realtime';
@@ -465,7 +474,7 @@ export class BybitClientService implements OnModuleInit {
     };
 
     const queryString = new URLSearchParams(params).toString();
-    const headers = this.getHeaders(apiKey, apiSecret, queryString);
+    const headers = this.getHeaders(apiKey, apiSecret, queryString, siteId);
     const axiosConfig = { ...this.getAxiosConfig(), headers };
 
     try {
@@ -488,7 +497,8 @@ export class BybitClientService implements OnModuleInit {
     apiSecret: string,
     isTestnet: boolean,
     symbol: string,
-    orderId: string
+    orderId: string,
+    siteId?: string | null
   ): Promise<BybitOrderInfo | null> {
     const baseUrl = this.getBaseUrl(isTestnet);
     const endpoint = '/v5/order/history';
@@ -500,7 +510,7 @@ export class BybitClientService implements OnModuleInit {
     };
 
     const queryString = new URLSearchParams(params).toString();
-    const headers = this.getHeaders(apiKey, apiSecret, queryString);
+    const headers = this.getHeaders(apiKey, apiSecret, queryString, siteId);
     const axiosConfig = { ...this.getAxiosConfig(), headers };
 
     try {
@@ -523,7 +533,8 @@ export class BybitClientService implements OnModuleInit {
     apiSecret: string,
     isTestnet: boolean,
     symbol: string,
-    orderId: string
+    orderId: string,
+    siteId?: string | null
   ): Promise<boolean> {
     const baseUrl = this.getBaseUrl(isTestnet);
     const endpoint = '/v5/order/cancel';
@@ -535,7 +546,7 @@ export class BybitClientService implements OnModuleInit {
     };
 
     const bodyString = JSON.stringify(body);
-    const headers = this.getHeaders(apiKey, apiSecret, bodyString);
+    const headers = this.getHeaders(apiKey, apiSecret, bodyString, siteId);
     const axiosConfig = { ...this.getAxiosConfig(), headers };
 
     try {
@@ -556,7 +567,8 @@ export class BybitClientService implements OnModuleInit {
   async getWalletBalance(
     apiKey: string,
     apiSecret: string,
-    isTestnet: boolean
+    isTestnet: boolean,
+    siteId?: string | null
   ): Promise<number> {
     const baseUrl = this.getBaseUrl(isTestnet);
     const endpoint = '/v5/account/wallet-balance';
@@ -573,7 +585,7 @@ export class BybitClientService implements OnModuleInit {
       };
 
       let queryString = new URLSearchParams(params).toString();
-      let headers = this.getHeaders(apiKey, apiSecret, queryString);
+      let headers = this.getHeaders(apiKey, apiSecret, queryString, siteId);
       const axiosConfig = { ...this.getAxiosConfig(), headers };
 
       let response = await axios.get(`${baseUrl}${endpoint}?${queryString}`, axiosConfig);
@@ -585,7 +597,7 @@ export class BybitClientService implements OnModuleInit {
 
         params = { accountType: 'CONTRACT' };
         queryString = new URLSearchParams(params).toString();
-        headers = this.getHeaders(apiKey, apiSecret, queryString);
+        headers = this.getHeaders(apiKey, apiSecret, queryString, siteId);
         const contractAxiosConfig = { ...this.getAxiosConfig(), headers };
 
         response = await axios.get(`${baseUrl}${endpoint}?${queryString}`, contractAxiosConfig);
@@ -801,7 +813,8 @@ export class BybitClientService implements OnModuleInit {
     apiKey: string,
     apiSecret: string,
     isTestnet: boolean,
-    symbol: string
+    symbol: string,
+    siteId?: string | null
   ): Promise<number | null> {
     const baseUrl = this.getBaseUrl(isTestnet);
     const endpoint = '/v5/execution/list';
@@ -813,7 +826,7 @@ export class BybitClientService implements OnModuleInit {
     };
 
     const queryString = new URLSearchParams(params).toString();
-    const headers = this.getHeaders(apiKey, apiSecret, queryString);
+    const headers = this.getHeaders(apiKey, apiSecret, queryString, siteId);
     const axiosConfig = { ...this.getAxiosConfig(), headers };
 
     try {
@@ -843,12 +856,13 @@ export class BybitClientService implements OnModuleInit {
     side: 'Buy' | 'Sell',
     qty: string,
     triggerPrice: string,
-    hedgeMode?: boolean
+    hedgeMode?: boolean,
+    siteId?: string | null
   ): Promise<BybitOrderResponse> {
     const baseUrl = this.getBaseUrl(isTestnet);
     const endpoint = '/v5/order/create';
 
-    const positionIdx = await this.getPositionIdx(apiKey, apiSecret, isTestnet, symbol, side, hedgeMode);
+    const positionIdx = await this.getPositionIdx(apiKey, apiSecret, isTestnet, symbol, side, hedgeMode, siteId);
 
     const oppositeSide = side === 'Buy' ? 'Sell' : 'Buy';
     const triggerDirection = side === 'Buy' ? 2 : 1;
@@ -867,7 +881,7 @@ export class BybitClientService implements OnModuleInit {
     };
 
     const bodyString = JSON.stringify(body);
-    const headers = this.getHeaders(apiKey, apiSecret, bodyString);
+    const headers = this.getHeaders(apiKey, apiSecret, bodyString, siteId);
     const axiosConfig = { ...this.getAxiosConfig(), headers };
 
     try {
@@ -893,12 +907,13 @@ export class BybitClientService implements OnModuleInit {
     side: 'Buy' | 'Sell',
     stopLoss?: string,
     takeProfit?: string,
-    hedgeMode?: boolean
+    hedgeMode?: boolean,
+    siteId?: string | null
   ): Promise<boolean> {
     const baseUrl = this.getBaseUrl(isTestnet);
     const endpoint = '/v5/position/trading-stop';
 
-    const positionIdx = await this.getPositionIdx(apiKey, apiSecret, isTestnet, symbol, side, hedgeMode);
+    const positionIdx = await this.getPositionIdx(apiKey, apiSecret, isTestnet, symbol, side, hedgeMode, siteId);
 
     const body: Record<string, any> = {
       category: 'linear',
@@ -917,7 +932,7 @@ export class BybitClientService implements OnModuleInit {
     }
 
     const bodyString = JSON.stringify(body);
-    const headers = this.getHeaders(apiKey, apiSecret, bodyString);
+    const headers = this.getHeaders(apiKey, apiSecret, bodyString, siteId);
     const axiosConfig = { ...this.getAxiosConfig(), headers };
 
     try {
@@ -942,12 +957,13 @@ export class BybitClientService implements OnModuleInit {
     isTestnet: boolean,
     symbol: string,
     side: 'Buy' | 'Sell',
-    hedgeMode?: boolean
+    hedgeMode?: boolean,
+    siteId?: string | null
   ): Promise<boolean> {
     const baseUrl = this.getBaseUrl(isTestnet);
     const endpoint = '/v5/position/trading-stop';
 
-    const positionIdx = await this.getPositionIdx(apiKey, apiSecret, isTestnet, symbol, side, hedgeMode);
+    const positionIdx = await this.getPositionIdx(apiKey, apiSecret, isTestnet, symbol, side, hedgeMode, siteId);
 
     const body: Record<string, any> = {
       category: 'linear',
@@ -958,7 +974,7 @@ export class BybitClientService implements OnModuleInit {
     };
 
     const bodyString = JSON.stringify(body);
-    const headers = this.getHeaders(apiKey, apiSecret, bodyString);
+    const headers = this.getHeaders(apiKey, apiSecret, bodyString, siteId);
     const axiosConfig = { ...this.getAxiosConfig(), headers };
 
     try {
@@ -981,7 +997,8 @@ export class BybitClientService implements OnModuleInit {
     apiKey: string,
     apiSecret: string,
     isTestnet: boolean,
-    symbol?: string
+    symbol?: string,
+    siteId?: string | null
   ): Promise<BybitOrderInfo[]> {
     const baseUrl = this.getBaseUrl(isTestnet);
     const endpoint = '/v5/order/realtime';
@@ -995,7 +1012,7 @@ export class BybitClientService implements OnModuleInit {
     }
 
     const queryString = new URLSearchParams(params).toString();
-    const headers = this.getHeaders(apiKey, apiSecret, queryString);
+    const headers = this.getHeaders(apiKey, apiSecret, queryString, siteId);
     const axiosConfig = { ...this.getAxiosConfig(), headers };
 
     try {
@@ -1059,7 +1076,8 @@ export class BybitClientService implements OnModuleInit {
     apiKey: string,
     apiSecret: string,
     isTestnet: boolean,
-    symbol: string
+    symbol: string,
+    siteId?: string | null
   ): Promise<boolean> {
     const baseUrl = this.getBaseUrl(isTestnet);
     const endpoint = '/v5/order/cancel-all';
@@ -1070,7 +1088,7 @@ export class BybitClientService implements OnModuleInit {
     };
 
     const bodyString = JSON.stringify(body);
-    const headers = this.getHeaders(apiKey, apiSecret, bodyString);
+    const headers = this.getHeaders(apiKey, apiSecret, bodyString, siteId);
     const axiosConfig = { ...this.getAxiosConfig(), headers };
 
     try {

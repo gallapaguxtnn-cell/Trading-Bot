@@ -160,6 +160,7 @@ describe('Cenario de aceite: PLANO_FIX_TP_MARKET_FALLBACK (print real SUIUSDT SH
     expect(bybitClient.createOrder).toHaveBeenCalledWith(
       'fake-key', 'fake-secret', true,
       expect.objectContaining({ symbol: 'SUIUSDT', orderType: 'Market', reduceOnly: true }),
+      undefined,
     );
 
     const closedTrade = tradesRepository.save.mock.calls[0][0];

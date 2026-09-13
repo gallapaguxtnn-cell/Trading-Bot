@@ -1,5 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
+import { ConfigService } from '@nestjs/config';
 import { CredentialsResolverService } from './credentials-resolver.service';
 import { Portfolio, PortfolioMode } from '../portfolios/portfolio.entity';
 import { Exchange } from '../strategies/strategy.entity';
@@ -15,14 +16,17 @@ function createQueryBuilderMock(result: any) {
 describe('CredentialsResolverService', () => {
   let service: CredentialsResolverService;
   let portfoliosRepository: { createQueryBuilder: jest.Mock };
+  let configService: { get: jest.Mock };
 
   beforeEach(async () => {
     portfoliosRepository = { createQueryBuilder: jest.fn() };
+    configService = { get: jest.fn().mockReturnValue(undefined) };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         CredentialsResolverService,
         { provide: getRepositoryToken(Portfolio), useValue: portfoliosRepository },
+        { provide: ConfigService, useValue: configService },
       ],
     }).compile();
 
@@ -47,6 +51,7 @@ describe('CredentialsResolverService', () => {
       isTestnet: true,
       isRealAccount: false,
       portfolioId: null,
+      siteId: null,
       source: 'strategy',
     });
   });
@@ -59,6 +64,7 @@ describe('CredentialsResolverService', () => {
       exchange: Exchange.BYBIT,
       apiKey: 'portfolio-key',
       apiSecret: 'portfolio-secret',
+      bybitSiteId: null,
     } as Portfolio);
     portfoliosRepository.createQueryBuilder.mockReturnValue(qb);
 
@@ -78,8 +84,121 @@ describe('CredentialsResolverService', () => {
       isTestnet: true,
       isRealAccount: false,
       portfolioId: 'portfolio-1',
+      siteId: null,
       source: 'portfolio',
     });
+  });
+
+  it('portfolio com bybitSiteId (BRA_BTL): siteId do portfolio tem prioridade sobre a env', async () => {
+    configService.get.mockReturnValue('ENV_SITE');
+    const qb = createQueryBuilderMock({
+      id: 'portfolio-bra',
+      isActive: true,
+      mode: PortfolioMode.REAL,
+      exchange: Exchange.BYBIT,
+      apiKey: 'k',
+      apiSecret: 's',
+      bybitSiteId: 'BRA_BTL',
+    } as Portfolio);
+    portfoliosRepository.createQueryBuilder.mockReturnValue(qb);
+
+    const result = await service.resolveCredentials({
+      portfolioId: 'portfolio-bra',
+      apiKey: 'strategy-key',
+      apiSecret: 'strategy-secret',
+      exchange: Exchange.BINANCE,
+      isTestnet: false,
+      isRealAccount: true,
+    });
+
+    expect(result.siteId).toBe('BRA_BTL');
+  });
+
+  it('portfolio sem bybitSiteId: cai para a env BYBIT_SITE_ID', async () => {
+    configService.get.mockReturnValue('ENV_SITE');
+    const qb = createQueryBuilderMock({
+      id: 'portfolio-default',
+      isActive: true,
+      mode: PortfolioMode.REAL,
+      exchange: Exchange.BYBIT,
+      apiKey: 'k',
+      apiSecret: 's',
+      bybitSiteId: null,
+    } as Portfolio);
+    portfoliosRepository.createQueryBuilder.mockReturnValue(qb);
+
+    const result = await service.resolveCredentials({
+      portfolioId: 'portfolio-default',
+      apiKey: 'strategy-key',
+      apiSecret: 'strategy-secret',
+      exchange: Exchange.BINANCE,
+      isTestnet: false,
+      isRealAccount: true,
+    });
+
+    expect(result.siteId).toBe('ENV_SITE');
+  });
+
+  it('sem portfolio e sem env: siteId null (comportamento atual)', async () => {
+    configService.get.mockReturnValue(undefined);
+
+    const result = await service.resolveCredentials({
+      portfolioId: null,
+      apiKey: 'strategy-key',
+      apiSecret: 'strategy-secret',
+      exchange: Exchange.BINANCE,
+      isTestnet: true,
+      isRealAccount: false,
+    });
+
+    expect(result.siteId).toBeNull();
+  });
+
+  it('dois portfolios de entidades diferentes resolvem siteId de forma independente e simultanea', async () => {
+    const qbBra = createQueryBuilderMock({
+      id: 'portfolio-bra',
+      isActive: true,
+      mode: PortfolioMode.REAL,
+      exchange: Exchange.BYBIT,
+      apiKey: 'k1',
+      apiSecret: 's1',
+      bybitSiteId: 'BRA_BTL',
+    } as Portfolio);
+    const qbDefault = createQueryBuilderMock({
+      id: 'portfolio-default',
+      isActive: true,
+      mode: PortfolioMode.REAL,
+      exchange: Exchange.BYBIT,
+      apiKey: 'k2',
+      apiSecret: 's2',
+      bybitSiteId: null,
+    } as Portfolio);
+
+    portfoliosRepository.createQueryBuilder
+      .mockReturnValueOnce(qbBra)
+      .mockReturnValueOnce(qbDefault);
+
+    const [braResult, defaultResult] = await Promise.all([
+      service.resolveCredentials({
+        portfolioId: 'portfolio-bra',
+        apiKey: 'strategy-key',
+        apiSecret: 'strategy-secret',
+        exchange: Exchange.BINANCE,
+        isTestnet: false,
+        isRealAccount: true,
+      }),
+      service.resolveCredentials({
+        portfolioId: 'portfolio-default',
+        apiKey: 'strategy-key',
+        apiSecret: 'strategy-secret',
+        exchange: Exchange.BINANCE,
+        isTestnet: false,
+        isRealAccount: true,
+      }),
+    ]);
+
+    expect(braResult.siteId).toBe('BRA_BTL');
+    expect(defaultResult.siteId).toBeNull();
   });
 
   it('com portfolio REAL: isTestnet false e isRealAccount true', async () => {
