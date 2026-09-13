@@ -248,6 +248,9 @@ export class TradesService {
         binancePositionAmt: trade.binancePositionAmt !== null && trade.binancePositionAmt !== undefined ? this.parseValue(trade.binancePositionAmt) : null,
         currentStopLoss: trade.currentStopLoss !== null && trade.currentStopLoss !== undefined ? this.parseValue(trade.currentStopLoss) : null,
         initialQuantity: trade.initialQuantity !== null && trade.initialQuantity !== undefined ? this.parseValue(trade.initialQuantity) : null,
+        signalPrice: trade.signalPrice !== null && trade.signalPrice !== undefined ? this.parseValue(trade.signalPrice) : null,
+        stopLossPercentage: trade.stopLossPercentage !== null && trade.stopLossPercentage !== undefined ? this.parseValue(trade.stopLossPercentage) : null,
+        filledAt: trade.filledAt,
         timestamp: trade.timestamp,
         closedAt: trade.closedAt
       };
@@ -261,6 +264,9 @@ export class TradesService {
         binancePositionAmt: null,
         currentStopLoss: null,
         initialQuantity: null,
+        signalPrice: null,
+        stopLossPercentage: null,
+        filledAt: trade.filledAt || null,
         timestamp: trade.timestamp || new Date(),
         closedAt: trade.closedAt || null
       };

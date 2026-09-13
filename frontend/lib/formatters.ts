@@ -141,3 +141,21 @@ export function computeTargetDiffPct(targetPrice: number, executedPrice: number)
   if (!targetPrice) return 0;
   return ((executedPrice - targetPrice) / targetPrice) * 100;
 }
+
+export function formatDuration(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return '-';
+
+  const totalMinutes = Math.floor(ms / 60000);
+  const days = Math.floor(totalMinutes / 1440);
+  const hours = Math.floor((totalMinutes % 1440) / 60);
+  const minutes = totalMinutes % 60;
+
+  if (days > 0) return `${days}d ${hours}h`;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  return `${minutes}m`;
+}
+
+export function computeSignalFillDiffPct(signalPrice: number, fillPrice: number): number {
+  if (!signalPrice) return 0;
+  return ((fillPrice - signalPrice) / signalPrice) * 100;
+}

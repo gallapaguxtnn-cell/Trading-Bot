@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { TradeTimeline } from './TradeTimeline';
-import { formatPrice, formatQuantity, formatPnL, formatDateUTC, formatTimeUTC, formatCloseReason, parseTpWarnings, parseFallbackTarget, computeTargetDiffPct } from '@/lib/formatters';
+import { formatPrice, formatQuantity, formatPnL, formatDateUTC, formatTimeUTC, formatCloseReason, parseTpWarnings, parseFallbackTarget, computeTargetDiffPct, formatDuration, computeSignalFillDiffPct } from '@/lib/formatters';
 
 interface Trade {
   id: string;
@@ -22,6 +22,11 @@ interface Trade {
   excludeFromStats?: boolean;
   origin?: string | null;
   tpWarnings?: string | null;
+  signalPrice?: number | string | null;
+  filledAt?: string | null;
+  protectionRepricedAt?: string | null;
+  currentStopLoss?: number | string | null;
+  stopLossPercentage?: number | string | null;
 }
 
 interface TradeCardProps {
@@ -71,8 +76,22 @@ function TradeBadges({ trade }: { trade: Trade }) {
           TP no alvo (limit)
         </span>
       )}
+      {trade.protectionRepricedAt && (
+        <span
+          title={`SL/TP reposicionados em ${formatDateUTC(trade.protectionRepricedAt)} ${formatTimeUTC(trade.protectionRepricedAt)} UTC porque o preenchimento divergiu do preco usado ao criar a protecao original`}
+          className="px-2 py-0.5 rounded text-[10px] font-bold border bg-sky-500/15 text-sky-400 border-sky-500/30"
+        >
+          SL/TP reposicionados
+        </span>
+      )}
     </>
   );
+}
+
+function toNumOrNull(v: number | string | null | undefined): number | null {
+  if (v === null || v === undefined || v === '') return null;
+  const n = typeof v === 'string' ? parseFloat(v) : v;
+  return Number.isFinite(n) ? n : null;
 }
 
 function TradeFragmentRow({ trade }: { trade: Trade }) {
@@ -129,6 +148,31 @@ export function TradeCard({ trade, fragments = [], portfolioName }: TradeCardPro
     ? 'border-l-emerald-500/40'
     : 'border-l-red-500/40';
 
+  const pendingMs = trade.type === 'LIMIT' && trade.filledAt
+    ? new Date(trade.filledAt).getTime() - new Date(trade.timestamp).getTime()
+    : null;
+
+  const positionStart = trade.filledAt || trade.timestamp;
+  const positionEnd = isClosed ? trade.closedAt : new Date().toISOString();
+  const positionMs = positionStart && positionEnd
+    ? new Date(positionEnd).getTime() - new Date(positionStart).getTime()
+    : null;
+
+  const signalPriceNum = toNumOrNull(trade.signalPrice);
+  const entryPriceNum = toNumOrNull(trade.entryPrice);
+  const signalFillDiffPct = signalPriceNum !== null && entryPriceNum !== null
+    ? computeSignalFillDiffPct(signalPriceNum, entryPriceNum)
+    : null;
+  const showSignalFillDivergence = signalFillDiffPct !== null && Math.abs(signalFillDiffPct) > 0.01;
+
+  const configuredSlPct = toNumOrNull(trade.stopLossPercentage);
+  const slReferencePrice = isClosed && trade.closeReason === 'STOP_LOSS'
+    ? toNumOrNull(trade.exitPrice)
+    : toNumOrNull(trade.currentStopLoss);
+  const effectiveSlPct = entryPriceNum && slReferencePrice
+    ? (Math.abs(entryPriceNum - slReferencePrice) / entryPriceNum) * 100
+    : null;
+
   return (
     <div className={`group glass-card rounded-lg border border-border/60 border-l-2 ${borderAccent} hover:border-border transition-all duration-200 hover:translate-y-[-1px] glow-subtle`}>
       <div className="p-4 space-y-3">
@@ -163,6 +207,11 @@ export function TradeCard({ trade, fragments = [], portfolioName }: TradeCardPro
           <div>
             <div className="text-muted-foreground text-[10px] uppercase tracking-wider mb-0.5">Entry</div>
             <div className="font-mono font-semibold text-foreground">{formatPrice(trade.entryPrice)}</div>
+            {showSignalFillDivergence && (
+              <div className="text-[10px] text-sky-400 font-mono mt-0.5" title="Diferenca entre o preco do sinal e o preco efetivamente preenchido">
+                Sinal {formatPrice(trade.signalPrice)} → Fill {formatPrice(trade.entryPrice)} ({signalFillDiffPct! > 0 ? '+' : ''}{signalFillDiffPct!.toFixed(3)}%)
+              </div>
+            )}
           </div>
           <div>
             <div className="text-muted-foreground text-[10px] uppercase tracking-wider mb-0.5">Exit</div>
@@ -176,6 +225,30 @@ export function TradeCard({ trade, fragments = [], portfolioName }: TradeCardPro
             <div className="text-muted-foreground text-[10px] uppercase tracking-wider mb-0.5">Tipo</div>
             <div className="uppercase text-[11px] text-foreground">{trade.type || 'MARKET'}</div>
           </div>
+          <div>
+            <div className="text-muted-foreground text-[10px] uppercase tracking-wider mb-0.5">
+              {pendingMs !== null ? 'Em posição' : 'Duração'}
+            </div>
+            <div className="font-mono text-foreground">{positionMs !== null ? formatDuration(positionMs) : '-'}</div>
+            {pendingMs !== null && (
+              <div className="text-[10px] text-muted-foreground/70 font-mono mt-0.5" title="Tempo entre o envio do sinal (ordem criada) e o preenchimento da ordem LIMIT">
+                Pendente: {formatDuration(pendingMs)}
+              </div>
+            )}
+          </div>
+          {configuredSlPct !== null && (
+            <div>
+              <div className="text-muted-foreground text-[10px] uppercase tracking-wider mb-0.5">SL</div>
+              <div className="font-mono text-foreground">
+                {configuredSlPct.toFixed(2)}%
+                {effectiveSlPct !== null && Math.abs(effectiveSlPct - configuredSlPct) > 0.05 && (
+                  <span className="ml-1 text-[10px] text-amber-400" title="Percentual efetivo do SL em relacao ao entry, apos reposicionamento">
+                    (efetivo {effectiveSlPct.toFixed(2)}%)
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
         </div>
 
         {trade.error && (

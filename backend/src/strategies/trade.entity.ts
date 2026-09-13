@@ -90,6 +90,15 @@ export class Trade {
   @Column({ type: 'timestamptz', nullable: true })
   protectionRepricedAt: Date | null;
 
+  @Column("decimal", { precision: 18, scale: 8, nullable: true })
+  signalPrice: number | null;
+
+  @Column({ type: 'timestamptz', nullable: true })
+  filledAt: Date | null;
+
+  @Column("decimal", { precision: 8, scale: 4, nullable: true })
+  stopLossPercentage: number | null;
+
   @CreateDateColumn()
   timestamp: Date;
 }

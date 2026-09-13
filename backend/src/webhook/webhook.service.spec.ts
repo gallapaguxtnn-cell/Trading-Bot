@@ -301,6 +301,30 @@ describe('WebhookService (FASE 2 -- reposicionar SL/TP desalinhado no fill monit
     expect(update.protectionRepricedAt).toBeInstanceOf(Date);
   });
 
+  it('LIMIT preenchido: grava signalPrice (preco original do sinal, se ja gravado) e filledAt (hora real do fill) -- separa tempo pendente de tempo em posicao', async () => {
+    tradesService.findById.mockResolvedValue(makeTrade({ signalPrice: 0.7858, stopLossOrderId: null, takeProfitOrderId: null }));
+    bybitClient.getOrderInfo.mockResolvedValue({ orderStatus: 'Filled', avgPrice: '0.796', cumExecQty: '50' });
+
+    (service as any).scheduleBybitProtectionOrders('trade-1', 'SUIUSDT', 'SELL', { ...strategy, stopLossPercentage: 0 }, 'key', 'secret', 50);
+    await jest.advanceTimersByTimeAsync(10000);
+
+    const update = tradesService.updateTrade.mock.calls[0][1];
+    expect(update.signalPrice).toBe(0.7858);
+    expect(update.filledAt).toBeInstanceOf(Date);
+    expect(update.entryPrice).toBe(0.796);
+  });
+
+  it('LIMIT preenchido sem signalPrice previamente gravado: usa o proprio entryPrice do fill como signalPrice (fallback)', async () => {
+    tradesService.findById.mockResolvedValue(makeTrade({ signalPrice: null, stopLossOrderId: null, takeProfitOrderId: null }));
+    bybitClient.getOrderInfo.mockResolvedValue({ orderStatus: 'Filled', avgPrice: '0.796', cumExecQty: '50' });
+
+    (service as any).scheduleBybitProtectionOrders('trade-1', 'SUIUSDT', 'SELL', { ...strategy, stopLossPercentage: 0 }, 'key', 'secret', 50);
+    await jest.advanceTimersByTimeAsync(10000);
+
+    const update = tradesService.updateTrade.mock.calls[0][1];
+    expect(update.signalPrice).toBe(0.796);
+  });
+
   it('SL alinhado com o alvo -> nao mexe (nao cria nem cancela nada)', async () => {
     tradesService.findById.mockResolvedValue(makeTrade({ currentStopLoss: 0.81192 }));
     bybitClient.getOrderInfo.mockResolvedValue({ orderStatus: 'Filled', avgPrice: '0.796', cumExecQty: '50' });
