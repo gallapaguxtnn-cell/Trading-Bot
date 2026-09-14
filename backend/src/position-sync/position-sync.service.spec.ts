@@ -228,7 +228,7 @@ describe('PositionSyncService (FASE 2 -- CredentialsResolver)', () => {
 
     expect(exchangeFactory.get).toHaveBeenCalledWith(Exchange.BYBIT);
     expect(client.getPositions).toHaveBeenCalledWith(
-      expect.objectContaining({ credentials: { apiKey: 'portfolio-key', apiSecret: 'portfolio-secret' }, mode: 'REAL' }),
+      expect.objectContaining({ credentials: { apiKey: 'portfolio-key', apiSecret: 'portfolio-secret', passphrase: null }, mode: 'REAL' }),
     );
   });
 
@@ -259,7 +259,7 @@ describe('PositionSyncService (FASE 2 -- CredentialsResolver)', () => {
     await (service as any).syncStrategyPositions(strategy);
 
     expect(client.getPositions).toHaveBeenCalledWith(
-      expect.objectContaining({ credentials: { apiKey: 'legacy-key', apiSecret: 'legacy-secret' }, mode: 'DEMO' }),
+      expect.objectContaining({ credentials: { apiKey: 'legacy-key', apiSecret: 'legacy-secret', passphrase: null }, mode: 'DEMO' }),
     );
   });
 

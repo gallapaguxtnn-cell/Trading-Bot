@@ -11,7 +11,7 @@ import {
   Portfolio,
   PortfolioExchange,
   PortfolioMode,
-  BybitSiteId,
+  Region,
 } from '@/lib/api';
 
 const EXCHANGE_OPTIONS: Array<{ value: PortfolioExchange; label: string; disabled?: boolean }> = [
@@ -21,11 +21,19 @@ const EXCHANGE_OPTIONS: Array<{ value: PortfolioExchange; label: string; disable
   { value: 'bingx', label: 'BingX (em breve)', disabled: true },
 ];
 
-const BYBIT_SITE_ID_OPTIONS: Array<{ value: '' | BybitSiteId; label: string }> = [
-  { value: '', label: 'Padrão' },
-  { value: 'BRA_BTL', label: 'Brasil internacional' },
-  { value: 'ARG_BTL', label: 'Argentina internacional' },
-];
+const REGION_OPTIONS_BY_EXCHANGE: Record<string, Array<{ value: '' | Region; label: string }>> = {
+  bybit: [
+    { value: '', label: 'Padrão' },
+    { value: 'BRA_BTL', label: 'Brasil internacional' },
+    { value: 'ARG_BTL', label: 'Argentina internacional' },
+  ],
+  okx: [
+    { value: '', label: 'Padrão' },
+    { value: 'EL_SALVADOR', label: 'El Salvador' },
+    { value: 'EEA', label: 'União Europeia (EEA)' },
+    { value: 'US', label: 'Estados Unidos' },
+  ],
+};
 
 const DEFAULT_FORM = {
   name: '',
@@ -33,7 +41,8 @@ const DEFAULT_FORM = {
   mode: 'DEMO' as PortfolioMode,
   apiKey: '',
   apiSecret: '',
-  bybitSiteId: '' as '' | BybitSiteId,
+  apiPassphrase: '',
+  region: '' as '' | Region,
 };
 
 export default function PortfoliosPage() {
@@ -73,7 +82,8 @@ export default function PortfoliosPage() {
       mode: portfolio.mode,
       apiKey: '',
       apiSecret: '',
-      bybitSiteId: portfolio.bybitSiteId ?? '',
+      apiPassphrase: '',
+      region: portfolio.region ?? portfolio.bybitSiteId ?? '',
     });
     setModalOpen(true);
   }
@@ -91,10 +101,11 @@ export default function PortfoliosPage() {
       name: formData.name,
       exchange: formData.exchange,
       mode: formData.mode,
-      bybitSiteId: formData.exchange === 'bybit' && formData.bybitSiteId ? formData.bybitSiteId : null,
+      region: formData.region || null,
     };
     if (formData.apiKey) payload.apiKey = formData.apiKey;
     if (formData.apiSecret) payload.apiSecret = formData.apiSecret;
+    if (formData.apiPassphrase) payload.apiPassphrase = formData.apiPassphrase;
 
     try {
       if (editingId) {
@@ -174,9 +185,9 @@ export default function PortfoliosPage() {
                     <span className="text-[10px] px-1.5 py-0.5 bg-secondary rounded text-muted-foreground uppercase mt-1 inline-block">
                       {p.exchange}
                     </span>
-                    {p.bybitSiteId && (
+                    {(p.region || p.bybitSiteId) && (
                       <span className="text-[10px] px-1.5 py-0.5 bg-sky-500/15 text-sky-400 rounded uppercase mt-1 ml-1 inline-block">
-                        {p.bybitSiteId}
+                        {p.region || p.bybitSiteId}
                       </span>
                     )}
                   </div>
@@ -270,22 +281,40 @@ export default function PortfoliosPage() {
                 </select>
               </div>
 
-              {formData.exchange === 'bybit' && (
+              {REGION_OPTIONS_BY_EXCHANGE[formData.exchange] && (
                 <div className="space-y-1">
-                  <label className={labelClass}>Entidade Bybit</label>
+                  <label className={labelClass}>Entidade / Região</label>
                   <select
                     className={inputClass}
-                    value={formData.bybitSiteId}
-                    onChange={(e) => setFormData((prev) => ({ ...prev, bybitSiteId: e.target.value as '' | BybitSiteId }))}
+                    value={formData.region}
+                    onChange={(e) => setFormData((prev) => ({ ...prev, region: e.target.value as '' | Region }))}
                   >
-                    {BYBIT_SITE_ID_OPTIONS.map((opt) => (
+                    {REGION_OPTIONS_BY_EXCHANGE[formData.exchange].map((opt) => (
                       <option key={opt.value} value={opt.value}>
                         {opt.label}
                       </option>
                     ))}
                   </select>
                   <p className="text-[10px] text-muted-foreground">
-                    Contas internacionais (Brasil/Argentina) exigem esse header — sem ele a Bybit recusa a API key.
+                    {formData.exchange === 'bybit'
+                      ? 'Contas internacionais (Brasil/Argentina) exigem esse header — sem ele a Bybit recusa a API key.'
+                      : 'Define o domínio da OKX usado para essa conta.'}
+                  </p>
+                </div>
+              )}
+
+              {formData.exchange === 'okx' && (
+                <div className="space-y-1">
+                  <label className={labelClass}>Passphrase</label>
+                  <input
+                    type="password"
+                    className={inputClass}
+                    placeholder={editingId ? 'Atualizar Passphrase (opcional)' : 'Passphrase'}
+                    value={formData.apiPassphrase}
+                    onChange={(e) => setFormData((prev) => ({ ...prev, apiPassphrase: e.target.value }))}
+                  />
+                  <p className="text-[10px] text-muted-foreground">
+                    Obrigatória para a OKX, além da API Key e do Secret.
                   </p>
                 </div>
               )}

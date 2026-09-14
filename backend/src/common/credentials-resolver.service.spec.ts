@@ -47,6 +47,7 @@ describe('CredentialsResolverService', () => {
     expect(result).toEqual({
       apiKey: 'strategy-key',
       apiSecret: 'strategy-secret',
+      apiPassphrase: null,
       exchange: Exchange.BINANCE,
       isTestnet: true,
       isRealAccount: false,
@@ -80,6 +81,7 @@ describe('CredentialsResolverService', () => {
     expect(result).toEqual({
       apiKey: 'portfolio-key',
       apiSecret: 'portfolio-secret',
+      apiPassphrase: null,
       exchange: Exchange.BYBIT,
       isTestnet: true,
       isRealAccount: false,
@@ -112,6 +114,57 @@ describe('CredentialsResolverService', () => {
     });
 
     expect(result.siteId).toBe('BRA_BTL');
+  });
+
+  it('portfolio com region (FASE 3): tem precedencia sobre bybitSiteId legado e sobre a env', async () => {
+    configService.get.mockReturnValue('ENV_SITE');
+    const qb = createQueryBuilderMock({
+      id: 'portfolio-region',
+      isActive: true,
+      mode: PortfolioMode.REAL,
+      exchange: Exchange.OKX,
+      apiKey: 'k',
+      apiSecret: 's',
+      apiPassphrase: 'p',
+      bybitSiteId: 'ARG_BTL',
+      region: 'EL_SALVADOR',
+    } as Portfolio);
+    portfoliosRepository.createQueryBuilder.mockReturnValue(qb);
+
+    const result = await service.resolveCredentials({
+      portfolioId: 'portfolio-region',
+      apiKey: 'strategy-key',
+      apiSecret: 'strategy-secret',
+      exchange: Exchange.BINANCE,
+      isTestnet: false,
+      isRealAccount: true,
+    });
+
+    expect(result.siteId).toBe('EL_SALVADOR');
+    expect(result.apiPassphrase).toBe('p');
+  });
+
+  it('portfolio sem region nem bybitSiteId: apiPassphrase null (comportamento atual para Bybit/Binance)', async () => {
+    const qb = createQueryBuilderMock({
+      id: 'portfolio-nopass',
+      isActive: true,
+      mode: PortfolioMode.DEMO,
+      exchange: Exchange.BYBIT,
+      apiKey: 'k',
+      apiSecret: 's',
+    } as Portfolio);
+    portfoliosRepository.createQueryBuilder.mockReturnValue(qb);
+
+    const result = await service.resolveCredentials({
+      portfolioId: 'portfolio-nopass',
+      apiKey: 'strategy-key',
+      apiSecret: 'strategy-secret',
+      exchange: Exchange.BINANCE,
+      isTestnet: true,
+      isRealAccount: false,
+    });
+
+    expect(result.apiPassphrase).toBeNull();
   });
 
   it('portfolio sem bybitSiteId: cai para a env BYBIT_SITE_ID', async () => {

@@ -230,7 +230,7 @@ describe('StopLossService (FASE 2 -- CredentialsResolver)', () => {
 
     expect(exchangeFactory.get).toHaveBeenCalledWith(Exchange.BYBIT);
     expect(exchangeClient.getPositions).toHaveBeenCalledWith(
-      { credentials: { apiKey: 'portfolio-key', apiSecret: 'portfolio-secret' }, mode: 'REAL', region: null },
+      { credentials: { apiKey: 'portfolio-key', apiSecret: 'portfolio-secret', passphrase: null }, mode: 'REAL', region: null },
       'BTCUSDT',
     );
   });

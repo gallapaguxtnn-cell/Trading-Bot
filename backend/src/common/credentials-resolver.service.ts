@@ -8,6 +8,7 @@ import { Strategy, Exchange } from '../strategies/strategy.entity';
 export interface ResolvedCredentials {
   apiKey: string;
   apiSecret: string;
+  apiPassphrase: string | null;
   exchange: Exchange;
   isTestnet: boolean;
   isRealAccount: boolean;
@@ -44,7 +45,7 @@ export class CredentialsResolverService {
     if (strategy.portfolioId) {
       const portfolio = await this.portfoliosRepository
         .createQueryBuilder('portfolio')
-        .addSelect(['portfolio.apiKey', 'portfolio.apiSecret'])
+        .addSelect(['portfolio.apiKey', 'portfolio.apiSecret', 'portfolio.apiPassphrase'])
         .where('portfolio.id = :id', { id: strategy.portfolioId })
         .getOne();
 
@@ -54,11 +55,12 @@ export class CredentialsResolverService {
         return {
           apiKey: portfolio.apiKey,
           apiSecret: portfolio.apiSecret,
+          apiPassphrase: portfolio.apiPassphrase ?? null,
           exchange: portfolio.exchange,
           isTestnet,
           isRealAccount: !isTestnet,
           portfolioId: portfolio.id,
-          siteId: this.resolveSiteId(portfolio.bybitSiteId),
+          siteId: this.resolveSiteId(portfolio.region || portfolio.bybitSiteId),
           source: 'portfolio',
         };
       }
@@ -71,6 +73,7 @@ export class CredentialsResolverService {
     return {
       apiKey: strategy.apiKey,
       apiSecret: strategy.apiSecret,
+      apiPassphrase: null,
       exchange: strategy.exchange,
       isTestnet: strategy.isTestnet,
       isRealAccount: strategy.isRealAccount,

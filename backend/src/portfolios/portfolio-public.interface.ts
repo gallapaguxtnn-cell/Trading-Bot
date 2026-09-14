@@ -9,6 +9,7 @@ export interface PortfolioPublic {
   isActive: boolean;
   apiKeyMasked: string;
   bybitSiteId: string | null;
+  region: string | null;
   createdAt: Date;
   updatedAt: Date;
 }

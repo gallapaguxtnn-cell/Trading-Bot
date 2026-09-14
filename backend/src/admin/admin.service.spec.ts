@@ -223,7 +223,7 @@ describe('AdminService.resetTrades', () => {
     const result = await service.resetTrades({ dryRun: false, confirm: 'RESET', cancelOrphanOrders: true });
 
     expect(bybitClient.cancelOrder).toHaveBeenCalledWith(
-      { credentials: { apiKey: 'plain-key', apiSecret: 'plain-secret' }, mode: 'DEMO', region: 'BRA_BTL' },
+      { credentials: { apiKey: 'plain-key', apiSecret: 'plain-secret', passphrase: null }, mode: 'DEMO', region: 'BRA_BTL' },
       'BTCUSDT',
       'order-123',
     );

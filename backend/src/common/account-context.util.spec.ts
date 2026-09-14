@@ -6,6 +6,7 @@ function makeCredentials(overrides: Partial<ResolvedCredentials> = {}): Resolved
   return {
     apiKey: 'enc-key',
     apiSecret: 'enc-secret',
+    apiPassphrase: null,
     exchange: Exchange.BYBIT,
     isTestnet: true,
     isRealAccount: false,
@@ -24,7 +25,12 @@ describe('toAccountContext', () => {
 
   it('usa as credenciais decriptadas passadas, nao as (ainda criptografadas) do ResolvedCredentials', () => {
     const ctx = toAccountContext(makeCredentials({ apiKey: 'enc-key', apiSecret: 'enc-secret' }), 'plain-key', 'plain-secret');
-    expect(ctx.credentials).toEqual({ apiKey: 'plain-key', apiSecret: 'plain-secret' });
+    expect(ctx.credentials).toEqual({ apiKey: 'plain-key', apiSecret: 'plain-secret', passphrase: null });
+  });
+
+  it('passphrase decriptada e repassada quando informada', () => {
+    const ctx = toAccountContext(makeCredentials({ apiPassphrase: 'enc-pass' }), 'k', 's', 'plain-pass');
+    expect(ctx.credentials.passphrase).toBe('plain-pass');
   });
 
   it('siteId vira region; null continua null', () => {

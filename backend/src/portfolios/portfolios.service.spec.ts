@@ -91,7 +91,7 @@ describe('PortfoliosService', () => {
       expect(result[0].apiKeyMasked).toBe('asdad••••••');
       expect(result[0]).not.toHaveProperty('apiSecret');
       expect(Object.keys(result[0]).sort()).toEqual(
-        ['apiKeyMasked', 'bybitSiteId', 'createdAt', 'exchange', 'id', 'isActive', 'mode', 'name', 'updatedAt'].sort(),
+        ['apiKeyMasked', 'bybitSiteId', 'region', 'createdAt', 'exchange', 'id', 'isActive', 'mode', 'name', 'updatedAt'].sort(),
       );
     });
 
@@ -149,6 +149,40 @@ describe('PortfoliosService', () => {
       expect(savedArg.apiSecret).not.toBe('plain-secret');
       expect(result).not.toHaveProperty('apiSecret');
     });
+
+    it('OKX sem passphrase -> erro de validacao claro, nunca chega a salvar', async () => {
+      await expect(
+        service.create({
+          name: 'teste okx',
+          exchange: Exchange.OKX,
+          mode: PortfolioMode.DEMO,
+          apiKey: 'plain-key',
+          apiSecret: 'plain-secret',
+        } as Partial<Portfolio>),
+      ).rejects.toThrow('Passphrase');
+      expect(portfoliosRepository.save).not.toHaveBeenCalled();
+    });
+
+    it('OKX com passphrase: criptografa apiPassphrase antes de salvar junto com apiKey/apiSecret', async () => {
+      const qb = createQueryBuilderMock(
+        { id: 'portfolio-2', name: 'okx', exchange: Exchange.OKX, mode: PortfolioMode.DEMO, isActive: true, createdAt: new Date(), updatedAt: new Date() },
+        false,
+      );
+      portfoliosRepository.createQueryBuilder.mockReturnValue(qb);
+
+      await service.create({
+        name: 'okx',
+        exchange: Exchange.OKX,
+        mode: PortfolioMode.DEMO,
+        apiKey: 'plain-key',
+        apiSecret: 'plain-secret',
+        apiPassphrase: 'plain-pass',
+      } as Partial<Portfolio>);
+
+      const savedArg = portfoliosRepository.save.mock.calls[0][0];
+      expect(savedArg.apiPassphrase).not.toBe('plain-pass');
+      expect(savedArg.apiPassphrase).toBeDefined();
+    });
   });
 
   describe('update', () => {
@@ -172,6 +206,27 @@ describe('PortfoliosService', () => {
 
       const updateArg = portfoliosRepository.update.mock.calls[0][1];
       expect(updateArg.apiKey).not.toBe('new-key');
+    });
+
+    it('trocar para OKX sem passphrase (nem nova, nem ja existente) -> erro de validacao, nao atualiza', async () => {
+      const qb = createQueryBuilderMock({ id: 'p1', apiPassphrase: null }, false);
+      portfoliosRepository.createQueryBuilder.mockReturnValue(qb);
+
+      await expect(
+        service.update('p1', { exchange: Exchange.OKX } as Partial<Portfolio>),
+      ).rejects.toThrow('Passphrase');
+      expect(portfoliosRepository.update).not.toHaveBeenCalled();
+    });
+
+    it('substitui apiPassphrase quando um novo valor e informado, sempre criptografado', async () => {
+      const qb = createQueryBuilderMock({ id: 'p1' }, false);
+      portfoliosRepository.createQueryBuilder.mockReturnValue(qb);
+
+      await service.update('p1', { exchange: Exchange.OKX, apiPassphrase: 'new-pass' } as Partial<Portfolio>);
+
+      const updateArg = portfoliosRepository.update.mock.calls[0][1];
+      expect(updateArg.apiPassphrase).not.toBe('new-pass');
+      expect(updateArg.apiPassphrase).toBeDefined();
     });
   });
 
@@ -251,6 +306,40 @@ describe('PortfoliosService', () => {
         mode: 'DEMO',
         region: 'BRA_BTL',
       });
+    });
+
+    it('bybit: region (FASE 3) tem precedencia sobre bybitSiteId legado quando ambos estao preenchidos', async () => {
+      const encKey = await EncryptionUtil.encrypt('key123');
+      const encSecret = await EncryptionUtil.encrypt('secret123');
+      const qb = createQueryBuilderMock(
+        { id: 'p1', exchange: Exchange.BYBIT, mode: PortfolioMode.DEMO, apiKey: encKey, apiSecret: encSecret, bybitSiteId: 'ARG_BTL', region: 'BRA_BTL' },
+        false,
+      );
+      portfoliosRepository.createQueryBuilder.mockReturnValue(qb);
+      bybitClient.getWalletBalance.mockResolvedValue(500);
+
+      await service.testConnection('p1');
+
+      expect(bybitClient.getWalletBalance).toHaveBeenCalledWith(
+        expect.objectContaining({ region: 'BRA_BTL' }),
+      );
+    });
+
+    it('bybit: sem region nem bybitSiteId -> region null, comportamento atual identico', async () => {
+      const encKey = await EncryptionUtil.encrypt('key123');
+      const encSecret = await EncryptionUtil.encrypt('secret123');
+      const qb = createQueryBuilderMock(
+        { id: 'p1', exchange: Exchange.BYBIT, mode: PortfolioMode.DEMO, apiKey: encKey, apiSecret: encSecret },
+        false,
+      );
+      portfoliosRepository.createQueryBuilder.mockReturnValue(qb);
+      bybitClient.getWalletBalance.mockResolvedValue(500);
+
+      await service.testConnection('p1');
+
+      expect(bybitClient.getWalletBalance).toHaveBeenCalledWith(
+        expect.objectContaining({ region: null }),
+      );
     });
 
     it('binance: usa isTestnet=false para modo REAL e le o saldo USDT via ccxt', async () => {

@@ -32,6 +32,12 @@ export class Portfolio {
   @Column({ type: 'text', nullable: true })
   bybitSiteId: string | null;
 
+  @Column({ type: 'text', nullable: true, select: false })
+  apiPassphrase: string | null;
+
+  @Column({ type: 'text', nullable: true })
+  region: string | null;
+
   @CreateDateColumn()
   createdAt: Date;
 

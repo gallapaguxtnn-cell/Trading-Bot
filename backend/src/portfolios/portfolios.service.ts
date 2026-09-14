@@ -1,4 +1,4 @@
-import { ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Repository } from 'typeorm';
 import { Portfolio, PortfolioMode } from './portfolio.entity';
@@ -15,6 +15,7 @@ const PORTFOLIO_PUBLIC_COLUMNS = [
   'mode',
   'isActive',
   'bybitSiteId',
+  'region',
   'createdAt',
   'updatedAt',
 ] as const;
@@ -54,6 +55,7 @@ export class PortfoliosService {
         mode: portfolio.mode,
         isActive: portfolio.isActive,
         bybitSiteId: portfolio.bybitSiteId,
+        region: portfolio.region,
         createdAt: portfolio.createdAt,
         updatedAt: portfolio.updatedAt,
         apiKeyMasked: await this.maskApiKey(portfolio.apiKey),
@@ -78,6 +80,7 @@ export class PortfoliosService {
       mode: portfolio.mode,
       isActive: portfolio.isActive,
       bybitSiteId: portfolio.bybitSiteId,
+      region: portfolio.region,
       createdAt: portfolio.createdAt,
       updatedAt: portfolio.updatedAt,
       apiKeyMasked: await this.maskApiKey(portfolio.apiKey),
@@ -96,12 +99,20 @@ export class PortfoliosService {
   findWithCredentials(id: string): Promise<Portfolio | null> {
     return this.portfoliosRepository
       .createQueryBuilder('portfolio')
-      .addSelect(['portfolio.apiKey', 'portfolio.apiSecret'])
+      .addSelect(['portfolio.apiKey', 'portfolio.apiSecret', 'portfolio.apiPassphrase'])
       .where('portfolio.id = :id', { id })
       .getOne();
   }
 
+  private assertOkxHasPassphrase(exchange: Exchange | undefined, passphrase: string | null | undefined): void {
+    if (exchange === Exchange.OKX && !passphrase) {
+      throw new BadRequestException('Portfólios OKX exigem a Passphrase da API, além da API Key e do Secret.');
+    }
+  }
+
   async create(data: Partial<Portfolio>): Promise<PortfolioPublic | null> {
+    this.assertOkxHasPassphrase(data.exchange, data.apiPassphrase);
+
     const portfolio = this.portfoliosRepository.create(data);
     if (portfolio.apiKey) {
       portfolio.apiKey = await EncryptionUtil.encrypt(portfolio.apiKey);
@@ -109,12 +120,23 @@ export class PortfoliosService {
     if (portfolio.apiSecret) {
       portfolio.apiSecret = await EncryptionUtil.encrypt(portfolio.apiSecret);
     }
+    if (portfolio.apiPassphrase) {
+      portfolio.apiPassphrase = await EncryptionUtil.encrypt(portfolio.apiPassphrase);
+    }
     const saved = await this.portfoliosRepository.save(portfolio);
     return this.findOnePublic(saved.id);
   }
 
   async update(id: string, data: Partial<Portfolio>): Promise<PortfolioPublic | null> {
     const update: Partial<Portfolio> = { ...data };
+
+    if (update.exchange === Exchange.OKX) {
+      const existingPassphrase = update.apiPassphrase
+        ? undefined
+        : (await this.findWithCredentials(id))?.apiPassphrase;
+      this.assertOkxHasPassphrase(update.exchange, update.apiPassphrase || existingPassphrase);
+    }
+
     if (update.apiKey) {
       update.apiKey = await EncryptionUtil.encrypt(update.apiKey);
     } else {
@@ -124,6 +146,11 @@ export class PortfoliosService {
       update.apiSecret = await EncryptionUtil.encrypt(update.apiSecret);
     } else {
       delete update.apiSecret;
+    }
+    if (update.apiPassphrase) {
+      update.apiPassphrase = await EncryptionUtil.encrypt(update.apiPassphrase);
+    } else {
+      delete update.apiPassphrase;
     }
     await this.portfoliosRepository.update(id, update);
     return this.findOnePublic(id);
@@ -155,7 +182,7 @@ export class PortfoliosService {
 
     try {
       if (portfolio.exchange === Exchange.BYBIT) {
-        const siteId = portfolio.bybitSiteId || process.env.BYBIT_SITE_ID || null;
+        const siteId = portfolio.region || portfolio.bybitSiteId || process.env.BYBIT_SITE_ID || null;
         const client = this.exchangeFactory.get(Exchange.BYBIT);
         const balance = await client.getWalletBalance({ credentials: { apiKey, apiSecret }, mode: isTestnet ? 'DEMO' : 'REAL', region: siteId as any });
         return { success: true, balance };

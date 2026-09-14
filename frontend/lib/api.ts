@@ -10,6 +10,7 @@ export type PortfolioExchange = 'binance' | 'bybit' | 'okx' | 'bingx';
 export type PortfolioMode = 'DEMO' | 'REAL';
 
 export type BybitSiteId = 'BRA_BTL' | 'ARG_BTL';
+export type Region = 'BRA_BTL' | 'ARG_BTL' | 'EL_SALVADOR' | 'EEA' | 'US';
 
 export interface Portfolio {
   id: string;
@@ -19,6 +20,7 @@ export interface Portfolio {
   isActive: boolean;
   apiKeyMasked: string;
   bybitSiteId: BybitSiteId | null;
+  region: Region | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -29,8 +31,10 @@ export interface PortfolioPayload {
   mode?: PortfolioMode;
   apiKey?: string;
   apiSecret?: string;
+  apiPassphrase?: string;
   isActive?: boolean;
   bybitSiteId?: BybitSiteId | null;
+  region?: Region | null;
 }
 
 async function parseErrorMessage(res: Response, fallback: string): Promise<string> {
