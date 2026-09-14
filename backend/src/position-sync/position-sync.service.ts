@@ -8,31 +8,19 @@ import { Trade } from '../strategies/trade.entity';
 import { Strategy, Exchange } from '../strategies/strategy.entity';
 import { StrategiesService } from '../strategies/strategies.service';
 import { ExchangeService } from '../exchange/exchange.service';
-import { BybitClientService, BybitPosition } from '../exchange/bybit-client.service';
 import { TradesService } from '../trades/trades.service';
 import { ExecutionType } from '../trades/trade-execution.entity';
 import { resolveManualCloseOutcome } from './manual-close.util';
 import { findResidualTradeMatch, isDustByNotional } from './orphan-import.util';
 import { EncryptionUtil } from '../utils/encryption.util';
-import { BinanceRequestUtil } from '../utils/binance-request.util';
 import { BinanceWebSocketService } from '../binance-ws/binance-ws.service';
 import { AccountUpdateEvent } from '../binance-ws/dto/binance-ws-events.dto';
 import { SymbolRulesService } from '../common/symbol-rules.service';
 import { normalizeQuantity } from '../common/exchange-precision.util';
 import { CredentialsResolverService } from '../common/credentials-resolver.service';
-import axios from 'axios';
-import * as crypto from 'crypto';
-
-interface BinancePosition {
-  symbol: string;
-  positionAmt: string;
-  entryPrice: string;
-  markPrice: string;
-  unRealizedProfit: string;
-  liquidationPrice: string;
-  leverage: string;
-  positionSide: 'LONG' | 'SHORT' | 'BOTH';
-}
+import { toAccountContext } from '../common/account-context.util';
+import { ExchangeClientFactory } from '../exchange/exchange-client.factory';
+import { AccountContext, ExchangeClient, NeutralSide, PositionInfo } from '../exchange/exchange-client.interface';
 
 interface NormalizedPosition {
   symbol: string;
@@ -42,7 +30,18 @@ interface NormalizedPosition {
   unrealizedPnl: number;
   leverage: number;
   markPrice: number;
-  positionSide: 'LONG' | 'SHORT' | 'BOTH';
+}
+
+function normalizePosition(p: PositionInfo): NormalizedPosition {
+  return {
+    symbol: p.symbol,
+    side: p.side as 'BUY' | 'SELL',
+    size: safeParseFloat(p.size),
+    entryPrice: safeParseFloat(p.avgPrice),
+    unrealizedPnl: safeParseFloat(p.unrealizedPnl),
+    leverage: safeParseFloat(p.leverage, 1),
+    markPrice: safeParseFloat(p.markPrice),
+  };
 }
 
 function safeParseFloat(value: any, defaultValue: number = 0): number {
@@ -62,8 +61,6 @@ function safeParseFloat(value: any, defaultValue: number = 0): number {
 @Injectable()
 export class PositionSyncService implements OnModuleInit {
   private readonly logger = new Logger(PositionSyncService.name);
-  private readonly BINANCE_TESTNET_URL = 'https://testnet.binancefuture.com';
-  private readonly BINANCE_MAINNET_URL = 'https://fapi.binance.com';
   private lastSyncTime: Date | null = null;
   private syncInProgress = false;
   private readonly fallbackEnabled: boolean;
@@ -93,7 +90,7 @@ export class PositionSyncService implements OnModuleInit {
     private readonly strategiesRepository: Repository<Strategy>,
     private readonly strategiesService: StrategiesService,
     private readonly exchangeService: ExchangeService,
-    private readonly bybitClient: BybitClientService,
+    private readonly exchangeFactory: ExchangeClientFactory,
     private readonly tradesService: TradesService,
     private readonly binanceWs: BinanceWebSocketService,
     private readonly eventEmitter: EventEmitter2,
@@ -206,15 +203,10 @@ export class PositionSyncService implements OnModuleInit {
 
     const exchange = resolvedStrategy.exchange || Exchange.BINANCE;
     const { apiKey, apiSecret } = await this.decryptCredentials(resolvedStrategy);
+    const client = this.exchangeFactory.get(exchange);
+    const ctx = toAccountContext(resolvedStrategy, apiKey, apiSecret);
 
-    let positions: NormalizedPosition[];
-
-    if (exchange === Exchange.BYBIT) {
-      positions = await this.fetchBybitPositions(apiKey, apiSecret, resolvedStrategy.isTestnet, resolvedStrategy.siteId);
-    } else {
-      positions = await this.fetchBinancePositions(apiKey, apiSecret, resolvedStrategy.isTestnet);
-    }
-
+    const positions = await this.fetchPositions(client, ctx, exchange);
     const openPositions = positions.filter(p => p.size !== 0);
 
     let synced = 0;
@@ -235,7 +227,7 @@ export class PositionSyncService implements OnModuleInit {
 
       if (existingTrades.length === 0) {
         if (exchange === Exchange.BYBIT) {
-          const rules = await this.bybitClient.getSymbolRules(resolvedStrategy.isTestnet, position.symbol);
+          const rules = await client.getSymbolRules(ctx, position.symbol);
           const minQty = parseFloat(rules.minQty);
 
           if (position.size < minQty) {
@@ -294,7 +286,7 @@ export class PositionSyncService implements OnModuleInit {
           await this.checkBreakAgain(existingTrades[0], position, resolvedStrategy, apiKey, apiSecret, resolvedStrategy.siteId);
         }
 
-        await this.consolidateTrades(existingTrades, position, exchange, apiKey, apiSecret, resolvedStrategy.isTestnet, resolvedStrategy.siteId);
+        await this.consolidateTrades(existingTrades, position, client, ctx);
         consolidated += existingTrades.length - 1;
         synced++;
         this.logger.log(`[SYNC] Consolidated ${existingTrades.length} trades into 1 for ${position.symbol}`);
@@ -314,7 +306,7 @@ export class PositionSyncService implements OnModuleInit {
 
       if (duplicateCheck.length > 1) {
         this.logger.warn(`[SYNC] Found ${duplicateCheck.length} duplicate trades for ${position.symbol} (${position.side}), consolidating...`);
-        await this.consolidateTrades(duplicateCheck, position, exchange, apiKey, apiSecret, resolvedStrategy.isTestnet, resolvedStrategy.siteId);
+        await this.consolidateTrades(duplicateCheck, position, client, ctx);
         consolidated += duplicateCheck.length - 1;
         this.logger.log(`[SYNC] Consolidated ${duplicateCheck.length} trades into 1 for ${position.symbol}`);
       }
@@ -345,11 +337,8 @@ export class PositionSyncService implements OnModuleInit {
           const orderStatus = await this.checkOrderStatus(
             trade.exchangeOrderId,
             trade.symbol,
-            exchange,
-            apiKey,
-            apiSecret,
-            resolvedStrategy.isTestnet,
-            resolvedStrategy.siteId
+            client,
+            ctx,
           );
 
           const hasProtection = !!trade.stopLossOrderId && !!trade.takeProfitOrderId;
@@ -371,7 +360,7 @@ export class PositionSyncService implements OnModuleInit {
           }
         }
 
-        await this.closeTradeAsManual(trade, exchange, apiKey, apiSecret, resolvedStrategy.isTestnet, resolvedStrategy.siteId);
+        await this.closeTradeAsManual(trade, client, ctx);
         closed++;
         this.logger.log(`[SYNC] Closed trade ${trade.id} for ${trade.symbol} - no longer exists on exchange`);
       }
@@ -390,9 +379,9 @@ export class PositionSyncService implements OnModuleInit {
     siteId?: string | null
   ): Promise<number | null> {
     try {
-      const positions = exchange === Exchange.BYBIT
-        ? await this.fetchBybitPositions(apiKey, apiSecret, isTestnet, siteId)
-        : await this.fetchBinancePositions(apiKey, apiSecret, isTestnet);
+      const client = this.exchangeFactory.get(exchange);
+      const ctx: AccountContext = { credentials: { apiKey, apiSecret }, mode: isTestnet ? 'DEMO' : 'REAL', region: (siteId as any) ?? null };
+      const positions = (await this.fetchPositions(client, ctx, exchange));
       const position = positions.find(p => p.symbol === symbol && p.side === side);
       return position ? position.size : 0;
     } catch (error: any) {
@@ -401,94 +390,26 @@ export class PositionSyncService implements OnModuleInit {
     }
   }
 
-  private async fetchBinancePositions(
-    apiKey: string,
-    apiSecret: string,
-    isTestnet: boolean
-  ): Promise<NormalizedPosition[]> {
-    const baseUrl = isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
-    const timestamp = Date.now();
-    const queryString = `timestamp=${timestamp}`;
-    const signature = crypto.createHmac('sha256', apiSecret).update(queryString).digest('hex');
-
+  private async fetchPositions(client: ExchangeClient, ctx: AccountContext, exchange: Exchange): Promise<NormalizedPosition[]> {
     try {
-      const response = await BinanceRequestUtil.get(
-        `${baseUrl}/fapi/v2/positionRisk?${queryString}&signature=${signature}`,
-        {
-          headers: { 'X-MBX-APIKEY': apiKey }
-        }
-      );
-
-      return (response.data as BinancePosition[]).map(pos => {
-        const posAmt = safeParseFloat(pos.positionAmt);
-        return {
-          symbol: pos.symbol,
-          side: posAmt > 0 ? 'BUY' : 'SELL' as 'BUY' | 'SELL',
-          size: Math.abs(posAmt),
-          entryPrice: safeParseFloat(pos.entryPrice),
-          unrealizedPnl: safeParseFloat(pos.unRealizedProfit),
-          leverage: safeParseFloat(pos.leverage, 1),
-          markPrice: safeParseFloat(pos.markPrice),
-          positionSide: pos.positionSide,
-        };
-      });
+      const positions = await client.getPositions(ctx);
+      return positions.map(normalizePosition);
     } catch (error: any) {
       const statusCode = error.response?.status;
       if (statusCode === 401) {
         this.logger.error(
-          `[BINANCE AUTH ERROR] API Key is invalid or expired. ` +
-          `Please update your Binance API credentials. Status: 401 Unauthorized`
+          `[${exchange.toUpperCase()} AUTH ERROR] API Key is invalid or expired. ` +
+          `Please update your ${exchange} API credentials. Status: 401 Unauthorized`
         );
-        throw new Error('Binance API Key invalid or expired. Please update credentials.');
+        throw new Error(`${exchange} API Key invalid or expired. Please update credentials.`);
       } else if (statusCode === 403) {
         this.logger.error(
-          `[BINANCE AUTH ERROR] API Key lacks required permissions or IP is not whitelisted. ` +
-          `Please check your Binance API settings. Status: 403 Forbidden`
+          `[${exchange.toUpperCase()} AUTH ERROR] API Key lacks required permissions or IP is not whitelisted. ` +
+          `Please check your ${exchange} API settings. Status: 403 Forbidden`
         );
-        throw new Error('Binance API Key lacks permissions. Check API settings and IP whitelist.');
+        throw new Error(`${exchange} API Key lacks permissions. Check API settings and IP whitelist.`);
       }
-      this.logger.error(`Failed to fetch Binance positions: ${error.message}`);
-      throw error;
-    }
-  }
-
-  private async fetchBybitPositions(
-    apiKey: string,
-    apiSecret: string,
-    isTestnet: boolean,
-    siteId?: string | null
-  ): Promise<NormalizedPosition[]> {
-    try {
-      const positions = await this.bybitClient.getPositions(apiKey, apiSecret, isTestnet, undefined, siteId);
-
-      return positions
-        .filter(pos => pos.side !== 'None' && safeParseFloat(pos.size) !== 0)
-        .map(pos => ({
-          symbol: pos.symbol,
-          side: pos.side === 'Buy' ? 'BUY' : 'SELL' as 'BUY' | 'SELL',
-          size: safeParseFloat(pos.size),
-          entryPrice: safeParseFloat(pos.avgPrice),
-          unrealizedPnl: safeParseFloat(pos.unrealisedPnl),
-          leverage: safeParseFloat(pos.leverage, 1),
-          markPrice: parseFloat(pos.markPrice),
-          positionSide: 'BOTH' as const, // Bybit uses one-way mode (positionIdx: 0)
-        }));
-    } catch (error: any) {
-      const statusCode = error.response?.status;
-      if (statusCode === 401) {
-        this.logger.error(
-          `[BYBIT AUTH ERROR] API Key is invalid or expired. ` +
-          `Please update your Bybit API credentials. Status: 401 Unauthorized`
-        );
-        throw new Error('Bybit API Key invalid or expired. Please update credentials.');
-      } else if (statusCode === 403) {
-        this.logger.error(
-          `[BYBIT AUTH ERROR] API Key lacks required permissions or IP is not whitelisted. ` +
-          `Please check your Bybit API settings (Contract Trading permission required). Status: 403 Forbidden`
-        );
-        throw new Error('Bybit API Key lacks permissions. Check API settings and IP whitelist.');
-      }
-      this.logger.error(`Failed to fetch Bybit positions: ${error.message}`);
+      this.logger.error(`Failed to fetch ${exchange} positions: ${error.message}`);
       throw error;
     }
   }
@@ -523,12 +444,14 @@ export class PositionSyncService implements OnModuleInit {
       try {
         const exchange = resolvedStrategy.exchange || Exchange.BINANCE;
         const { apiKey, apiSecret } = await this.decryptCredentials(resolvedStrategy);
-        const orderStatus = await this.checkOrderStatus(trade.exchangeOrderId, trade.symbol, exchange, apiKey, apiSecret, resolvedStrategy.isTestnet, resolvedStrategy.siteId);
+        const client = this.exchangeFactory.get(exchange);
+        const ctx = toAccountContext(resolvedStrategy, apiKey, apiSecret);
+        const orderStatus = await this.checkOrderStatus(trade.exchangeOrderId, trade.symbol, client, ctx);
         const s = (orderStatus || '').toLowerCase();
         const isPending = s === 'new' || s === 'partiallyfilled' || s === 'partially_filled';
         if (!isPending) continue;
 
-        await this.cancelLimitEntryOrder(trade, exchange, apiKey, apiSecret, resolvedStrategy.isTestnet, resolvedStrategy.siteId);
+        await client.cancelOrder(ctx, trade.symbol, trade.exchangeOrderId);
         trade.status = 'ERROR';
         trade.error = 'Ordem cancelada: estratégia pausada/desativada';
         trade.closeReason = 'SIGNAL';
@@ -544,76 +467,28 @@ export class PositionSyncService implements OnModuleInit {
   private async checkOrderStatus(
     orderId: string,
     symbol: string,
-    exchange: Exchange,
-    apiKey: string,
-    apiSecret: string,
-    isTestnet: boolean,
-    siteId?: string | null
+    client: ExchangeClient,
+    ctx: AccountContext,
   ): Promise<string | null> {
     try {
-      if (exchange === Exchange.BYBIT) {
-        let orderInfo = await this.bybitClient.getOrderInfo(apiKey, apiSecret, isTestnet, symbol, orderId, siteId);
+      let orderInfo = await client.getOrderInfo(ctx, symbol, orderId);
 
-        if (!orderInfo) {
-          orderInfo = await this.bybitClient.getOrderHistory(apiKey, apiSecret, isTestnet, symbol, orderId, siteId);
-        }
-
-        return orderInfo?.orderStatus || null;
+      if (!orderInfo) {
+        orderInfo = await client.getOrderHistory(ctx, symbol, orderId);
       }
 
-      const baseUrl = isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
-      const timestamp = Date.now();
-      const queryString = `symbol=${symbol}&orderId=${orderId}&timestamp=${timestamp}`;
-      const signature = crypto.createHmac('sha256', apiSecret).update(queryString).digest('hex');
-
-      const response = await BinanceRequestUtil.get(
-        `${baseUrl}/fapi/v1/order?${queryString}&signature=${signature}`,
-        { headers: { 'X-MBX-APIKEY': apiKey } }
-      );
-
-      return response.data.status;
+      return orderInfo?.orderStatus || null;
     } catch (error) {
       this.logger.error(`Failed to check order status for ${orderId}: ${error.message}`);
       return null;
     }
   }
 
-  private async cancelLimitEntryOrder(
-    trade: Trade,
-    exchange: Exchange,
-    apiKey: string,
-    apiSecret: string,
-    isTestnet: boolean,
-    siteId?: string | null
-  ): Promise<void> {
-    if (!trade.exchangeOrderId) return;
-    try {
-      if (exchange === Exchange.BYBIT) {
-        await this.bybitClient.cancelOrder(apiKey, apiSecret, isTestnet, trade.symbol, trade.exchangeOrderId, siteId);
-      } else {
-        const baseUrl = isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
-        const timestamp = Date.now();
-        const queryString = `symbol=${trade.symbol}&orderId=${trade.exchangeOrderId}&timestamp=${timestamp}`;
-        const signature = crypto.createHmac('sha256', apiSecret).update(queryString).digest('hex');
-        await BinanceRequestUtil.delete(
-          `${baseUrl}/fapi/v1/order?${queryString}&signature=${signature}`,
-          { headers: { 'X-MBX-APIKEY': apiKey } }
-        );
-      }
-      this.logger.log(`[SYNC] Cancelled expired buffer order ${trade.exchangeOrderId} for ${trade.symbol}`);
-    } catch (error: any) {
-      this.logger.warn(`[SYNC] Failed to cancel expired buffer order ${trade.exchangeOrderId}: ${error.message}`);
-    }
-  }
-
   private async consolidateTrades(
     trades: Trade[],
     position: NormalizedPosition,
-    exchange: Exchange,
-    apiKey?: string,
-    apiSecret?: string,
-    isTestnet?: boolean,
-    siteId?: string | null
+    client?: ExchangeClient,
+    ctx?: AccountContext,
   ): Promise<Trade> {
     trades.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
 
@@ -628,8 +503,8 @@ export class PositionSyncService implements OnModuleInit {
     await this.tradesRepository.save(primaryTrade);
 
     for (const trade of duplicateTrades) {
-      if (apiKey && apiSecret && isTestnet !== undefined) {
-        await this.cancelOpenOrders(trade, exchange, apiKey, apiSecret, isTestnet, siteId);
+      if (client && ctx) {
+        await this.cancelOpenOrders(trade, client, ctx);
       }
 
       // Mark as closed - these weren't actually closed separately
@@ -658,53 +533,15 @@ export class PositionSyncService implements OnModuleInit {
     return primaryTrade;
   }
 
-  private async getLastTradePrice(
-    symbol: string,
-    exchange: Exchange,
-    apiKey: string,
-    apiSecret: string,
-    isTestnet: boolean,
-    siteId?: string | null
-  ): Promise<number | null> {
-    if (exchange === Exchange.BYBIT) {
-      return await this.bybitClient.getLastTradePrice(apiKey, apiSecret, isTestnet, symbol, siteId);
-    }
-
-    const baseUrl = isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
-    const timestamp = Date.now();
-    const queryString = `symbol=${symbol}&limit=1&timestamp=${timestamp}`;
-    const signature = crypto.createHmac('sha256', apiSecret).update(queryString).digest('hex');
-
-    try {
-      const response = await BinanceRequestUtil.get(
-        `${baseUrl}/fapi/v1/userTrades?${queryString}&signature=${signature}`,
-        {
-          headers: { 'X-MBX-APIKEY': apiKey }
-        }
-      );
-
-      if (response.data && response.data.length > 0) {
-        return parseFloat(response.data[0].price);
-      }
-      return null;
-    } catch (error) {
-      this.logger.error(`Failed to get last trade price: ${error.message}`);
-      return null;
-    }
-  }
-
   private async closeTradeAsManual(
     trade: Trade,
-    exchange: Exchange,
-    apiKey: string,
-    apiSecret: string,
-    isTestnet: boolean,
-    siteId?: string | null
+    client: ExchangeClient,
+    ctx: AccountContext,
   ): Promise<void> {
-    await this.cancelOpenOrders(trade, exchange, apiKey, apiSecret, isTestnet, siteId);
+    await this.cancelOpenOrders(trade, client, ctx);
 
-    const exitPrice = await this.getLastTradePrice(trade.symbol, exchange, apiKey, apiSecret, isTestnet, siteId);
-    const currentPrice = exitPrice || await this.getCurrentPrice(trade.symbol, exchange, isTestnet);
+    const exitPrice = await client.getLastTradePrice(ctx, trade.symbol);
+    const currentPrice = exitPrice || await client.getCurrentPrice(ctx, trade.symbol);
 
     const entryPrice = parseFloat(trade.entryPrice as any);
     const quantity = parseFloat(trade.quantity as any);
@@ -748,161 +585,50 @@ export class PositionSyncService implements OnModuleInit {
 
   private async cancelOpenOrders(
     trade: Trade,
-    exchange: Exchange,
-    apiKey: string,
-    apiSecret: string,
-    isTestnet: boolean,
-    siteId?: string | null
+    client: ExchangeClient,
+    ctx: AccountContext,
   ): Promise<void> {
-    if (exchange === Exchange.BYBIT) {
-      if (trade.stopLossOrderId) {
-        if (trade.stopLossOrderId.startsWith('BYBIT_TRADING_STOP')) {
-          try {
-            const bybitSide = trade.side === 'BUY' ? 'Buy' : 'Sell';
-            const strategy = await this.strategiesRepository.findOne({ where: { id: trade.strategyId } });
-            await this.bybitClient.clearTradingStop(
-              apiKey,
-              apiSecret,
-              isTestnet,
-              trade.symbol,
-              bybitSide,
-              strategy?.hedgeMode,
-              siteId
-            );
-            this.logger.log(`[CANCEL] Cleared Bybit trading stop for ${trade.symbol}`);
-          } catch (error: any) {
-            this.logger.warn(`[CANCEL] Failed to clear Bybit trading stop: ${error.message}`);
-          }
-        } else {
-          try {
-            await this.bybitClient.cancelOrder(apiKey, apiSecret, isTestnet, trade.symbol, trade.stopLossOrderId, siteId);
-            this.logger.log(`[CANCEL] Cancelled Bybit SL order ${trade.stopLossOrderId}`);
-          } catch (error: any) {
-            if (error.response?.data?.retCode !== 110001) {
-              this.logger.warn(`[CANCEL] Failed to cancel Bybit SL: ${error.message}`);
-            }
-          }
-        }
-      }
-
-      if (trade.takeProfitOrderId) {
-        if (trade.takeProfitOrderId.includes('|')) {
-          const tpEntries = trade.takeProfitOrderId.split('|');
-          for (const entry of tpEntries) {
-            const orderId = entry.includes(':') ? entry.split(':')[1] : entry;
-            if (!orderId || orderId === 'null' || orderId === 'undefined') continue;
-
-            try {
-              await this.bybitClient.cancelOrder(apiKey, apiSecret, isTestnet, trade.symbol, orderId, siteId);
-              this.logger.log(`[CANCEL] Cancelled Bybit TP order ${orderId}`);
-            } catch (error: any) {
-              if (error.response?.data?.retCode !== 110001) {
-                this.logger.warn(`[CANCEL] Failed to cancel Bybit TP ${orderId}: ${error.message}`);
-              }
-            }
-          }
-        } else if (!trade.takeProfitOrderId.startsWith('BYBIT_TRADING_STOP')) {
-          try {
-            await this.bybitClient.cancelOrder(apiKey, apiSecret, isTestnet, trade.symbol, trade.takeProfitOrderId, siteId);
-            this.logger.log(`[CANCEL] Cancelled Bybit TP order ${trade.takeProfitOrderId}`);
-          } catch (error: any) {
-            if (error.response?.data?.retCode !== 110001) {
-              this.logger.warn(`[CANCEL] Failed to cancel Bybit TP: ${error.message}`);
-            }
-          }
-        }
-      }
-      return;
-    }
-
-    const baseUrl = isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
-
     if (trade.stopLossOrderId) {
-      try {
-        await this.cancelBinanceOrderOrAlgo(trade.stopLossOrderId, trade.symbol, apiKey, apiSecret, isTestnet);
-        this.logger.log(`[CANCEL] Cancelled SL order ${trade.stopLossOrderId} for ${trade.symbol}`);
-      } catch (error: any) {
-        if (error.response?.data?.code !== -2011) {
-          this.logger.debug(`[CANCEL] Could not cancel SL order: ${error.response?.data?.msg || error.message}`);
+      if (trade.stopLossOrderId.startsWith('BYBIT_TRADING_STOP')) {
+        try {
+          const side = (trade.side === 'BUY' ? 'BUY' : 'SELL') as NeutralSide;
+          const strategy = await this.strategiesRepository.findOne({ where: { id: trade.strategyId } });
+          await client.clearTradingStop(ctx, trade.symbol, side, strategy?.hedgeMode);
+          this.logger.log(`[CANCEL] Cleared trading stop for ${trade.symbol}`);
+        } catch (error: any) {
+          this.logger.warn(`[CANCEL] Failed to clear trading stop: ${error.message}`);
+        }
+      } else {
+        try {
+          await client.cancelOrder(ctx, trade.symbol, trade.stopLossOrderId);
+          this.logger.log(`[CANCEL] Cancelled SL order ${trade.stopLossOrderId}`);
+        } catch (error: any) {
+          this.logger.warn(`[CANCEL] Failed to cancel SL: ${error.message}`);
         }
       }
     }
 
     if (trade.takeProfitOrderId) {
-      try {
-        const timestamp = Date.now();
-        const queryString = `symbol=${trade.symbol}&orderId=${trade.takeProfitOrderId}&timestamp=${timestamp}`;
-        const signature = crypto.createHmac('sha256', apiSecret).update(queryString).digest('hex');
+      if (trade.takeProfitOrderId.includes('|')) {
+        const tpEntries = trade.takeProfitOrderId.split('|');
+        for (const entry of tpEntries) {
+          const orderId = entry.includes(':') ? entry.split(':')[1] : entry;
+          if (!orderId || orderId === 'null' || orderId === 'undefined') continue;
 
-        await BinanceRequestUtil.delete(
-          `${baseUrl}/fapi/v1/order?${queryString}&signature=${signature}`,
-          { headers: { 'X-MBX-APIKEY': apiKey } }
-        );
-        this.logger.log(`[CANCEL] Cancelled TP order ${trade.takeProfitOrderId} for ${trade.symbol}`);
-      } catch (error: any) {
-        if (error.response?.data?.code !== -2011) {
-          this.logger.debug(`[CANCEL] Could not cancel TP order: ${error.response?.data?.msg || error.message}`);
+          try {
+            await client.cancelOrder(ctx, trade.symbol, orderId);
+            this.logger.log(`[CANCEL] Cancelled TP order ${orderId}`);
+          } catch (error: any) {
+            this.logger.warn(`[CANCEL] Failed to cancel TP ${orderId}: ${error.message}`);
+          }
         }
-      }
-    }
-  }
-
-  private async cancelBinanceAlgoOrder(
-    algoId: string,
-    apiKey: string,
-    apiSecret: string,
-    isTestnet: boolean
-  ): Promise<void> {
-    // NEW ALGO ORDER API - Cancel conditional orders (STOP_MARKET, etc)
-    const baseUrl = isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
-    const params = new URLSearchParams();
-    params.append('algoId', algoId);
-    params.append('timestamp', Date.now().toString());
-
-    const queryString = params.toString();
-    const signature = crypto.createHmac('sha256', apiSecret).update(queryString).digest('hex');
-
-    await BinanceRequestUtil.delete(`${baseUrl}/fapi/v1/algoOrder?${queryString}&signature=${signature}`, {
-      headers: { 'X-MBX-APIKEY': apiKey }
-    });
-  }
-
-  private async cancelBinanceOrderOrAlgo(
-    orderId: string,
-    symbol: string,
-    apiKey: string,
-    apiSecret: string,
-    isTestnet: boolean
-  ): Promise<void> {
-    // Smart cancellation: Try Algo Order first (new orders), fallback to regular order (old orders)
-    const baseUrl = isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
-
-    try {
-      // Try as Algo Order first (STOP_MARKET conditional orders created after Dec 2025)
-      await this.cancelBinanceAlgoOrder(orderId, apiKey, apiSecret, isTestnet);
-      this.logger.debug(`[CANCEL] Successfully cancelled Algo Order ${orderId}`);
-    } catch (algoError: any) {
-      const algoErrorCode = algoError.response?.data?.code;
-
-      // If not found as Algo Order, try as regular order (backwards compatibility)
-      if (algoErrorCode === -4143 || algoErrorCode === -1102) {
+      } else if (!trade.takeProfitOrderId.startsWith('BYBIT_TRADING_STOP')) {
         try {
-          const timestamp = Date.now();
-          const queryString = `symbol=${symbol}&orderId=${orderId}&timestamp=${timestamp}`;
-          const signature = crypto.createHmac('sha256', apiSecret).update(queryString).digest('hex');
-
-          await BinanceRequestUtil.delete(
-            `${baseUrl}/fapi/v1/order?${queryString}&signature=${signature}`,
-            { headers: { 'X-MBX-APIKEY': apiKey } }
-          );
-          this.logger.debug(`[CANCEL] Successfully cancelled regular order ${orderId}`);
-        } catch (regularError: any) {
-          // If both fail, throw the original error
-          throw regularError;
+          await client.cancelOrder(ctx, trade.symbol, trade.takeProfitOrderId);
+          this.logger.log(`[CANCEL] Cancelled TP order ${trade.takeProfitOrderId}`);
+        } catch (error: any) {
+          this.logger.warn(`[CANCEL] Failed to cancel TP: ${error.message}`);
         }
-      } else {
-        // Other algo order errors, rethrow
-        throw algoError;
       }
     }
   }
@@ -924,22 +650,6 @@ export class PositionSyncService implements OnModuleInit {
     trade.entryPrice = position.entryPrice as any;
 
     await this.tradesRepository.save(trade);
-  }
-
-  private async getCurrentPrice(symbol: string, exchange: Exchange, isTestnet: boolean): Promise<number> {
-    if (exchange === Exchange.BYBIT) {
-      return await this.bybitClient.getCurrentPrice(isTestnet, symbol);
-    }
-
-    const baseUrl = isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
-
-    try {
-      const response = await BinanceRequestUtil.get(`${baseUrl}/fapi/v1/ticker/price?symbol=${symbol}`);
-      return parseFloat(response.data.price);
-    } catch (error) {
-      this.logger.error(`Failed to get current price for ${symbol}: ${error.message}`);
-      return 0;
-    }
   }
 
   private async decryptCredentials(strategy: Strategy) {
@@ -1084,19 +794,12 @@ export class PositionSyncService implements OnModuleInit {
             );
 
             const formattedStopLoss = this.formatPrice(newStopLoss);
+            const client = this.exchangeFactory.get(strategy.exchange);
+            const ctx: AccountContext = { credentials: { apiKey, apiSecret }, mode: strategy.isTestnet ? 'DEMO' : 'REAL', region: (siteId as any) ?? null };
+            const neutralSide = (side === 'BUY' ? 'BUY' : 'SELL') as NeutralSide;
 
             if (strategy.exchange === Exchange.BYBIT && !trade.isFromAveraging) {
-                 await this.bybitClient.setTradingStop(
-                     apiKey,
-                     apiSecret,
-                     strategy.isTestnet,
-                     trade.symbol,
-                     side === 'BUY' ? 'Buy' : 'Sell',
-                     formattedStopLoss,
-                     undefined,
-                     strategy.hedgeMode,
-                     siteId
-                 );
+                 await client.setTradingStop(ctx, trade.symbol, neutralSide, formattedStopLoss, undefined, strategy.hedgeMode);
                  this.logger.log(
                    `[BYBIT] Updated position-level SL via setTradingStop to ${formattedStopLoss} (first entry only)`
                  );
@@ -1107,13 +810,10 @@ export class PositionSyncService implements OnModuleInit {
                  );
             } else {
                      try {
-                        const baseUrl = strategy.isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
-
                         if (trade.stopLossOrderId) {
-                             await this.cancelBinanceOrderOrAlgo(trade.stopLossOrderId, trade.symbol, apiKey, apiSecret, strategy.isTestnet);
+                             await client.cancelOrder(ctx, trade.symbol, trade.stopLossOrderId);
                         }
 
-                        const closeSide = side === 'BUY' ? 'SELL' : 'BUY';
                         const tradeQuantity = Math.abs(safeParseFloat(trade.quantity as any));
                         const rules = await this.symbolRulesService.getSymbolRules(trade.symbol, strategy.isTestnet, Exchange.BINANCE);
                         const normalizedQty = normalizeQuantity(tradeQuantity, rules.qtyStep, rules.minQty);
@@ -1124,29 +824,9 @@ export class PositionSyncService implements OnModuleInit {
                           );
                         }
 
-                        const params = new URLSearchParams();
-                        params.append('symbol', trade.symbol);
-                        params.append('side', closeSide);
-                        params.append('algoType', 'CONDITIONAL');
-                        params.append('type', 'STOP_MARKET');
-                        params.append('quantity', normalizedQty);
-                        params.append('triggerPrice', formattedStopLoss);
-                        params.append('workingType', 'MARK_PRICE');
+                        const newSlOrder = await client.createStopLossOrder(ctx, trade.symbol, neutralSide, normalizedQty, formattedStopLoss, strategy.hedgeMode);
 
-                        if (strategy.hedgeMode) {
-                            const positionSide = side === 'BUY' ? 'LONG' : 'SHORT';
-                            params.append('positionSide', positionSide);
-                        }
-
-                        params.append('timestamp', Date.now().toString());
-
-                        const q2 = params.toString();
-                        const s2 = crypto.createHmac('sha256', apiSecret).update(q2).digest('hex');
-                         const res = await BinanceRequestUtil.post(`${baseUrl}/fapi/v1/algoOrder`, `${q2}&signature=${s2}`, {
-                            headers: { 'X-MBX-APIKEY': apiKey, 'Content-Type': 'application/x-www-form-urlencoded' }
-                        });
-
-                        trade.stopLossOrderId = res.data.algoId.toString();
+                        trade.stopLossOrderId = newSlOrder.orderId;
                      } catch(err) {
                          this.logger.error(`[BREAK AGAIN] Failed to update SL on Binance: ${err.message}`);
                      }
