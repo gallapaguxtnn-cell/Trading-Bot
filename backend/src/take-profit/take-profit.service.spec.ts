@@ -10,12 +10,11 @@ import { Trade } from '../strategies/trade.entity';
 import { TradesService } from '../trades/trades.service';
 import { StrategiesService } from '../strategies/strategies.service';
 import { ExchangeService } from '../exchange/exchange.service';
-import { BybitClientService } from '../exchange/bybit-client.service';
+import { ExchangeClientFactory } from '../exchange/exchange-client.factory';
 import { BinanceWebSocketService } from '../binance-ws/binance-ws.service';
 import { PositionSyncService } from '../position-sync/position-sync.service';
 import { SymbolRulesService } from '../common/symbol-rules.service';
 import { CredentialsResolverService } from '../common/credentials-resolver.service';
-import { BinanceRequestUtil } from '../utils/binance-request.util';
 import { Exchange } from '../strategies/strategy.entity';
 
 function passthroughCredentialsResolver() {
@@ -84,11 +83,27 @@ function makeStrategy(overrides: Record<string, any> = {}) {
   };
 }
 
+function makeExchangeClient() {
+  return {
+    getPositions: jest.fn().mockResolvedValue([]),
+    getOrderInfo: jest.fn().mockResolvedValue(null),
+    getOrderHistory: jest.fn().mockResolvedValue(null),
+    createStopLossOrder: jest.fn(),
+    clearTradingStop: jest.fn(),
+    cancelOrder: jest.fn(),
+    getLastTradePrice: jest.fn(),
+    getCurrentPrice: jest.fn(),
+    createOrder: jest.fn(),
+    getSymbolRules: jest.fn(),
+  };
+}
+
 describe('TakeProfitService (FASE 1 -- fallback nao substitui o TP LIMIT)', () => {
   let service: TakeProfitService;
   let tradesRepository: { find: jest.Mock; findOne: jest.Mock; update: jest.Mock; save: jest.Mock };
   let strategiesService: { findOne: jest.Mock };
-  let bybitClient: { getCurrentPrice: jest.Mock; createOrder: jest.Mock; getSymbolRules: jest.Mock; getPositionIdx: jest.Mock; getPositions: jest.Mock };
+  let exchangeClient: ReturnType<typeof makeExchangeClient>;
+  let exchangeFactory: { get: jest.Mock };
   let eventEmitter: { emit: jest.Mock };
 
   beforeEach(async () => {
@@ -99,13 +114,8 @@ describe('TakeProfitService (FASE 1 -- fallback nao substitui o TP LIMIT)', () =
       save: jest.fn(),
     };
     strategiesService = { findOne: jest.fn() };
-    bybitClient = {
-      getCurrentPrice: jest.fn(),
-      createOrder: jest.fn(),
-      getSymbolRules: jest.fn(),
-      getPositionIdx: jest.fn(),
-      getPositions: jest.fn(),
-    };
+    exchangeClient = makeExchangeClient();
+    exchangeFactory = { get: jest.fn().mockReturnValue(exchangeClient) };
     eventEmitter = { emit: jest.fn() };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -115,7 +125,7 @@ describe('TakeProfitService (FASE 1 -- fallback nao substitui o TP LIMIT)', () =
         { provide: TradesService, useValue: { createExecution: jest.fn(), findById: jest.fn() } },
         { provide: StrategiesService, useValue: strategiesService },
         { provide: ExchangeService, useValue: {} },
-        { provide: BybitClientService, useValue: bybitClient },
+        { provide: ExchangeClientFactory, useValue: exchangeFactory },
         { provide: BinanceWebSocketService, useValue: { isEnabled: () => false } },
         { provide: PositionSyncService, useValue: {} },
         { provide: EventEmitter2, useValue: eventEmitter },
@@ -135,8 +145,8 @@ describe('TakeProfitService (FASE 1 -- fallback nao substitui o TP LIMIT)', () =
 
     expect(eventEmitter.emit).toHaveBeenCalledWith('limit.protection.resume', { tradeId: 'trade-1' });
     expect(tradesRepository.update).toHaveBeenCalledWith('trade-1', { tpWarnings: 'TP_MISSING_RETRY:1' });
-    expect(bybitClient.createOrder).not.toHaveBeenCalled();
-    expect(bybitClient.getCurrentPrice).not.toHaveBeenCalled();
+    expect(exchangeClient.createOrder).not.toHaveBeenCalled();
+    expect(exchangeClient.getCurrentPrice).not.toHaveBeenCalled();
   });
 
   it('continua emitindo resume e incrementando o contador enquanto abaixo do limite de tentativas', async () => {
@@ -147,24 +157,22 @@ describe('TakeProfitService (FASE 1 -- fallback nao substitui o TP LIMIT)', () =
 
     expect(eventEmitter.emit).toHaveBeenCalledWith('limit.protection.resume', { tradeId: 'trade-1' });
     expect(tradesRepository.update).toHaveBeenCalledWith('trade-1', { tpWarnings: 'TP_MISSING_RETRY:2' });
-    expect(bybitClient.createOrder).not.toHaveBeenCalled();
+    expect(exchangeClient.createOrder).not.toHaveBeenCalled();
   });
 
   it('apos 3 ciclos sem conseguir criar as LIMIT, libera o fallback a mercado com closeReason TAKE_PROFIT_FALLBACK_MARKET', async () => {
     const trade = makeTrade({ tpWarnings: 'TP_MISSING_RETRY:3', lastTpLevel: 2 });
     strategiesService.findOne.mockResolvedValue(makeStrategy());
-    bybitClient.getCurrentPrice.mockResolvedValue(0.746);
-    bybitClient.getSymbolRules.mockResolvedValue({ qtyStep: '1', minQty: '1', priceTick: '0.0001', minNotional: '5' });
-    bybitClient.getPositionIdx.mockResolvedValue(0);
-    bybitClient.createOrder.mockResolvedValue({ orderId: 'market-close-1' });
+    exchangeClient.getCurrentPrice.mockResolvedValue(0.746);
+    exchangeClient.getSymbolRules.mockResolvedValue({ qtyStep: '1', minQty: '1', priceTick: '0.0001', minNotional: '5' });
+    exchangeClient.createOrder.mockResolvedValue({ orderId: 'market-close-1' });
 
     await (service as any).checkTakeProfit(trade);
 
     expect(eventEmitter.emit).not.toHaveBeenCalled();
-    expect(bybitClient.createOrder).toHaveBeenCalledWith(
-      'fake-key', 'fake-secret', true,
-      expect.objectContaining({ symbol: 'SUIUSDT', orderType: 'Market', reduceOnly: true }),
-      undefined,
+    expect(exchangeClient.createOrder).toHaveBeenCalledWith(
+      expect.objectContaining({ credentials: { apiKey: 'fake-key', apiSecret: 'fake-secret' } }),
+      expect.objectContaining({ symbol: 'SUIUSDT', orderType: 'MARKET', reduceOnly: true }),
     );
 
     const savedTrade = tradesRepository.save.mock.calls[0][0];
@@ -184,7 +192,7 @@ describe('TakeProfitService (FASE 1 -- fallback nao substitui o TP LIMIT)', () =
 
     expect(eventEmitter.emit).not.toHaveBeenCalled();
     expect(tradesRepository.update).not.toHaveBeenCalled();
-    expect(bybitClient.createOrder).not.toHaveBeenCalled();
+    expect(exchangeClient.createOrder).not.toHaveBeenCalled();
   });
 });
 
@@ -192,18 +200,14 @@ describe('TakeProfitService (FASE 4 -- closePosition)', () => {
   let service: TakeProfitService;
   let tradesRepository: { update: jest.Mock; save: jest.Mock };
   let tradesService: { createExecution: jest.Mock };
-  let bybitClient: { createOrder: jest.Mock; getSymbolRules: jest.Mock; getPositionIdx: jest.Mock; getOrderInfo: jest.Mock; getOrderHistory: jest.Mock };
+  let exchangeClient: ReturnType<typeof makeExchangeClient>;
+  let exchangeFactory: { get: jest.Mock };
 
   beforeEach(async () => {
     tradesRepository = { update: jest.fn(), save: jest.fn() };
     tradesService = { createExecution: jest.fn() };
-    bybitClient = {
-      createOrder: jest.fn(),
-      getSymbolRules: jest.fn(),
-      getPositionIdx: jest.fn().mockResolvedValue(0),
-      getOrderInfo: jest.fn(),
-      getOrderHistory: jest.fn(),
-    };
+    exchangeClient = makeExchangeClient();
+    exchangeFactory = { get: jest.fn().mockReturnValue(exchangeClient) };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -212,7 +216,7 @@ describe('TakeProfitService (FASE 4 -- closePosition)', () => {
         { provide: TradesService, useValue: tradesService },
         { provide: StrategiesService, useValue: { findOne: jest.fn() } },
         { provide: ExchangeService, useValue: {} },
-        { provide: BybitClientService, useValue: bybitClient },
+        { provide: ExchangeClientFactory, useValue: exchangeFactory },
         { provide: BinanceWebSocketService, useValue: { isEnabled: () => false } },
         { provide: PositionSyncService, useValue: {} },
         { provide: EventEmitter2, useValue: { emit: jest.fn() } },
@@ -226,22 +230,22 @@ describe('TakeProfitService (FASE 4 -- closePosition)', () => {
 
   it('fatia abaixo de minQty numa parcial (TP1) NAO fecha a posicao inteira: pula o nivel e avanca lastTpLevel sem criar ordem', async () => {
     const trade = makeTrade({ quantity: 100 });
-    bybitClient.getSymbolRules.mockResolvedValue({ qtyStep: '1', minQty: '5', priceTick: '0.0001', minNotional: '5' });
+    exchangeClient.getSymbolRules.mockResolvedValue({ qtyStep: '1', minQty: '5', priceTick: '0.0001', minNotional: '5' });
 
     await (service as any).closePosition(trade, makeStrategy(), 0.75, 'TAKE_PROFIT_FALLBACK_MARKET', 0.03, 'k', 's', 1);
 
-    expect(bybitClient.createOrder).not.toHaveBeenCalled();
+    expect(exchangeClient.createOrder).not.toHaveBeenCalled();
     expect(tradesRepository.update).toHaveBeenCalledWith('trade-1', { lastTpLevel: 1 });
     expect(tradesRepository.save).not.toHaveBeenCalled();
   });
 
   it('fatia abaixo de minQty mas a posicao TOTAL tambem e dust (nivel final): fecha tudo como DUST_AMOUNT (comportamento preservado)', async () => {
     const trade = makeTrade({ quantity: 0.5 });
-    bybitClient.getSymbolRules.mockResolvedValue({ qtyStep: '1', minQty: '5', priceTick: '0.0001', minNotional: '5' });
+    exchangeClient.getSymbolRules.mockResolvedValue({ qtyStep: '1', minQty: '5', priceTick: '0.0001', minNotional: '5' });
 
     await (service as any).closePosition(trade, makeStrategy(), 0.75, 'TAKE_PROFIT_FALLBACK_MARKET', 1.0, 'k', 's', 3);
 
-    expect(bybitClient.createOrder).not.toHaveBeenCalled();
+    expect(exchangeClient.createOrder).not.toHaveBeenCalled();
     const saved = tradesRepository.save.mock.calls[0][0];
     expect(saved.status).toBe('CLOSED');
     expect(saved.closeReason).toBe('DUST_AMOUNT');
@@ -250,21 +254,24 @@ describe('TakeProfitService (FASE 4 -- closePosition)', () => {
 
   it('normaliza a quantidade pelo qtyStep real com Decimal, nao toFixed(3): step 10 nunca envia fracao', async () => {
     const trade = makeTrade({ quantity: 253 });
-    bybitClient.getSymbolRules.mockResolvedValue({ qtyStep: '10', minQty: '10', priceTick: '0.0001', minNotional: '5' });
-    bybitClient.createOrder.mockResolvedValue({ orderId: 'order-1' });
-    bybitClient.getOrderInfo.mockResolvedValue(null);
-    bybitClient.getOrderHistory.mockResolvedValue(null);
+    exchangeClient.getSymbolRules.mockResolvedValue({ qtyStep: '10', minQty: '10', priceTick: '0.0001', minNotional: '5' });
+    exchangeClient.createOrder.mockResolvedValue({ orderId: 'order-1' });
+    exchangeClient.getOrderInfo.mockResolvedValue(null);
+    exchangeClient.getOrderHistory.mockResolvedValue(null);
 
     await (service as any).closePosition(trade, makeStrategy(), 0.75, 'TAKE_PROFIT_FALLBACK_MARKET', 1.0, 'k', 's', 3);
 
-    expect(bybitClient.createOrder).toHaveBeenCalledWith('k', 's', true, expect.objectContaining({ qty: '250' }), undefined);
+    expect(exchangeClient.createOrder).toHaveBeenCalledWith(
+      expect.objectContaining({ credentials: { apiKey: 'k', apiSecret: 's' } }),
+      expect.objectContaining({ qty: '250' }),
+    );
   });
 
   it('usa o preco REALMENTE executado (avgPrice da corretora) para exitPrice e PnL, nao o exitPrice estimado passado como parametro', async () => {
     const trade = makeTrade({ quantity: 60, entryPrice: 0.7546, side: 'SELL' });
-    bybitClient.getSymbolRules.mockResolvedValue({ qtyStep: '1', minQty: '1', priceTick: '0.0001', minNotional: '5' });
-    bybitClient.createOrder.mockResolvedValue({ orderId: 'order-1' });
-    bybitClient.getOrderInfo.mockResolvedValue({
+    exchangeClient.getSymbolRules.mockResolvedValue({ qtyStep: '1', minQty: '1', priceTick: '0.0001', minNotional: '5' });
+    exchangeClient.createOrder.mockResolvedValue({ orderId: 'order-1' });
+    exchangeClient.getOrderInfo.mockResolvedValue({
       orderStatus: 'Filled',
       avgPrice: '0.7535',
       cumExecQty: '60',
@@ -287,10 +294,14 @@ describe('TakeProfitService (FASE 4 -- closePosition)', () => {
 describe('TakeProfitService (FASE 3 do PLANO_FIX_ARREDONDAMENTO_GLOBAL -- createBinanceStopLossOrder)', () => {
   let service: TakeProfitService;
   let symbolRulesService: { getSymbolRules: jest.Mock };
+  let exchangeClient: ReturnType<typeof makeExchangeClient>;
+  let exchangeFactory: { get: jest.Mock };
 
   beforeEach(async () => {
     jest.clearAllMocks();
     symbolRulesService = { getSymbolRules: jest.fn() };
+    exchangeClient = makeExchangeClient();
+    exchangeFactory = { get: jest.fn().mockReturnValue(exchangeClient) };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -299,7 +310,7 @@ describe('TakeProfitService (FASE 3 do PLANO_FIX_ARREDONDAMENTO_GLOBAL -- create
         { provide: TradesService, useValue: {} },
         { provide: StrategiesService, useValue: {} },
         { provide: ExchangeService, useValue: {} },
-        { provide: BybitClientService, useValue: {} },
+        { provide: ExchangeClientFactory, useValue: exchangeFactory },
         { provide: BinanceWebSocketService, useValue: { isEnabled: () => false } },
         { provide: PositionSyncService, useValue: {} },
         { provide: EventEmitter2, useValue: { emit: jest.fn() } },
@@ -313,14 +324,18 @@ describe('TakeProfitService (FASE 3 do PLANO_FIX_ARREDONDAMENTO_GLOBAL -- create
 
   it('arredonda triggerPrice ao tick real e a quantidade ao qtyStep real -- nunca toFixed(2)/toFixed(3) fixo', async () => {
     symbolRulesService.getSymbolRules.mockResolvedValue({ qtyStep: '1', priceTick: '0.0001', minQty: '1', minNotional: '5' });
-    (BinanceRequestUtil.post as jest.Mock).mockResolvedValue({ data: { algoId: 222 } });
+    exchangeClient.createStopLossOrder.mockResolvedValue({ orderId: '222' });
 
     await (service as any).createBinanceStopLossOrder('SUIUSDT', 'SELL', 60, 0.7697, 'key', 'secret', false, false);
 
-    const body = (BinanceRequestUtil.post as jest.Mock).mock.calls[0][1] as string;
-    const params = new URLSearchParams(body);
-    expect(params.get('triggerPrice')).toBe('0.7697');
-    expect(params.get('quantity')).toBe('60');
+    expect(exchangeClient.createStopLossOrder).toHaveBeenCalledWith(
+      expect.objectContaining({ credentials: { apiKey: 'key', apiSecret: 'secret' } }),
+      'SUIUSDT',
+      'SELL',
+      '60',
+      '0.7697',
+      false,
+    );
   });
 
   it('lanca erro explicito (aborta) quando a quantidade normalizada arredonda para 0, em vez de enviar a ordem', async () => {
@@ -329,5 +344,7 @@ describe('TakeProfitService (FASE 3 do PLANO_FIX_ARREDONDAMENTO_GLOBAL -- create
     await expect(
       (service as any).createBinanceStopLossOrder('SUIUSDT', 'SELL', 5, 0.7697, 'key', 'secret', false, false)
     ).rejects.toThrow('rounded to 0');
+
+    expect(exchangeClient.createStopLossOrder).not.toHaveBeenCalled();
   });
 });

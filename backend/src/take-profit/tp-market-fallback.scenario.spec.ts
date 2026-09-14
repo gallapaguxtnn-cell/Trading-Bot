@@ -14,7 +14,7 @@ import { Strategy, Exchange } from '../strategies/strategy.entity';
 import { TradesService } from '../trades/trades.service';
 import { StrategiesService } from '../strategies/strategies.service';
 import { ExchangeService } from '../exchange/exchange.service';
-import { BybitClientService } from '../exchange/bybit-client.service';
+import { ExchangeClientFactory } from '../exchange/exchange-client.factory';
 import { BinanceWebSocketService } from '../binance-ws/binance-ws.service';
 import { PositionSyncService } from '../position-sync/position-sync.service';
 import { SymbolRulesService } from '../common/symbol-rules.service';
@@ -45,10 +45,10 @@ describe('Cenario de aceite: PLANO_FIX_TP_MARKET_FALLBACK (print real SUIUSDT SH
     getCurrentPrice: jest.Mock;
     createOrder: jest.Mock;
     getSymbolRules: jest.Mock;
-    getPositionIdx: jest.Mock;
     getOrderInfo: jest.Mock;
     getOrderHistory: jest.Mock;
   };
+  let exchangeFactory: { get: jest.Mock };
   let eventEmitter: { emit: jest.Mock };
   let tradesServiceMock: { createExecution: jest.Mock };
 
@@ -105,10 +105,10 @@ describe('Cenario de aceite: PLANO_FIX_TP_MARKET_FALLBACK (print real SUIUSDT SH
       getCurrentPrice: jest.fn(),
       createOrder: jest.fn(),
       getSymbolRules: jest.fn().mockResolvedValue({ qtyStep: '1', minQty: '1', priceTick: '0.0001', minNotional: '5' }),
-      getPositionIdx: jest.fn().mockResolvedValue(0),
       getOrderInfo: jest.fn(),
       getOrderHistory: jest.fn(),
     };
+    exchangeFactory = { get: jest.fn().mockReturnValue(bybitClient) };
     eventEmitter = { emit: jest.fn() };
     tradesServiceMock = { createExecution: jest.fn() };
 
@@ -119,7 +119,7 @@ describe('Cenario de aceite: PLANO_FIX_TP_MARKET_FALLBACK (print real SUIUSDT SH
         { provide: TradesService, useValue: tradesServiceMock },
         { provide: StrategiesService, useValue: strategiesService },
         { provide: ExchangeService, useValue: {} },
-        { provide: BybitClientService, useValue: bybitClient },
+        { provide: ExchangeClientFactory, useValue: exchangeFactory },
         { provide: BinanceWebSocketService, useValue: { isEnabled: () => false } },
         { provide: PositionSyncService, useValue: {} },
         { provide: EventEmitter2, useValue: eventEmitter },
@@ -158,9 +158,8 @@ describe('Cenario de aceite: PLANO_FIX_TP_MARKET_FALLBACK (print real SUIUSDT SH
 
     expect(eventEmitter.emit).toHaveBeenCalledTimes(3);
     expect(bybitClient.createOrder).toHaveBeenCalledWith(
-      'fake-key', 'fake-secret', true,
-      expect.objectContaining({ symbol: 'SUIUSDT', orderType: 'Market', reduceOnly: true }),
-      undefined,
+      expect.objectContaining({ credentials: { apiKey: 'fake-key', apiSecret: 'fake-secret' } }),
+      expect.objectContaining({ symbol: 'SUIUSDT', orderType: 'MARKET', reduceOnly: true }),
     );
 
     const closedTrade = tradesRepository.save.mock.calls[0][0];

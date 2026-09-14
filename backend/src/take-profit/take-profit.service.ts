@@ -10,7 +10,9 @@ import { OrderFill, mapBybitFill, mapBinanceFill, mapCcxtFill, weightedAvgPrice,
 import { decideTakeProfitClose } from './close-decision.util';
 import { StrategiesService } from '../strategies/strategies.service';
 import { ExchangeService } from '../exchange/exchange.service';
-import { BybitClientService } from '../exchange/bybit-client.service';
+import { ExchangeClientFactory } from '../exchange/exchange-client.factory';
+import type { AccountContext } from '../exchange/exchange-client.interface';
+import { toAccountContext } from '../common/account-context.util';
 import { Exchange } from '../strategies/strategy.entity';
 import { EncryptionUtil } from '../utils/encryption.util';
 import { BinanceRequestUtil } from '../utils/binance-request.util';
@@ -31,7 +33,6 @@ import { floorToStep } from '../webhook/tp-planner.util';
 import { SymbolRulesService } from '../common/symbol-rules.service';
 import { normalizeQuantity, roundPriceToTick } from '../common/exchange-precision.util';
 import { CredentialsResolverService } from '../common/credentials-resolver.service';
-import axios from 'axios';
 import * as crypto from 'crypto';
 import Decimal from 'decimal.js';
 
@@ -50,7 +51,7 @@ export class TakeProfitService implements OnModuleInit {
     private tradesService: TradesService,
     private strategiesService: StrategiesService,
     private exchangeService: ExchangeService,
-    private bybitClient: BybitClientService,
+    private exchangeFactory: ExchangeClientFactory,
     private binanceWs: BinanceWebSocketService,
     @Inject(forwardRef(() => PositionSyncService))
     private positionSyncService: PositionSyncService,
@@ -72,18 +73,14 @@ export class TakeProfitService implements OnModuleInit {
     return `${quantity.toFixed(4)} (~${usdt.toFixed(2)} USDT)`;
   }
 
+  private buildCtx(apiKey: string, apiSecret: string, isTestnet: boolean, siteId?: string | null): AccountContext {
+    return { credentials: { apiKey, apiSecret }, mode: isTestnet ? 'DEMO' : 'REAL', region: (siteId as any) ?? null };
+  }
+
   private async getMinQtyForSymbol(symbol: string, isTestnet: boolean, exchange: Exchange): Promise<number> {
     try {
-      if (exchange === Exchange.BYBIT) {
-        const rules = await this.bybitClient.getSymbolRules(isTestnet, symbol);
-        return parseFloat(rules.minQty) || 0;
-      }
-
-      const baseURL = isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
-      const response = await axios.get(`${baseURL}/fapi/v1/exchangeInfo`);
-      const symbolInfo = response.data.symbols.find((s: any) => s.symbol === symbol);
-      const lotSizeFilter = symbolInfo?.filters.find((f: any) => f.filterType === 'LOT_SIZE');
-      return lotSizeFilter ? parseFloat(lotSizeFilter.minQty) : 0;
+      const rules = await this.symbolRulesService.getSymbolRules(symbol, isTestnet, exchange);
+      return parseFloat(rules.minQty) || 0;
     } catch (error: any) {
       this.logger.warn(`[TP] Failed to fetch minQty for ${symbol}: ${error.message}`);
       return 0;
@@ -92,11 +89,8 @@ export class TakeProfitService implements OnModuleInit {
 
   private async getQtyStepForSymbol(symbol: string, isTestnet: boolean): Promise<string> {
     try {
-      const baseURL = isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
-      const response = await axios.get(`${baseURL}/fapi/v1/exchangeInfo`);
-      const symbolInfo = response.data.symbols.find((s: any) => s.symbol === symbol);
-      const lotSizeFilter = symbolInfo?.filters.find((f: any) => f.filterType === 'LOT_SIZE');
-      return lotSizeFilter ? lotSizeFilter.stepSize : '0.001';
+      const rules = await this.symbolRulesService.getSymbolRules(symbol, isTestnet, Exchange.BINANCE);
+      return rules.qtyStep || '0.001';
     } catch (error: any) {
       this.logger.warn(`[TP] Failed to fetch qtyStep for ${symbol}: ${error.message}`);
       return '0.001';
@@ -168,10 +162,12 @@ export class TakeProfitService implements OnModuleInit {
     const apiSecret = (await EncryptionUtil.decrypt(resolvedStrategy.apiSecret)).trim();
 
     if (trade.takeProfitOrderId && trade.takeProfitOrderId.startsWith('BYBIT_TRADING_STOP')) {
-      const positions = await this.bybitClient.getPositions(apiKey, apiSecret, resolvedStrategy.isTestnet, trade.symbol, resolvedStrategy.siteId);
+      const client = this.exchangeFactory.get(exchange);
+      const ctx = toAccountContext(credentials, apiKey, apiSecret);
+      const positions = await client.getPositions(ctx, trade.symbol);
       const position = positions.find(p =>
         p.symbol === trade.symbol &&
-        ((trade.side === 'BUY' && p.side === 'Buy') || (trade.side === 'SELL' && p.side === 'Sell'))
+        ((trade.side === 'BUY' && p.side === 'BUY') || (trade.side === 'SELL' && p.side === 'SELL'))
       );
       if (!position || parseFloat(position.size) === 0) {
         this.logger.log(`[TAKE PROFIT EXECUTED] ${trade.symbol} - Position closed on Bybit`);
@@ -457,6 +453,8 @@ export class TakeProfitService implements OnModuleInit {
   ): Promise<void> {
     if (!trade.takeProfitOrderId) return;
 
+    const client = this.exchangeFactory.get(exchange);
+    const ctx = this.buildCtx(apiKey, apiSecret, isTestnet, siteId);
     const entries = trade.takeProfitOrderId.split('|');
 
     for (const entry of entries) {
@@ -469,13 +467,8 @@ export class TakeProfitService implements OnModuleInit {
       }
 
       try {
-        if (exchange === Exchange.BINANCE) {
-          await this.cancelBinanceOrder(orderId, trade.symbol, apiKey, apiSecret, isTestnet);
-          this.logger.log(`[TP${level}] Cancelled unfilled TP order ${orderId}`);
-        } else if (exchange === Exchange.BYBIT) {
-          await this.bybitClient.cancelOrder(apiKey, apiSecret, isTestnet, trade.symbol, orderId, siteId);
-          this.logger.log(`[TP${level}] Cancelled unfilled Bybit TP order ${orderId}`);
-        }
+        await client.cancelOrder(ctx, trade.symbol, orderId);
+        this.logger.log(`[TP${level}] Cancelled unfilled TP order ${orderId}`);
       } catch (e: any) {
         const isNotFoundError = e.response?.data?.code === -2011 || e.response?.data?.retCode === 110001;
         if (!isNotFoundError) {
@@ -496,28 +489,18 @@ export class TakeProfitService implements OnModuleInit {
     if (!trade.stopLossOrderId) return;
 
     try {
-      if (exchange === Exchange.BYBIT) {
-        if (trade.stopLossOrderId.startsWith('BYBIT_TRADING_STOP')) {
-          const bybitSide = trade.side === 'BUY' ? 'Buy' : 'Sell';
-          const strategy = await this.strategiesService.findOne(trade.strategyId);
-          if (strategy) {
-            await this.bybitClient.clearTradingStop(
-              apiKey,
-              apiSecret,
-              isTestnet,
-              trade.symbol,
-              bybitSide,
-              strategy.hedgeMode,
-              siteId
-            );
-            this.logger.log(`[SL] Cleared Bybit trading stop for ${trade.symbol} after all TPs filled`);
-          }
-        } else {
-          await this.bybitClient.cancelOrder(apiKey, apiSecret, isTestnet, trade.symbol, trade.stopLossOrderId, siteId);
-          this.logger.log(`[SL] Cancelled Bybit SL order ${trade.stopLossOrderId} after all TPs filled`);
+      const client = this.exchangeFactory.get(exchange);
+      const ctx = this.buildCtx(apiKey, apiSecret, isTestnet, siteId);
+
+      if (exchange === Exchange.BYBIT && trade.stopLossOrderId.startsWith('BYBIT_TRADING_STOP')) {
+        const bybitSide = trade.side === 'BUY' ? 'BUY' : 'SELL';
+        const strategy = await this.strategiesService.findOne(trade.strategyId);
+        if (strategy) {
+          await client.clearTradingStop(ctx, trade.symbol, bybitSide as any, strategy.hedgeMode);
+          this.logger.log(`[SL] Cleared Bybit trading stop for ${trade.symbol} after all TPs filled`);
         }
-      } else if (exchange === Exchange.BINANCE) {
-        await this.cancelBinanceOrderOrAlgo(trade.stopLossOrderId, trade.symbol, apiKey, apiSecret, isTestnet);
+      } else {
+        await client.cancelOrder(ctx, trade.symbol, trade.stopLossOrderId);
         this.logger.log(`[SL] Cancelled SL order ${trade.stopLossOrderId} after all TPs filled`);
       }
     } catch (e: any) {
@@ -594,57 +577,6 @@ export class TakeProfitService implements OnModuleInit {
     });
   }
 
-  private async cancelBinanceAlgoOrder(
-    algoId: string,
-    apiKey: string,
-    apiSecret: string,
-    isTestnet: boolean
-  ): Promise<void> {
-    // NEW ALGO ORDER API - Cancel conditional orders (STOP_MARKET, etc)
-    const baseUrl = isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
-    const params = new URLSearchParams();
-    params.append('algoId', algoId);
-    params.append('timestamp', Date.now().toString());
-
-    const queryString = params.toString();
-    const signature = crypto.createHmac('sha256', apiSecret).update(queryString).digest('hex');
-
-    await BinanceRequestUtil.delete(`${baseUrl}/fapi/v1/algoOrder?${queryString}&signature=${signature}`, {
-      headers: { 'X-MBX-APIKEY': apiKey }
-    });
-  }
-
-  private async cancelBinanceOrderOrAlgo(
-    orderId: string,
-    symbol: string,
-    apiKey: string,
-    apiSecret: string,
-    isTestnet: boolean
-  ): Promise<void> {
-    // Smart cancellation: Try Algo Order first (new orders), fallback to regular order (old orders)
-    try {
-      // Try as Algo Order first (STOP_MARKET conditional orders created after Dec 2025)
-      await this.cancelBinanceAlgoOrder(orderId, apiKey, apiSecret, isTestnet);
-      this.logger.debug(`[CANCEL] Successfully cancelled Algo Order ${orderId}`);
-    } catch (algoError: any) {
-      const algoErrorCode = algoError.response?.data?.code;
-
-      // If not found as Algo Order, try as regular order (backwards compatibility)
-      if (algoErrorCode === -4143 || algoErrorCode === -1102) {
-        try {
-          await this.cancelBinanceOrder(orderId, symbol, apiKey, apiSecret, isTestnet);
-          this.logger.debug(`[CANCEL] Successfully cancelled regular order ${orderId}`);
-        } catch (regularError: any) {
-          // If both fail, throw the original error
-          throw regularError;
-        }
-      } else {
-        // Other algo order errors, rethrow
-        throw algoError;
-      }
-    }
-  }
-
   private async getBinanceOrderStopPrice(
     orderId: string,
     symbol: string,
@@ -678,8 +610,6 @@ export class TakeProfitService implements OnModuleInit {
     isTestnet: boolean,
     hedgeMode: boolean = false
   ): Promise<string> {
-    const baseUrl = isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
-    const closeSide = side === 'BUY' ? 'SELL' : 'BUY';
     const rules = await this.symbolRulesService.getSymbolRules(symbol, isTestnet, Exchange.BINANCE);
     const qty = normalizeQuantity(quantity, rules.qtyStep, rules.minQty);
 
@@ -691,35 +621,11 @@ export class TakeProfitService implements OnModuleInit {
 
     const triggerPrice = roundPriceToTick(stopPrice, rules.priceTick);
 
-    const params = new URLSearchParams();
-    params.append('symbol', symbol);
-    params.append('side', closeSide);
-    params.append('algoType', 'CONDITIONAL');
-    params.append('type', 'STOP_MARKET');
-    params.append('quantity', qty);
-    params.append('triggerPrice', triggerPrice);
-    params.append('workingType', 'MARK_PRICE');
+    const client = this.exchangeFactory.get(Exchange.BINANCE);
+    const ctx = this.buildCtx(apiKey, apiSecret, isTestnet);
+    const result = await client.createStopLossOrder(ctx, symbol, side, qty, String(triggerPrice), hedgeMode);
 
-    if (hedgeMode) {
-      const positionSide = side === 'BUY' ? 'LONG' : 'SHORT';
-      params.append('positionSide', positionSide);
-    } else {
-      params.append('reduceOnly', 'true');
-    }
-
-    params.append('timestamp', Date.now().toString());
-
-    const queryString = params.toString();
-    const signature = crypto.createHmac('sha256', apiSecret).update(queryString).digest('hex');
-
-    // NEW ALGO ORDER API (mandatory since 2025-12-09)
-    const response = await BinanceRequestUtil.post(
-      `${baseUrl}/fapi/v1/algoOrder`,
-      `${queryString}&signature=${signature}`,
-      { headers: { 'X-MBX-APIKEY': apiKey, 'Content-Type': 'application/x-www-form-urlencoded' } }
-    );
-
-    return response.data.algoId.toString();
+    return result.orderId;
   }
 
   private async cancelTradeSpecificTpOrders(
@@ -731,17 +637,15 @@ export class TakeProfitService implements OnModuleInit {
   ): Promise<void> {
     if (!trade.takeProfitOrderId) return;
 
+    const client = this.exchangeFactory.get(exchange);
+    const ctx = this.buildCtx(apiKey, apiSecret, isTestnet);
     const entries = trade.takeProfitOrderId.split('|');
     for (const entry of entries) {
       const orderId = entry.includes(':') ? entry.split(':')[1] : entry;
       if (!orderId || orderId === 'null' || orderId === 'undefined') continue;
 
       try {
-        if (exchange === Exchange.BINANCE) {
-          await this.cancelBinanceOrder(orderId, trade.symbol, apiKey, apiSecret, isTestnet);
-        } else if (exchange === Exchange.BYBIT) {
-          await this.bybitClient.cancelOrder(apiKey, apiSecret, isTestnet, trade.symbol, orderId);
-        }
+        await client.cancelOrder(ctx, trade.symbol, orderId);
         this.logger.log(`[TP] Cancelled TP order ${orderId}`);
       } catch (e: any) {
         this.logger.warn(`[TP] Failed to cancel TP order ${orderId}: ${e.message}`);
@@ -759,31 +663,21 @@ export class TakeProfitService implements OnModuleInit {
     siteId?: string | null
   ): Promise<OrderFill | null> {
     try {
-      if (exchange === Exchange.BYBIT) {
-        let orderInfo = await this.bybitClient.getOrderInfo(apiKey, apiSecret, isTestnet, symbol, orderId, siteId);
+      const client = this.exchangeFactory.get(exchange);
+      const ctx = this.buildCtx(apiKey, apiSecret, isTestnet, siteId);
 
-        if (!orderInfo) {
-          orderInfo = await this.bybitClient.getOrderHistory(apiKey, apiSecret, isTestnet, symbol, orderId, siteId);
-        }
-
-        return mapBybitFill(orderInfo as unknown as Record<string, unknown> | null);
+      let orderInfo = await client.getOrderInfo(ctx, symbol, orderId);
+      if (!orderInfo) {
+        orderInfo = await client.getOrderHistory(ctx, symbol, orderId);
       }
 
-      const baseUrl = isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
-      const timestamp = Date.now();
-      const queryString = `symbol=${symbol}&orderId=${orderId}&timestamp=${timestamp}`;
-      const signature = crypto.createHmac('sha256', apiSecret).update(queryString).digest('hex');
+      const fill = mapBybitFill(orderInfo as unknown as Record<string, unknown> | null);
 
-      const response = await BinanceRequestUtil.get(
-        `${baseUrl}/fapi/v1/order?${queryString}&signature=${signature}`,
-        { headers: { 'X-MBX-APIKEY': apiKey } }
-      );
-
-      const fill = mapBinanceFill(response.data as Record<string, unknown>);
-      if (fill && fill.fee == null && fill.status && /FILLED/i.test(fill.status)) {
+      if (exchange === Exchange.BINANCE && fill && fill.fee == null && fill.status && /FILLED/i.test(fill.status)) {
         const fee = await this.fetchBinanceCommission(orderId, symbol, apiKey, apiSecret, isTestnet);
         if (fee != null) fill.fee = fee;
       }
+
       return fill;
     } catch (error) {
       this.logger.warn(`Failed to fetch order fill (${orderId}): ${error.message}`);
@@ -872,28 +766,9 @@ export class TakeProfitService implements OnModuleInit {
     isTestnet: boolean,
     siteId?: string | null
   ): Promise<number | null> {
-    try {
-      if (exchange === Exchange.BYBIT) {
-        return await this.bybitClient.getLastTradePrice(apiKey, apiSecret, isTestnet, symbol, siteId);
-      }
-
-      const baseUrl = isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
-      const timestamp = Date.now();
-      const queryString = `symbol=${symbol}&limit=1&timestamp=${timestamp}`;
-      const signature = crypto.createHmac('sha256', apiSecret).update(queryString).digest('hex');
-
-      const response = await BinanceRequestUtil.get(
-        `${baseUrl}/fapi/v1/userTrades?${queryString}&signature=${signature}`,
-        { headers: { 'X-MBX-APIKEY': apiKey } }
-      );
-
-      if (response.data && response.data.length > 0) {
-        return parseFloat(response.data[0].price);
-      }
-      return null;
-    } catch (error) {
-      return null;
-    }
+    const client = this.exchangeFactory.get(exchange);
+    const ctx = this.buildCtx(apiKey, apiSecret, isTestnet, siteId);
+    return client.getLastTradePrice(ctx, symbol);
   }
 
   private calculateTakeProfit(trade: Trade, strategy: any, level: number): number | null {
@@ -938,14 +813,15 @@ export class TakeProfitService implements OnModuleInit {
       const exchange = strategy.exchange || Exchange.BINANCE;
 
       if (exchange === Exchange.BYBIT) {
-        return await this.bybitClient.getCurrentPrice(strategy.isTestnet, trade.symbol);
+        const client = this.exchangeFactory.get(exchange);
+        const ctx = this.buildCtx('', '', strategy.isTestnet);
+        return await client.getCurrentPrice(ctx, trade.symbol);
       }
 
       if (strategy.isTestnet && exchange === Exchange.BINANCE) {
-        const response = await BinanceRequestUtil.get(
-          `${this.BINANCE_TESTNET_URL}/fapi/v1/ticker/price?symbol=${trade.symbol}`
-        );
-        return parseFloat(response.data.price);
+        const client = this.exchangeFactory.get(exchange);
+        const ctx = this.buildCtx('', '', true);
+        return await client.getCurrentPrice(ctx, trade.symbol);
       } else {
         const apiKey = (await EncryptionUtil.decrypt(strategy.apiKey)).trim();
         const apiSecret = (await EncryptionUtil.decrypt(strategy.apiSecret)).trim();
@@ -984,7 +860,10 @@ export class TakeProfitService implements OnModuleInit {
       let ccxtFill: OrderFill | null = null;
 
       if (exchange === Exchange.BYBIT) {
-        const rules = await this.bybitClient.getSymbolRules(strategy.isTestnet, trade.symbol);
+        const client = this.exchangeFactory.get(exchange);
+        const ctx = this.buildCtx(apiKey, apiSecret, strategy.isTestnet, strategy.siteId);
+
+        const rules = await client.getSymbolRules(ctx, trade.symbol);
         const minQty = new Decimal(rules.minQty);
         const stepSize = new Decimal(rules.qtyStep);
 
@@ -1027,65 +906,40 @@ export class TakeProfitService implements OnModuleInit {
           closeQuantity = normalizedQty.toNumber();
         }
 
-        const originalSide = trade.side === 'BUY' ? 'Buy' : 'Sell';
-        const positionIdx = await this.bybitClient.getPositionIdx(
-          apiKey, apiSecret, strategy.isTestnet, trade.symbol, originalSide, strategy.hedgeMode, strategy.siteId
-        );
-
-        const bybitSide = closeSide === 'BUY' ? 'Buy' : 'Sell';
         const closeQtyStr = floorToStep(new Decimal(closeQuantity), stepSize).toFixed();
-        const bybitOrder = await this.bybitClient.createOrder(
-          apiKey,
-          apiSecret,
-          strategy.isTestnet,
-          {
-            symbol: trade.symbol,
-            side: bybitSide,
-            orderType: 'Market',
-            qty: closeQtyStr,
-            positionIdx,
-            reduceOnly: true,
-            hedgeMode: strategy.hedgeMode
-          },
-          strategy.siteId
-        );
+        const order = await client.createOrder(ctx, {
+          symbol: trade.symbol,
+          side: closeSide as any,
+          orderType: 'MARKET',
+          qty: closeQtyStr,
+          reduceOnly: true,
+          hedgeMode: strategy.hedgeMode,
+          positionSide: trade.side as any,
+        });
         this.logger.log(`[BYBIT] Closed ${closeQtyStr} ${trade.symbol} via ${reason}`);
 
-        if (bybitOrder?.orderId) {
+        if (order?.orderId) {
           await new Promise(resolve => setTimeout(resolve, 500));
-          ccxtFill = await this.fetchOrderFill(bybitOrder.orderId, trade.symbol, Exchange.BYBIT, apiKey, apiSecret, strategy.isTestnet, strategy.siteId);
+          ccxtFill = await this.fetchOrderFill(order.orderId, trade.symbol, Exchange.BYBIT, apiKey, apiSecret, strategy.isTestnet, strategy.siteId);
         }
       } else if (strategy.isTestnet && exchange === Exchange.BINANCE) {
         const stepSize = await this.getQtyStepForSymbol(trade.symbol, strategy.isTestnet);
         const normalizedQty = floorToStep(new Decimal(closeQuantity), new Decimal(stepSize || '0.001'));
         closeQuantity = normalizedQty.toNumber();
 
-        const baseURL = this.BINANCE_TESTNET_URL;
-        const params = new URLSearchParams();
-        params.append('symbol', trade.symbol);
-        params.append('side', closeSide);
-        params.append('type', 'MARKET');
-        params.append('quantity', normalizedQty.toFixed());
+        const client = this.exchangeFactory.get(exchange);
+        const ctx = this.buildCtx(apiKey, apiSecret, strategy.isTestnet, null);
 
-        if (strategy.hedgeMode) {
-          const positionSide = trade.side === 'BUY' ? 'LONG' : 'SHORT';
-          params.append('positionSide', positionSide);
-        }
-
-        params.append('timestamp', Date.now().toString());
-
-        const queryString = params.toString();
-        const signature = crypto.createHmac('sha256', apiSecret).update(queryString).digest('hex');
-        const body = `${queryString}&signature=${signature}`;
-
-        const response = await BinanceRequestUtil.post(`${baseURL}/fapi/v1/order`, body, {
-          headers: {
-            'X-MBX-APIKEY': apiKey,
-            'Content-Type': 'application/x-www-form-urlencoded'
-          }
+        const order = await client.createOrder(ctx, {
+          symbol: trade.symbol,
+          side: closeSide as any,
+          orderType: 'MARKET',
+          qty: normalizedQty.toFixed(),
+          hedgeMode: strategy.hedgeMode,
+          positionSide: trade.side as any,
         });
 
-        ccxtFill = mapBinanceFill(response.data as Record<string, unknown>);
+        ccxtFill = mapBinanceFill(order as unknown as Record<string, unknown>);
         this.logger.log(`[BINANCE] Closed ${(closePercent * 100).toFixed(0)}% of ${trade.symbol} via ${reason}`);
       } else {
         const exchangeInstance = await this.exchangeService.getExchange(
