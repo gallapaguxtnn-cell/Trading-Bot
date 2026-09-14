@@ -225,7 +225,7 @@ export class BinanceClientService implements ExchangeClient {
   private async createRegularOrder(
     ctx: AccountContext,
     params: URLSearchParams,
-  ): Promise<{ orderId: string | number; status?: string }> {
+  ): Promise<{ orderId: string | number; status?: string; avgPrice?: string; executedQty?: string }> {
     const response = await this.signedPost(ctx, '/fapi/v1/order', params);
     return response.data;
   }
@@ -265,14 +265,24 @@ export class BinanceClientService implements ExchangeClient {
 
     try {
       const result = await this.createRegularOrder(ctx, orderParams);
-      return { orderId: String(result.orderId) };
+      return {
+        orderId: String(result.orderId),
+        status: result.status,
+        avgPrice: result.avgPrice,
+        executedQty: result.executedQty,
+      };
     } catch (error: any) {
       const errorCode = error.response?.data?.code;
       if (errorCode === -4061 && params.hedgeMode) {
         orderParams.delete('positionSide');
         orderParams.set('reduceOnly', 'true');
         const retry = await this.createRegularOrder(ctx, orderParams);
-        return { orderId: String(retry.orderId) };
+        return {
+          orderId: String(retry.orderId),
+          status: retry.status,
+          avgPrice: retry.avgPrice,
+          executedQty: retry.executedQty,
+        };
       }
       throw error;
     }

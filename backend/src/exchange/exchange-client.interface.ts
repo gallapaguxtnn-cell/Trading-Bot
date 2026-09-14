@@ -39,6 +39,9 @@ export interface CreateOrderParams {
 export interface OrderResult {
   orderId: string;
   orderLinkId?: string;
+  avgPrice?: string;
+  executedQty?: string;
+  status?: string;
 }
 
 export interface PositionInfo {

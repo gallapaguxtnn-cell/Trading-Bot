@@ -10,26 +10,39 @@ import { Trade } from '../strategies/trade.entity';
 import { TradesService } from '../trades/trades.service';
 import { StrategiesService } from '../strategies/strategies.service';
 import { ExchangeService } from '../exchange/exchange.service';
-import { BybitClientService } from '../exchange/bybit-client.service';
+import { ExchangeClientFactory } from '../exchange/exchange-client.factory';
 import { BinanceWebSocketService } from '../binance-ws/binance-ws.service';
 import { SymbolRulesService } from '../common/symbol-rules.service';
 import { CredentialsResolverService } from '../common/credentials-resolver.service';
 import { Exchange } from '../strategies/strategy.entity';
 
+function makeExchangeClient() {
+  return {
+    getPositions: jest.fn().mockResolvedValue([]),
+    getOrderInfo: jest.fn().mockResolvedValue(null),
+    getOrderHistory: jest.fn().mockResolvedValue(null),
+    createStopLossOrder: jest.fn(),
+    clearTradingStop: jest.fn(),
+    cancelOrder: jest.fn(),
+    getLastTradePrice: jest.fn(),
+    getCurrentPrice: jest.fn(),
+    createOrder: jest.fn(),
+  };
+}
+
 describe('StopLossService (FASE 3 -- arredondamento via SymbolRulesService, nunca toFixed fixo)', () => {
   let service: StopLossService;
   let tradesRepository: { save: jest.Mock };
   let symbolRulesService: { getSymbolRules: jest.Mock };
-  let bybitClient: { getPositionIdx: jest.Mock; createOrder: jest.Mock };
+  let exchangeClient: ReturnType<typeof makeExchangeClient>;
+  let exchangeFactory: { get: jest.Mock };
 
   beforeEach(async () => {
     jest.clearAllMocks();
     tradesRepository = { save: jest.fn() };
     symbolRulesService = { getSymbolRules: jest.fn() };
-    bybitClient = {
-      getPositionIdx: jest.fn().mockResolvedValue(0),
-      createOrder: jest.fn().mockResolvedValue({ orderId: 'bybit-close-1' }),
-    };
+    exchangeClient = makeExchangeClient();
+    exchangeFactory = { get: jest.fn().mockReturnValue(exchangeClient) };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -38,7 +51,7 @@ describe('StopLossService (FASE 3 -- arredondamento via SymbolRulesService, nunc
         { provide: TradesService, useValue: {} },
         { provide: StrategiesService, useValue: {} },
         { provide: ExchangeService, useValue: {} },
-        { provide: BybitClientService, useValue: bybitClient },
+        { provide: ExchangeClientFactory, useValue: exchangeFactory },
         { provide: BinanceWebSocketService, useValue: {} },
         { provide: SymbolRulesService, useValue: symbolRulesService },
         { provide: CredentialsResolverService, useValue: { resolveCredentials: jest.fn() } },
@@ -51,10 +64,10 @@ describe('StopLossService (FASE 3 -- arredondamento via SymbolRulesService, nunc
   describe('recreateStopLoss (SUI: tick 0.0001, step 1)', () => {
     it('envia triggerPrice no tick real (0.7697) e quantidade inteira -- nunca 0.77 nem toFixed(3)', async () => {
       symbolRulesService.getSymbolRules.mockResolvedValue({ qtyStep: '1', priceTick: '0.0001', minQty: '1', minNotional: '5' });
-      (BinanceRequestUtil.get as jest.Mock).mockResolvedValueOnce({
-        data: [{ symbol: 'SUIUSDT', positionSide: 'BOTH', positionAmt: '60' }],
-      });
-      (BinanceRequestUtil.post as jest.Mock).mockResolvedValueOnce({ data: { algoId: 111 } });
+      exchangeClient.getPositions.mockResolvedValue([
+        { symbol: 'SUIUSDT', side: 'SELL', size: '60', avgPrice: '0', unrealizedPnl: '0', leverage: '1', markPrice: '0' },
+      ]);
+      exchangeClient.createStopLossOrder.mockResolvedValue({ orderId: '111' });
 
       const trade = {
         id: 'trade-1', symbol: 'SUIUSDT', side: 'SELL', quantity: 60, entryPrice: 0.7546, currentStopLoss: 0.7697,
@@ -64,17 +77,21 @@ describe('StopLossService (FASE 3 -- arredondamento via SymbolRulesService, nunc
       const recreated = await (service as any).recreateStopLoss(trade, strategy, Exchange.BINANCE, 'key', 'secret');
 
       expect(recreated).toBe(true);
-      const body = (BinanceRequestUtil.post as jest.Mock).mock.calls[0][1] as string;
-      const params = new URLSearchParams(body);
-      expect(params.get('triggerPrice')).toBe('0.7697');
-      expect(params.get('quantity')).toBe('60');
+      expect(exchangeClient.createStopLossOrder).toHaveBeenCalledWith(
+        expect.objectContaining({ credentials: { apiKey: 'key', apiSecret: 'secret' } }),
+        'SUIUSDT',
+        'SELL',
+        '60',
+        '0.7697',
+        false,
+      );
     });
 
     it('aborta (nao envia a ordem) quando a quantidade normalizada arredonda para 0', async () => {
       symbolRulesService.getSymbolRules.mockResolvedValue({ qtyStep: '10', priceTick: '0.0001', minQty: '10', minNotional: '5' });
-      (BinanceRequestUtil.get as jest.Mock).mockResolvedValueOnce({
-        data: [{ symbol: 'SUIUSDT', positionSide: 'BOTH', positionAmt: '5' }],
-      });
+      exchangeClient.getPositions.mockResolvedValue([
+        { symbol: 'SUIUSDT', side: 'SELL', size: '5', avgPrice: '0', unrealizedPnl: '0', leverage: '1', markPrice: '0' },
+      ]);
 
       const trade = {
         id: 'trade-1', symbol: 'SUIUSDT', side: 'SELL', quantity: 5, entryPrice: 0.7546, currentStopLoss: 0.7697,
@@ -84,13 +101,29 @@ describe('StopLossService (FASE 3 -- arredondamento via SymbolRulesService, nunc
       const recreated = await (service as any).recreateStopLoss(trade, strategy, Exchange.BINANCE, 'key', 'secret');
 
       expect(recreated).toBe(false);
-      expect(BinanceRequestUtil.post).not.toHaveBeenCalled();
+      expect(exchangeClient.createStopLossOrder).not.toHaveBeenCalled();
+    });
+
+    it('aborta quando nao ha posicao aberta na corretora para o symbol/lado', async () => {
+      symbolRulesService.getSymbolRules.mockResolvedValue({ qtyStep: '1', priceTick: '0.0001', minQty: '1', minNotional: '5' });
+      exchangeClient.getPositions.mockResolvedValue([]);
+
+      const trade = {
+        id: 'trade-1', symbol: 'SUIUSDT', side: 'SELL', quantity: 60, entryPrice: 0.7546, currentStopLoss: 0.7697,
+      } as unknown as Trade;
+      const strategy = { isTestnet: false, hedgeMode: false, stopLossPercentage: 2 };
+
+      const recreated = await (service as any).recreateStopLoss(trade, strategy, Exchange.BINANCE, 'key', 'secret');
+
+      expect(recreated).toBe(false);
+      expect(exchangeClient.createStopLossOrder).not.toHaveBeenCalled();
     });
   });
 
   describe('closePosition (fechamento a mercado pelo SL)', () => {
     it('Bybit: normaliza a quantidade pelo qtyStep real (nunca toFixed(3))', async () => {
       symbolRulesService.getSymbolRules.mockResolvedValue({ qtyStep: '10', priceTick: '0.10', minQty: '10', minNotional: '5' });
+      exchangeClient.createOrder.mockResolvedValue({ orderId: 'bybit-close-1' });
 
       const trade = {
         id: 'trade-1', symbol: 'BTCUSDT', side: 'BUY', quantity: 253, entryPrice: 60000, pnl: null,
@@ -99,10 +132,9 @@ describe('StopLossService (FASE 3 -- arredondamento via SymbolRulesService, nunc
 
       await (service as any).closePosition(trade, strategy, 58800, 'STOP_LOSS', 'key', 'secret');
 
-      expect(bybitClient.createOrder).toHaveBeenCalledWith(
-        'key', 'secret', true,
-        expect.objectContaining({ qty: '250', orderType: 'Market', reduceOnly: true }),
-        undefined,
+      expect(exchangeClient.createOrder).toHaveBeenCalledWith(
+        expect.objectContaining({ credentials: { apiKey: 'key', apiSecret: 'secret' } }),
+        expect.objectContaining({ qty: '250', orderType: 'MARKET', reduceOnly: true, positionSide: 'BUY' }),
       );
     });
 
@@ -116,12 +148,12 @@ describe('StopLossService (FASE 3 -- arredondamento via SymbolRulesService, nunc
 
       await (service as any).closePosition(trade, strategy, 58800, 'STOP_LOSS', 'key', 'secret');
 
-      expect(bybitClient.createOrder).not.toHaveBeenCalled();
+      expect(exchangeClient.createOrder).not.toHaveBeenCalled();
     });
 
     it('Binance testnet: normaliza a quantidade pelo qtyStep real (nunca toFixed(3))', async () => {
       symbolRulesService.getSymbolRules.mockResolvedValue({ qtyStep: '10', priceTick: '0.10', minQty: '10', minNotional: '5' });
-      (BinanceRequestUtil.post as jest.Mock).mockResolvedValueOnce({ data: {} });
+      exchangeClient.createOrder.mockResolvedValue({ orderId: 'binance-close-1' });
 
       const trade = {
         id: 'trade-1', symbol: 'BTCUSDT', side: 'BUY', quantity: 253, entryPrice: 60000, pnl: null,
@@ -130,9 +162,10 @@ describe('StopLossService (FASE 3 -- arredondamento via SymbolRulesService, nunc
 
       await (service as any).closePosition(trade, strategy, 58800, 'STOP_LOSS', 'key', 'secret');
 
-      const body = (BinanceRequestUtil.post as jest.Mock).mock.calls[0][1] as string;
-      const params = new URLSearchParams(body);
-      expect(params.get('quantity')).toBe('250');
+      expect(exchangeClient.createOrder).toHaveBeenCalledWith(
+        expect.objectContaining({ mode: 'DEMO' }),
+        expect.objectContaining({ qty: '250', orderType: 'MARKET' }),
+      );
     });
   });
 });
@@ -141,13 +174,15 @@ describe('StopLossService (FASE 2 -- CredentialsResolver)', () => {
   let service: StopLossService;
   let strategiesService: { findOne: jest.Mock };
   let credentialsResolver: { resolveCredentials: jest.Mock };
-  let bybitClient: { getPositions: jest.Mock };
+  let exchangeClient: ReturnType<typeof makeExchangeClient>;
+  let exchangeFactory: { get: jest.Mock };
 
   beforeEach(async () => {
     jest.clearAllMocks();
     strategiesService = { findOne: jest.fn() };
     credentialsResolver = { resolveCredentials: jest.fn() };
-    bybitClient = { getPositions: jest.fn().mockResolvedValue([]) };
+    exchangeClient = makeExchangeClient();
+    exchangeFactory = { get: jest.fn().mockReturnValue(exchangeClient) };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -156,7 +191,7 @@ describe('StopLossService (FASE 2 -- CredentialsResolver)', () => {
         { provide: TradesService, useValue: {} },
         { provide: StrategiesService, useValue: strategiesService },
         { provide: ExchangeService, useValue: {} },
-        { provide: BybitClientService, useValue: bybitClient },
+        { provide: ExchangeClientFactory, useValue: exchangeFactory },
         { provide: BinanceWebSocketService, useValue: {} },
         { provide: SymbolRulesService, useValue: { getSymbolRules: jest.fn() } },
         { provide: CredentialsResolverService, useValue: credentialsResolver },
@@ -166,7 +201,7 @@ describe('StopLossService (FASE 2 -- CredentialsResolver)', () => {
     service = module.get<StopLossService>(StopLossService);
   });
 
-  it('checkStopLoss com portfolio: consulta a Bybit com as credenciais/exchange resolvidas do portfolio', async () => {
+  it('checkStopLoss com portfolio: consulta a corretora com as credenciais/exchange resolvidas do portfolio', async () => {
     const trade = {
       id: 'trade-1',
       symbol: 'BTCUSDT',
@@ -193,7 +228,11 @@ describe('StopLossService (FASE 2 -- CredentialsResolver)', () => {
 
     await (service as any).checkStopLoss(trade);
 
-    expect(bybitClient.getPositions).toHaveBeenCalledWith('portfolio-key', 'portfolio-secret', false, 'BTCUSDT', undefined);
+    expect(exchangeFactory.get).toHaveBeenCalledWith(Exchange.BYBIT);
+    expect(exchangeClient.getPositions).toHaveBeenCalledWith(
+      { credentials: { apiKey: 'portfolio-key', apiSecret: 'portfolio-secret' }, mode: 'REAL', region: null },
+      'BTCUSDT',
+    );
   });
 });
 
@@ -202,28 +241,16 @@ describe('StopLossService (FASE 4 -- PnL do SL lido da corretora)', () => {
   let tradesRepository: { save: jest.Mock };
   let tradesService: { createExecution: jest.Mock };
   let symbolRulesService: { getSymbolRules: jest.Mock };
-  let bybitClient: {
-    getOrderInfo: jest.Mock;
-    getOrderHistory: jest.Mock;
-    getLastTradePrice: jest.Mock;
-    getCurrentPrice: jest.Mock;
-    createOrder: jest.Mock;
-    getPositionIdx: jest.Mock;
-  };
+  let exchangeClient: ReturnType<typeof makeExchangeClient>;
+  let exchangeFactory: { get: jest.Mock };
 
   beforeEach(async () => {
     jest.clearAllMocks();
     tradesRepository = { save: jest.fn() };
     tradesService = { createExecution: jest.fn() };
     symbolRulesService = { getSymbolRules: jest.fn() };
-    bybitClient = {
-      getOrderInfo: jest.fn(),
-      getOrderHistory: jest.fn(),
-      getLastTradePrice: jest.fn(),
-      getCurrentPrice: jest.fn(),
-      createOrder: jest.fn(),
-      getPositionIdx: jest.fn().mockResolvedValue(0),
-    };
+    exchangeClient = makeExchangeClient();
+    exchangeFactory = { get: jest.fn().mockReturnValue(exchangeClient) };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -232,7 +259,7 @@ describe('StopLossService (FASE 4 -- PnL do SL lido da corretora)', () => {
         { provide: TradesService, useValue: tradesService },
         { provide: StrategiesService, useValue: {} },
         { provide: ExchangeService, useValue: {} },
-        { provide: BybitClientService, useValue: bybitClient },
+        { provide: ExchangeClientFactory, useValue: exchangeFactory },
         { provide: BinanceWebSocketService, useValue: {} },
         { provide: SymbolRulesService, useValue: symbolRulesService },
         { provide: CredentialsResolverService, useValue: { resolveCredentials: jest.fn() } },
@@ -243,7 +270,7 @@ describe('StopLossService (FASE 4 -- PnL do SL lido da corretora)', () => {
   });
 
   it('caso real SUIUSDT: SL preenchido a 0.8015 (entry 0.796, 50 SUI, taxa 0.030) -> PnL exatamente -0.3050, lido da corretora', async () => {
-    bybitClient.getOrderInfo.mockResolvedValue({
+    exchangeClient.getOrderInfo.mockResolvedValue({
       orderId: 'sl-order-1',
       orderStatus: 'Filled',
       avgPrice: '0.8015',
@@ -259,7 +286,7 @@ describe('StopLossService (FASE 4 -- PnL do SL lido da corretora)', () => {
 
     await (service as any).markTradeAsClosed(trade, 'STOP_LOSS', Exchange.BYBIT, 'key', 'secret', false, 'sl-order-1');
 
-    expect(bybitClient.getLastTradePrice).not.toHaveBeenCalled();
+    expect(exchangeClient.getLastTradePrice).not.toHaveBeenCalled();
 
     const execArg = tradesService.createExecution.mock.calls[0][0];
     expect(execArg.tradeId).toBe('trade-1');
@@ -275,7 +302,7 @@ describe('StopLossService (FASE 4 -- PnL do SL lido da corretora)', () => {
 
   it('sem orderId disponivel (ex.: stop nativo BYBIT_TRADING_STOP) -> cai no fallback local e loga erro, nunca silenciosamente', async () => {
     const errorSpy = jest.spyOn((service as any).logger, 'error').mockImplementation(() => {});
-    bybitClient.getLastTradePrice.mockResolvedValue(0.81);
+    exchangeClient.getLastTradePrice.mockResolvedValue(0.81);
 
     const trade = {
       id: 'trade-2', symbol: 'SUIUSDT', side: 'SELL', quantity: 50, entryPrice: 0.796, pnl: null,
@@ -285,16 +312,16 @@ describe('StopLossService (FASE 4 -- PnL do SL lido da corretora)', () => {
     await (service as any).markTradeAsClosed(trade, 'STOP_LOSS', Exchange.BYBIT, 'key', 'secret', false, null);
 
     expect(errorSpy).toHaveBeenCalled();
-    expect(bybitClient.getLastTradePrice).toHaveBeenCalled();
+    expect(exchangeClient.getLastTradePrice).toHaveBeenCalled();
     const execArg = tradesService.createExecution.mock.calls[0][0];
     expect(execArg.fee).toBeNull();
   });
 
   it('falha ao consultar a ordem na corretora -> nao quebra o fechamento, usa fallback e loga erro', async () => {
     const errorSpy = jest.spyOn((service as any).logger, 'error').mockImplementation(() => {});
-    bybitClient.getOrderInfo.mockResolvedValue(null);
-    bybitClient.getOrderHistory.mockResolvedValue(null);
-    bybitClient.getLastTradePrice.mockResolvedValue(0.8015);
+    exchangeClient.getOrderInfo.mockResolvedValue(null);
+    exchangeClient.getOrderHistory.mockResolvedValue(null);
+    exchangeClient.getLastTradePrice.mockResolvedValue(0.8015);
 
     const trade = {
       id: 'trade-3', symbol: 'SUIUSDT', side: 'SELL', quantity: 50, entryPrice: 0.796, pnl: null,
@@ -304,15 +331,15 @@ describe('StopLossService (FASE 4 -- PnL do SL lido da corretora)', () => {
     await (service as any).markTradeAsClosed(trade, 'STOP_LOSS', Exchange.BYBIT, 'key', 'secret', false, 'sl-order-3');
 
     expect(errorSpy).toHaveBeenCalled();
-    expect(bybitClient.getLastTradePrice).toHaveBeenCalled();
+    expect(exchangeClient.getLastTradePrice).toHaveBeenCalled();
     const saved = tradesRepository.save.mock.calls[0][0];
     expect(saved.exitPrice).toBe(0.8015);
   });
 
   it('closePosition (gatilho manual por preco) Bybit: le o fill real da ordem a mercado e persiste a taxa separadamente', async () => {
     symbolRulesService.getSymbolRules.mockResolvedValue({ qtyStep: '1', priceTick: '0.0001', minQty: '1', minNotional: '5' });
-    bybitClient.createOrder.mockResolvedValue({ orderId: 'close-order-1' });
-    bybitClient.getOrderInfo.mockResolvedValue({
+    exchangeClient.createOrder.mockResolvedValue({ orderId: 'close-order-1' });
+    exchangeClient.getOrderInfo.mockResolvedValue({
       orderId: 'close-order-1',
       orderStatus: 'Filled',
       avgPrice: '0.8015',
@@ -339,4 +366,27 @@ describe('StopLossService (FASE 4 -- PnL do SL lido da corretora)', () => {
     expect(saved.exitPrice).toBe(0.8015);
     expect(saved.pnl).toBeCloseTo(-0.305, 4);
   }, 10000);
+
+  it('closePosition Binance: le o fill sincrono da resposta de criacao da ordem (sem round-trip extra)', async () => {
+    symbolRulesService.getSymbolRules.mockResolvedValue({ qtyStep: '1', priceTick: '0.0001', minQty: '1', minNotional: '5' });
+    exchangeClient.createOrder.mockResolvedValue({
+      orderId: 'binance-close-1',
+      status: 'FILLED',
+      avgPrice: '0.8015',
+      executedQty: '50',
+    });
+
+    const trade = {
+      id: 'trade-5', symbol: 'SUIUSDT', side: 'SELL', quantity: 50, entryPrice: 0.796, pnl: null,
+      stopLossOrderId: 'sl-order-5',
+    } as unknown as Trade;
+    const strategy = { exchange: Exchange.BINANCE, isTestnet: true, hedgeMode: false };
+
+    await (service as any).closePosition(trade, strategy, 0.8, 'STOP_LOSS', 'key', 'secret');
+
+    expect(exchangeClient.getOrderInfo).not.toHaveBeenCalled();
+    const execArg = tradesService.createExecution.mock.calls[0][0];
+    expect(execArg.price).toBe(0.8015);
+    expect(execArg.quantity).toBe(50);
+  });
 });
