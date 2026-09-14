@@ -3,7 +3,8 @@ import { Cron } from '@nestjs/schedule';
 import { OnEvent } from '@nestjs/event-emitter';
 import { TradingviewSignalDto, OrderType } from './dto/tradingview-signal.dto';
 import { ExchangeService } from '../exchange/exchange.service';
-import { BybitClientService } from '../exchange/bybit-client.service';
+import { ExchangeClientFactory } from '../exchange/exchange-client.factory';
+import type { AccountContext, NeutralSide } from '../exchange/exchange-client.interface';
 import { StrategiesService } from '../strategies/strategies.service';
 import { TradesService } from '../trades/trades.service';
 import { Trade } from '../strategies/trade.entity';
@@ -100,7 +101,7 @@ export class WebhookService {
 
   constructor(
     private readonly exchangeService: ExchangeService,
-    private readonly bybitClient: BybitClientService,
+    private readonly exchangeFactory: ExchangeClientFactory,
     private readonly strategiesService: StrategiesService,
     private readonly tradesService: TradesService,
     private readonly binanceWs: BinanceWebSocketService,
@@ -111,6 +112,10 @@ export class WebhookService {
 
   private sleep(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  private buildCtx(apiKey: string, apiSecret: string, isTestnet: boolean, siteId?: string | null): AccountContext {
+    return { credentials: { apiKey, apiSecret }, mode: isTestnet ? 'DEMO' : 'REAL', region: (siteId as any) ?? null };
   }
 
   private normalizeSymbol(symbol: string, exchange: Exchange): string {
@@ -153,7 +158,9 @@ export class WebhookService {
       }
 
       if (exchange === Exchange.BYBIT) {
-        const balance = await this.bybitClient.getWalletBalance(decryptedKey, decryptedSecret, resolvedStrategy.isTestnet, resolvedStrategy.siteId);
+        const client = this.exchangeFactory.get(Exchange.BYBIT);
+        const ctx = this.buildCtx(decryptedKey, decryptedSecret, resolvedStrategy.isTestnet, resolvedStrategy.siteId);
+        const balance = await client.getWalletBalance(ctx);
         this.rateLimiter.setCached(cacheKey, balance, 10000);
         this.logger.log(`[BALANCE] Bybit ${resolvedStrategy.isTestnet ? 'Testnet' : 'Mainnet'}: ${balance.toFixed(2)} USDT`);
         return balance;
@@ -222,7 +229,9 @@ export class WebhookService {
         this.rateLimiter.setCached(cacheKey, balance, 10000);
         return balance;
       } else {
-        const balance = await this.bybitClient.getWalletBalance(decryptedKey, decryptedSecret, resolvedStrategy.isTestnet, resolvedStrategy.siteId);
+        const client = this.exchangeFactory.get(Exchange.BYBIT);
+        const ctx = this.buildCtx(decryptedKey, decryptedSecret, resolvedStrategy.isTestnet, resolvedStrategy.siteId);
+        const balance = await client.getWalletBalance(ctx);
         this.rateLimiter.setCached(cacheKey, balance, 10000);
         this.logger.log(`[BALANCE] Bybit ${resolvedStrategy.isTestnet ? 'Testnet' : 'Mainnet'}: ${balance.toFixed(2)} USDT`);
 
@@ -285,34 +294,19 @@ export class WebhookService {
     siteId?: string | null
   ): Promise<number> {
     try {
+        const client = this.exchangeFactory.get(exchange);
+        const ctx = this.buildCtx(apiKey, apiSecret, isTestnet, siteId);
+        const positions = await client.getPositions(ctx, symbol);
+
         if (exchange === Exchange.BYBIT) {
-             const positions = await this.bybitClient.getPositions(apiKey, apiSecret, isTestnet, symbol, siteId);
              const pos = positions.find(p => p.symbol === symbol && parseFloat(p.size) > 0);
              return pos ? parseFloat(pos.size) : 0;
-        } else {
-            // Binance
-            const baseURL = isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
-            const endpoint = '/fapi/v2/positionRisk'; // Use v2 for better info
-            const timestamp = Date.now();
-            const queryString = `symbol=${symbol}&timestamp=${timestamp}`;
-            const signature = crypto.createHmac('sha256', apiSecret).update(queryString).digest('hex');
-
-            const response = await BinanceRequestUtil.get(`${baseURL}${endpoint}?${queryString}&signature=${signature}`, {
-                 headers: { 'X-MBX-APIKEY': apiKey }
-            });
-            
-            // Binance returns array (sometimes 1 item per side in hedge mode, or just 1 in one-way)
-            // We sum up absolute amounts if multiple, but usually one-way has one.
-            const data = response.data;
-            let size = 0;
-            if (Array.isArray(data)) {
-                 const pos = data.find((p: any) => parseFloat(p.positionAmt) !== 0);
-                 if (pos) size = Math.abs(parseFloat(pos.positionAmt));
-            } else {
-                 if (parseFloat(data.positionAmt) !== 0) size = Math.abs(parseFloat(data.positionAmt));
-            }
-            return size;
         }
+
+        // Binance returns array (sometimes 1 item per side in hedge mode, or just 1 in one-way)
+        // We sum up absolute amounts if multiple, but usually one-way has one.
+        const pos = positions[0];
+        return pos ? Math.abs(parseFloat(pos.size)) : 0;
     } catch (err) {
         this.logger.error(`Failed to get position size: ${err.message}`);
         throw err;
@@ -512,137 +506,6 @@ export class WebhookService {
     await this.verifyHedgeModeSet(apiKey, apiSecret, isTestnet, hedgeMode);
   }
 
-  private async cancelBinanceSingleOrder(
-    symbol: string,
-    orderId: string,
-    apiKey: string,
-    apiSecret: string,
-    isTestnet: boolean
-  ): Promise<void> {
-    const baseURL = isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
-    const params = new URLSearchParams();
-    params.append('symbol', symbol);
-    params.append('orderId', orderId);
-    params.append('timestamp', Date.now().toString());
-
-    const queryString = params.toString();
-    const signature = crypto.createHmac('sha256', apiSecret).update(queryString).digest('hex');
-
-    await BinanceRequestUtil.delete(`${baseURL}/fapi/v1/order?${queryString}&signature=${signature}`, {
-      headers: { 'X-MBX-APIKEY': apiKey }
-    });
-  }
-
-  private async cancelBinanceAlgoOrder(
-    algoId: string,
-    apiKey: string,
-    apiSecret: string,
-    isTestnet: boolean
-  ): Promise<void> {
-    // NEW ALGO ORDER API - Cancel conditional orders (STOP_MARKET, etc)
-    const baseURL = isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
-    const params = new URLSearchParams();
-    params.append('algoId', algoId);
-    params.append('timestamp', Date.now().toString());
-
-    const queryString = params.toString();
-    const signature = crypto.createHmac('sha256', apiSecret).update(queryString).digest('hex');
-
-    await BinanceRequestUtil.delete(`${baseURL}/fapi/v1/algoOrder?${queryString}&signature=${signature}`, {
-      headers: { 'X-MBX-APIKEY': apiKey }
-    });
-  }
-
-  private async cancelBinanceOrderOrAlgo(
-    symbol: string,
-    orderId: string,
-    apiKey: string,
-    apiSecret: string,
-    isTestnet: boolean
-  ): Promise<void> {
-    // Smart cancellation: Try Algo Order first (new orders), fallback to regular order (old orders)
-    try {
-      // Try as Algo Order first (STOP_MARKET conditional orders created after Dec 2025)
-      await this.cancelBinanceAlgoOrder(orderId, apiKey, apiSecret, isTestnet);
-      this.logger.debug(`[CANCEL] Successfully cancelled Algo Order ${orderId}`);
-    } catch (algoError: any) {
-      const algoErrorCode = algoError.response?.data?.code;
-
-      // If not found as Algo Order, try as regular order (backwards compatibility)
-      if (algoErrorCode === -4143 || algoErrorCode === -1102) {
-        try {
-          await this.cancelBinanceSingleOrder(symbol, orderId, apiKey, apiSecret, isTestnet);
-          this.logger.debug(`[CANCEL] Successfully cancelled regular order ${orderId}`);
-        } catch (regularError: any) {
-          // If both fail, throw the original error
-          throw regularError;
-        }
-      } else {
-        // Other algo order errors, rethrow
-        throw algoError;
-      }
-    }
-  }
-
-  private async cancelAllBinanceOrders(
-    apiKey: string,
-    apiSecret: string,
-    isTestnet: boolean,
-    symbol: string
-  ): Promise<void> {
-    const baseURL = isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
-
-    // Cancel regular orders (LIMIT, etc)
-    const params = new URLSearchParams();
-    params.append('symbol', symbol);
-    params.append('timestamp', Date.now().toString());
-
-    const queryString = params.toString();
-    const signature = crypto.createHmac('sha256', apiSecret).update(queryString).digest('hex');
-
-    try {
-      await BinanceRequestUtil.delete(`${baseURL}/fapi/v1/allOpenOrders?${queryString}&signature=${signature}`, {
-        headers: { 'X-MBX-APIKEY': apiKey }
-      });
-      this.logger.log(`[BINANCE] Cancelled all open orders for ${symbol}`);
-    } catch (error: any) {
-       this.logger.warn(`[BINANCE] Failed to cancel open orders: ${error.response?.data?.msg || error.message}`);
-    }
-
-    // Also cancel Algo Orders (CONDITIONAL - STOP_MARKET, etc)
-    try {
-      const algoParams = new URLSearchParams();
-      algoParams.append('symbol', symbol);
-      algoParams.append('timestamp', Date.now().toString());
-      const algoQuery = algoParams.toString();
-      const algoSig = crypto.createHmac('sha256', apiSecret).update(algoQuery).digest('hex');
-
-      const algoOrdersResponse = await BinanceRequestUtil.get(
-        `${baseURL}/fapi/v1/openAlgoOrders?${algoQuery}&signature=${algoSig}`,
-        { headers: { 'X-MBX-APIKEY': apiKey } }
-      );
-
-      for (const algoOrder of algoOrdersResponse.data) {
-        try {
-          const cancelAlgoParams = new URLSearchParams();
-          cancelAlgoParams.append('algoId', algoOrder.algoId.toString());
-          cancelAlgoParams.append('timestamp', Date.now().toString());
-          const cancelAlgoQuery = cancelAlgoParams.toString();
-          const cancelAlgoSig = crypto.createHmac('sha256', apiSecret).update(cancelAlgoQuery).digest('hex');
-
-          await BinanceRequestUtil.delete(`${baseURL}/fapi/v1/algoOrder?${cancelAlgoQuery}&signature=${cancelAlgoSig}`, {
-            headers: { 'X-MBX-APIKEY': apiKey }
-          });
-          this.logger.log(`[BINANCE] Cancelled algo order ${algoOrder.algoId} for ${symbol}`);
-        } catch (e: any) {
-          this.logger.warn(`[BINANCE] Failed to cancel algo order ${algoOrder.algoId}: ${e.message}`);
-        }
-      }
-    } catch (e: any) {
-      this.logger.warn(`[BINANCE] Failed to fetch/cancel algo orders: ${e.message}`);
-    }
-  }
-
   private async configureBybitPositionSettings(
     symbol: string,
     leverage: number,
@@ -652,8 +515,10 @@ export class WebhookService {
     isTestnet: boolean,
     siteId?: string | null
   ): Promise<void> {
-    await this.bybitClient.setMarginMode(apiKey, apiSecret, isTestnet, symbol, marginMode, leverage, siteId);
-    await this.bybitClient.setLeverage(apiKey, apiSecret, isTestnet, symbol, leverage, siteId);
+    const client = this.exchangeFactory.get(Exchange.BYBIT);
+    const ctx = this.buildCtx(apiKey, apiSecret, isTestnet, siteId);
+    await client.setMarginMode(ctx, symbol, marginMode as unknown as 'ISOLATED' | 'CROSS', leverage);
+    await client.setLeverage(ctx, symbol, leverage);
   }
 
   private async getBybitActualFillPrice(
@@ -665,10 +530,19 @@ export class WebhookService {
     side: 'Buy' | 'Sell',
     siteId?: string | null
   ): Promise<number | undefined> {
+    const client = this.exchangeFactory.get(Exchange.BYBIT);
+    const ctx = this.buildCtx(apiKey, apiSecret, isTestnet, siteId);
     return resolveBybitActualFillPrice({
-      getOrderInfo: () => this.bybitClient.getOrderInfo(apiKey, apiSecret, isTestnet, symbol, orderId, siteId),
-      getOrderHistory: () => this.bybitClient.getOrderHistory(apiKey, apiSecret, isTestnet, symbol, orderId, siteId),
-      getPositions: () => this.bybitClient.getPositions(apiKey, apiSecret, isTestnet, symbol, siteId),
+      getOrderInfo: () => client.getOrderInfo(ctx, symbol, orderId),
+      getOrderHistory: () => client.getOrderHistory(ctx, symbol, orderId),
+      getPositions: async () => {
+        const positions = await client.getPositions(ctx, symbol);
+        return positions.map(p => ({
+          side: p.side === 'BUY' ? 'Buy' : p.side === 'SELL' ? 'Sell' : 'NONE',
+          size: p.size,
+          avgPrice: p.avgPrice,
+        }));
+      },
       side,
     });
   }
@@ -1204,7 +1078,9 @@ export class WebhookService {
                     symbol, side, actualQty, targetSlPrice, decryptedKey, decryptedSecret, strategy.isTestnet, strategy.hedgeMode
                   );
                   try {
-                    await this.cancelBinanceOrderOrAlgo(symbol, trade.stopLossOrderId!, decryptedKey, decryptedSecret, strategy.isTestnet);
+                    const cancelClient = this.exchangeFactory.get(Exchange.BINANCE);
+                    const cancelCtx = this.buildCtx(decryptedKey, decryptedSecret, strategy.isTestnet);
+                    await cancelClient.cancelOrder(cancelCtx, symbol, trade.stopLossOrderId!);
                   } catch (cancelErr: any) {
                     this.logger.error(
                       `[SL REPRICE] Falha ao cancelar o SL antigo ${trade.stopLossOrderId} apos criar o novo ${newSlOrderId}: ${cancelErr.message}. ` +
@@ -1308,9 +1184,11 @@ export class WebhookService {
                 }
               }
               if (newTpOrderIds.length > 0) {
+                const cancelClient = this.exchangeFactory.get(Exchange.BINANCE);
+                const cancelCtx = this.buildCtx(decryptedKey, decryptedSecret, strategy.isTestnet);
                 for (const old of oldTpOrders) {
                   try {
-                    await this.cancelBinanceOrderOrAlgo(symbol, old.orderId, decryptedKey, decryptedSecret, strategy.isTestnet);
+                    await cancelClient.cancelOrder(cancelCtx, symbol, old.orderId);
                   } catch (cancelErr: any) {
                     this.logger.error(`[TP REPRICE] Falha ao cancelar o TP antigo ${old.orderId}: ${cancelErr.message}`);
                   }
@@ -1460,6 +1338,9 @@ export class WebhookService {
         await new Promise(r => setTimeout(r, delayMs));
 
         try {
+          const client = this.exchangeFactory.get(Exchange.BYBIT);
+          const ctx = this.buildCtx(decryptedKey, decryptedSecret, strategy.isTestnet, strategy.siteId);
+
           const trade = await this.tradesService.findById(tradeId);
           if (!trade || trade.status !== 'OPEN') return;
 
@@ -1478,14 +1359,10 @@ export class WebhookService {
             continue;
           }
 
-          let orderData = await this.bybitClient.getOrderInfo(
-            decryptedKey, decryptedSecret, strategy.isTestnet, symbol, trade.exchangeOrderId, strategy.siteId
-          );
+          let orderData = await client.getOrderInfo(ctx, symbol, trade.exchangeOrderId);
 
           if (!orderData) {
-            orderData = await this.bybitClient.getOrderHistory(
-              decryptedKey, decryptedSecret, strategy.isTestnet, symbol, trade.exchangeOrderId, strategy.siteId
-            );
+            orderData = await client.getOrderHistory(ctx, symbol, trade.exchangeOrderId);
           }
 
           if (!orderData) {
@@ -1519,9 +1396,9 @@ export class WebhookService {
             protectionDeadline = Date.now() + protectionBudgetMs;
           }
 
-          const bybitSide = side === 'BUY' ? 'Buy' : 'Sell';
-          const positionConfirmed = await this.bybitClient.waitForPosition(
-            decryptedKey, decryptedSecret, strategy.isTestnet, symbol, bybitSide, 10, 500, strategy.hedgeMode, strategy.siteId
+          const bybitSide = (side === 'BUY' ? 'BUY' : 'SELL') as NeutralSide;
+          const positionConfirmed = await client.waitForPosition(
+            ctx, symbol, bybitSide, 10, 500, strategy.hedgeMode
           );
 
           if (!positionConfirmed) {
@@ -1539,10 +1416,9 @@ export class WebhookService {
 
             if (!hasStopLoss) {
               try {
-                const slOrder = await this.bybitClient.createStopLossOrder(
-                  decryptedKey, decryptedSecret, strategy.isTestnet,
-                  symbol, bybitSide, normalizeQuantity(actualQty, slRules.qtyStep, slRules.minQty),
-                  targetSlPriceRounded, strategy.hedgeMode, strategy.siteId
+                const slOrder = await client.createStopLossOrder(
+                  ctx, symbol, bybitSide, normalizeQuantity(actualQty, slRules.qtyStep, slRules.minQty),
+                  targetSlPriceRounded, strategy.hedgeMode
                 );
                 slOrderId = slOrder.orderId;
                 this.logger.log(`[BYBIT LIMIT SL/TP] SL order created: ${slOrderId} at ${targetSlPriceRounded}`);
@@ -1568,13 +1444,12 @@ export class WebhookService {
                   `[SL REPRICE] Trade ${tradeId} (${symbol}): SL desalinhado ${diffPercent!.toFixed(4)}pp. SL ${currentSlPrice} -> ${targetSlPriceRounded}`
                 );
                 try {
-                  const newSlOrder = await this.bybitClient.createStopLossOrder(
-                    decryptedKey, decryptedSecret, strategy.isTestnet,
-                    symbol, bybitSide, normalizeQuantity(actualQty, slRules.qtyStep, slRules.minQty),
-                    targetSlPriceRounded, strategy.hedgeMode, strategy.siteId
+                  const newSlOrder = await client.createStopLossOrder(
+                    ctx, symbol, bybitSide, normalizeQuantity(actualQty, slRules.qtyStep, slRules.minQty),
+                    targetSlPriceRounded, strategy.hedgeMode
                   );
                   try {
-                    await this.bybitClient.cancelOrder(decryptedKey, decryptedSecret, strategy.isTestnet, symbol, trade.stopLossOrderId!, strategy.siteId);
+                    await client.cancelOrder(ctx, symbol, trade.stopLossOrderId!);
                   } catch (cancelErr: any) {
                     this.logger.error(
                       `[SL REPRICE] Falha ao cancelar o SL antigo ${trade.stopLossOrderId} apos criar o novo ${newSlOrder.orderId}: ${cancelErr.message}. ` +
@@ -1629,10 +1504,6 @@ export class WebhookService {
 
           // Only create TPs if they don't already exist
           if (!hasTakeProfit && tpConfigs.length > 0) {
-            const bybitPositionIdx = await this.bybitClient.getPositionIdx(
-              decryptedKey, decryptedSecret, strategy.isTestnet, symbol, bybitSide, strategy.hedgeMode, strategy.siteId
-            );
-
             for (const tp of tpConfigs) {
             const tpPrice = this.calculateTakeProfitPrice(side, actualEntryPrice, tp.percent);
             const tpQty = Number(tp.quantity);
@@ -1640,20 +1511,16 @@ export class WebhookService {
             if (tpQty <= 0) continue;
 
             try {
-              const tpOrder = await withOneRetry(() => this.bybitClient.createOrder(
-                decryptedKey, decryptedSecret, strategy.isTestnet,
-                {
-                  symbol,
-                  side: side === 'BUY' ? 'Sell' : 'Buy',
-                  orderType: 'Limit',
-                  qty: tp.quantity,
-                  price: roundPriceToTick(tpPrice, rules.priceTick),
-                  positionIdx: bybitPositionIdx,
-                  reduceOnly: true,
-                  hedgeMode: strategy.hedgeMode
-                },
-                strategy.siteId
-              ), (ms) => this.sleep(ms));
+              const tpOrder = await withOneRetry(() => client.createOrder(ctx, {
+                symbol,
+                side: (side === 'BUY' ? 'SELL' : 'BUY') as NeutralSide,
+                orderType: 'LIMIT',
+                qty: tp.quantity,
+                price: roundPriceToTick(tpPrice, rules.priceTick),
+                reduceOnly: true,
+                hedgeMode: strategy.hedgeMode,
+                positionSide: bybitSide,
+              }), (ms) => this.sleep(ms));
               tpOrderIds.push(`${tp.id}:${tpOrder.orderId}`);
               this.logger.log(`[BYBIT LIMIT TP${tp.id}] Created: ${tpOrder.orderId}`);
             } catch (e: any) {
@@ -1680,28 +1547,21 @@ export class WebhookService {
               );
               const oldTpOrders = parseTrackedTpOrders(trade.takeProfitOrderId);
               const newTpOrderIds: string[] = [];
-              const bybitPositionIdx = await this.bybitClient.getPositionIdx(
-                decryptedKey, decryptedSecret, strategy.isTestnet, symbol, bybitSide, strategy.hedgeMode, strategy.siteId
-              );
               for (const tp of tpConfigs) {
                 const tpPrice = this.calculateTakeProfitPrice(side, actualEntryPrice, tp.percent);
                 const tpQty = Number(tp.quantity);
                 if (tpQty <= 0) continue;
                 try {
-                  const tpOrder = await withOneRetry(() => this.bybitClient.createOrder(
-                    decryptedKey, decryptedSecret, strategy.isTestnet,
-                    {
-                      symbol,
-                      side: side === 'BUY' ? 'Sell' : 'Buy',
-                      orderType: 'Limit',
-                      qty: tp.quantity,
-                      price: roundPriceToTick(tpPrice, rules.priceTick),
-                      positionIdx: bybitPositionIdx,
-                      reduceOnly: true,
-                      hedgeMode: strategy.hedgeMode
-                    },
-                    strategy.siteId
-                  ), (ms) => this.sleep(ms));
+                  const tpOrder = await withOneRetry(() => client.createOrder(ctx, {
+                    symbol,
+                    side: (side === 'BUY' ? 'SELL' : 'BUY') as NeutralSide,
+                    orderType: 'LIMIT',
+                    qty: tp.quantity,
+                    price: roundPriceToTick(tpPrice, rules.priceTick),
+                    reduceOnly: true,
+                    hedgeMode: strategy.hedgeMode,
+                    positionSide: bybitSide,
+                  }), (ms) => this.sleep(ms));
                   newTpOrderIds.push(`${tp.id}:${tpOrder.orderId}`);
                   this.logger.log(`[TP REPRICE] TP${tp.id} recriado: ${tpOrder.orderId} em ${tpPrice.toFixed(8)}`);
                 } catch (e: any) {
@@ -1712,7 +1572,7 @@ export class WebhookService {
               if (newTpOrderIds.length > 0) {
                 for (const old of oldTpOrders) {
                   try {
-                    await this.bybitClient.cancelOrder(decryptedKey, decryptedSecret, strategy.isTestnet, symbol, old.orderId, strategy.siteId);
+                    await client.cancelOrder(ctx, symbol, old.orderId);
                   } catch (cancelErr: any) {
                     this.logger.error(`[TP REPRICE] Falha ao cancelar o TP antigo ${old.orderId}: ${cancelErr.message}`);
                   }
@@ -1760,6 +1620,9 @@ export class WebhookService {
       );
 
       try {
+        const client = this.exchangeFactory.get(Exchange.BYBIT);
+        const ctx = this.buildCtx(decryptedKey, decryptedSecret, strategy.isTestnet, strategy.siteId);
+
         const trade = await this.tradesService.findById(tradeId);
         if (!trade || trade.status !== 'OPEN') {
           this.logger.log(`[BYBIT LIMIT SL/TP] Trade ${tradeId} is no longer open, no action needed`);
@@ -1771,8 +1634,8 @@ export class WebhookService {
           return;
         }
 
-        const positions = await this.bybitClient.getPositions(decryptedKey, decryptedSecret, strategy.isTestnet, symbol, strategy.siteId);
-        const bybitSide = side === 'BUY' ? 'Buy' : 'Sell';
+        const positions = await client.getPositions(ctx, symbol);
+        const bybitSide = (side === 'BUY' ? 'BUY' : 'SELL') as NeutralSide;
         const position = positions.find(p => p.symbol === symbol && p.side === bybitSide);
 
         if (position && parseFloat(position.size) > 0) {
@@ -1784,22 +1647,16 @@ export class WebhookService {
             `  Action: Closing position immediately to prevent unprotected exposure`
           );
 
-          const closeSide = side === 'BUY' ? 'Sell' : 'Buy';
-          await this.bybitClient.createOrder(
-            decryptedKey,
-            decryptedSecret,
-            strategy.isTestnet,
-            {
-              symbol,
-              side: closeSide,
-              orderType: 'Market',
-              qty: position.size,
-              positionIdx: await this.bybitClient.getPositionIdx(decryptedKey, decryptedSecret, strategy.isTestnet, symbol, bybitSide, strategy.hedgeMode, strategy.siteId),
-              reduceOnly: true,
-              hedgeMode: strategy.hedgeMode
-            },
-            strategy.siteId
-          );
+          const closeSide = (side === 'BUY' ? 'SELL' : 'BUY') as NeutralSide;
+          await client.createOrder(ctx, {
+            symbol,
+            side: closeSide,
+            orderType: 'MARKET',
+            qty: position.size,
+            reduceOnly: true,
+            hedgeMode: strategy.hedgeMode,
+            positionSide: bybitSide,
+          });
 
           await this.tradesService.updateTrade(tradeId, {
             status: 'ERROR',
@@ -1853,7 +1710,9 @@ export class WebhookService {
       const tracked = parseTrackedTpOrders(trade.takeProfitOrderId);
       if (tracked.length > 0) {
         try {
-          const openOrders = await this.bybitClient.getOpenOrders(decryptedKey, decryptedSecret, resolvedStrategy.isTestnet, trade.symbol, resolvedStrategy.siteId);
+          const client = this.exchangeFactory.get(Exchange.BYBIT);
+          const ctx = this.buildCtx(decryptedKey, decryptedSecret, resolvedStrategy.isTestnet, resolvedStrategy.siteId);
+          const openOrders = await client.getOpenOrders(ctx, trade.symbol);
           const liveOrderIds = new Set(openOrders.map(o => o.orderId));
           if (countLiveTrackedOrders(tracked, liveOrderIds) === 0) {
             this.logger.warn(
@@ -2134,7 +1993,9 @@ export class WebhookService {
 
   private async getCurrentPrice(symbol: string, exchange: Exchange, isTestnet: boolean): Promise<number> {
     if (exchange === Exchange.BYBIT) {
-      return await this.bybitClient.getCurrentPrice(isTestnet, symbol);
+      const client = this.exchangeFactory.get(Exchange.BYBIT);
+      const ctx = this.buildCtx('', '', isTestnet);
+      return await client.getCurrentPrice(ctx, symbol);
     }
 
     const baseURL = isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
@@ -2286,11 +2147,9 @@ export class WebhookService {
 
             // Cancel only this specific LIMIT order from the buffer
             if (oppositePendingOrder.exchangeOrderId) {
-                if (exchange === Exchange.BYBIT) {
-                    await this.bybitClient.cancelOrder(decryptedKey, decryptedSecret, resolvedStrategy.isTestnet, normalizedSymbol, oppositePendingOrder.exchangeOrderId, resolvedStrategy.siteId);
-                } else {
-                    await this.cancelBinanceOrderOrAlgo(normalizedSymbol, oppositePendingOrder.exchangeOrderId, decryptedKey, decryptedSecret, resolvedStrategy.isTestnet);
-                }
+                const cancelClient = this.exchangeFactory.get(exchange);
+                const cancelCtx = this.buildCtx(decryptedKey, decryptedSecret, resolvedStrategy.isTestnet, resolvedStrategy.siteId);
+                await cancelClient.cancelOrder(cancelCtx, normalizedSymbol, oppositePendingOrder.exchangeOrderId);
                 this.logger.log(`[BUFFER CANCEL] Cancelled buffer order ${oppositePendingOrder.exchangeOrderId}`);
             }
 
@@ -2316,11 +2175,9 @@ export class WebhookService {
 
                 // Cancel all protection orders (TP/SL) for this position
                 this.logger.log(`[ONE-WAY] Cancelling all protection orders for ${normalizedSymbol}...`);
-                if (exchange === Exchange.BYBIT) {
-                    await this.bybitClient.cancelAllOrders(decryptedKey, decryptedSecret, resolvedStrategy.isTestnet, normalizedSymbol, resolvedStrategy.siteId);
-                } else {
-                    await this.cancelAllBinanceOrders(decryptedKey, decryptedSecret, resolvedStrategy.isTestnet, normalizedSymbol);
-                }
+                const oneWayClient = this.exchangeFactory.get(exchange);
+                const oneWayCtx = this.buildCtx(decryptedKey, decryptedSecret, resolvedStrategy.isTestnet, resolvedStrategy.siteId);
+                await oneWayClient.cancelAllOrders(oneWayCtx, normalizedSymbol);
 
                 // Only close active position if it exists
                 if (oppositeActiveTrade) {
@@ -2340,30 +2197,18 @@ export class WebhookService {
                         this.logger.log(`[ONE-WAY] Closing ${oppositeActiveTrade.symbol} (${closeQty}) before reversal.`);
 
                         const rules = await this.getSymbolRules(normalizedSymbol, resolvedStrategy.isTestnet);
+                        const closeClient = this.exchangeFactory.get(exchange);
+                        const closeCtx = this.buildCtx(decryptedKey, decryptedSecret, resolvedStrategy.isTestnet, resolvedStrategy.siteId);
 
-                        if (exchange === Exchange.BYBIT) {
-                            const originalSide = oppositeActiveTrade.side === 'BUY' ? 'Buy' : 'Sell';
-                            const positionIdx = await this.bybitClient.getPositionIdx(
-                                decryptedKey, decryptedSecret, resolvedStrategy.isTestnet, normalizedSymbol, originalSide, resolvedStrategy.hedgeMode, resolvedStrategy.siteId
-                            );
-
-                            await this.bybitClient.createOrder(decryptedKey, decryptedSecret, resolvedStrategy.isTestnet, {
-                                symbol: normalizedSymbol,
-                                side: closeSide === 'BUY' ? 'Buy' : 'Sell',
-                                orderType: 'Market',
-                                qty: normalizeQuantity(closeQty, rules.qtyStep, rules.minQty),
-                                positionIdx,
-                                reduceOnly: true
-                            }, resolvedStrategy.siteId);
-                        } else {
-                            const params = new URLSearchParams();
-                            params.append('symbol', normalizedSymbol);
-                            params.append('side', closeSide);
-                            params.append('type', 'MARKET');
-                            params.append('quantity', normalizeQuantity(closeQty, rules.qtyStep, rules.minQty));
-                            params.append('reduceOnly', 'true');
-                            await this.createBinanceOrder(params, decryptedKey, decryptedSecret, resolvedStrategy.isTestnet);
-                        }
+                        await closeClient.createOrder(closeCtx, {
+                            symbol: normalizedSymbol,
+                            side: closeSide as NeutralSide,
+                            orderType: 'MARKET',
+                            qty: normalizeQuantity(closeQty, rules.qtyStep, rules.minQty),
+                            reduceOnly: true,
+                            hedgeMode: resolvedStrategy.hedgeMode,
+                            positionSide: oppositeActiveTrade.side as NeutralSide,
+                        });
                         this.logger.log(`[ONE-WAY] Position closed successfully.`);
                     }
 
@@ -2876,12 +2721,13 @@ export class WebhookService {
           );
 
           if (exchange === Exchange.BYBIT && !isAveragingTrade) {
-            const bybitSide = side === 'BUY' ? 'Buy' : 'Sell';
+            const bybitSide = (side === 'BUY' ? 'BUY' : 'SELL') as NeutralSide;
             try {
-              const slOrder = await this.bybitClient.createStopLossOrder(
-                decryptedKey, decryptedSecret, resolvedStrategy.isTestnet,
-                normalizedSymbol, bybitSide, normalizeQuantity(quantity, rules.qtyStep, rules.minQty),
-                roundPriceToTick(stopLossPrice, rules.priceTick), resolvedStrategy.hedgeMode, resolvedStrategy.siteId
+              const slClient = this.exchangeFactory.get(Exchange.BYBIT);
+              const slCtx = this.buildCtx(decryptedKey, decryptedSecret, resolvedStrategy.isTestnet, resolvedStrategy.siteId);
+              const slOrder = await slClient.createStopLossOrder(
+                slCtx, normalizedSymbol, bybitSide, normalizeQuantity(quantity, rules.qtyStep, rules.minQty),
+                roundPriceToTick(stopLossPrice, rules.priceTick), resolvedStrategy.hedgeMode
               );
               stopLossOrderId = slOrder.orderId;
               this.logger.log(`[SL] Bybit Stop Loss order created: ${stopLossOrderId} at ${roundPriceToTick(stopLossPrice, rules.priceTick)}`);
@@ -2959,22 +2805,18 @@ export class WebhookService {
           this.logger.log(`[TP] Creating independent TPs for new entry: ${quantityForTPs} (existing entry keeps its own TPs)`);
         }
 
-        let bybitPositionIdx: number | undefined;
+        const bybitSideForTps = (side === 'BUY' ? 'BUY' : 'SELL') as NeutralSide;
         if (exchange === Exchange.BYBIT) {
           this.logger.log(`[BYBIT] Waiting for position to be confirmed before creating TP orders...`);
-          const bybitSide = side === 'BUY' ? 'Buy' : 'Sell';
-          const positionConfirmed = await this.bybitClient.waitForPosition(
-            decryptedKey, decryptedSecret, resolvedStrategy.isTestnet, normalizedSymbol, bybitSide, 10, 500, resolvedStrategy.hedgeMode, resolvedStrategy.siteId
+          const bybitClient = this.exchangeFactory.get(Exchange.BYBIT);
+          const bybitCtx = this.buildCtx(decryptedKey, decryptedSecret, resolvedStrategy.isTestnet, resolvedStrategy.siteId);
+          const positionConfirmed = await bybitClient.waitForPosition(
+            bybitCtx, normalizedSymbol, bybitSideForTps, 10, 500, resolvedStrategy.hedgeMode
           );
 
           if (!positionConfirmed) {
             this.logger.warn(`[BYBIT] Position not confirmed within timeout. TP orders may fail.`);
           }
-
-          bybitPositionIdx = await this.bybitClient.getPositionIdx(
-            decryptedKey, decryptedSecret, resolvedStrategy.isTestnet, normalizedSymbol, bybitSide, resolvedStrategy.hedgeMode, resolvedStrategy.siteId
-          );
-          this.logger.log(`[BYBIT] Using positionIdx ${bybitPositionIdx} for TP orders (original position side: ${bybitSide})`);
         }
 
         const failedTps: Array<{ id: number; reason: string }> = [];
@@ -3004,20 +2846,18 @@ export class WebhookService {
 
           try {
             if (exchange === Exchange.BYBIT) {
-              const bybitOrder = await withOneRetry(() => this.bybitClient.createOrder(
-                decryptedKey, decryptedSecret, resolvedStrategy.isTestnet,
-                {
-                  symbol: normalizedSymbol,
-                  side: side === 'BUY' ? 'Sell' : 'Buy',
-                  orderType: 'Limit',
-                  qty: tp.quantity,
-                  price: roundPriceToTick(tpPriceRaw, rules.priceTick),
-                  positionIdx: bybitPositionIdx,
-                  reduceOnly: true,
-                  hedgeMode: resolvedStrategy.hedgeMode
-                },
-                resolvedStrategy.siteId
-              ), (ms) => this.sleep(ms));
+              const bybitClient = this.exchangeFactory.get(Exchange.BYBIT);
+              const bybitCtx = this.buildCtx(decryptedKey, decryptedSecret, resolvedStrategy.isTestnet, resolvedStrategy.siteId);
+              const bybitOrder = await withOneRetry(() => bybitClient.createOrder(bybitCtx, {
+                symbol: normalizedSymbol,
+                side: (side === 'BUY' ? 'SELL' : 'BUY') as NeutralSide,
+                orderType: 'LIMIT',
+                qty: tp.quantity,
+                price: roundPriceToTick(tpPriceRaw, rules.priceTick),
+                reduceOnly: true,
+                hedgeMode: resolvedStrategy.hedgeMode,
+                positionSide: bybitSideForTps,
+              }), (ms) => this.sleep(ms));
               if (bybitOrder?.orderId) {
                 tpOrderIds.push(`${tp.id}:${bybitOrder.orderId}`);
               }
@@ -3227,7 +3067,7 @@ export class WebhookService {
       siteId
     );
 
-    const bybitSide = side === 'BUY' ? 'Buy' : 'Sell';
+    const bybitSide = (side === 'BUY' ? 'BUY' : 'SELL') as NeutralSide;
     const orderType = isLimitOrder ? 'Limit' : 'Market';
 
     // Fetch Bybit-specific symbol rules
@@ -3237,20 +3077,16 @@ export class WebhookService {
 
     this.logger.log(`[BYBIT] Creating ${orderType} order: ${bybitSide} ${formattedQty} ${symbol}`);
 
-    const result = await this.bybitClient.createOrder(
-      apiKey,
-      apiSecret,
-      strategy.isTestnet,
-      {
-        symbol,
-        side: bybitSide,
-        orderType,
-        qty: formattedQty,
-        price: isLimitOrder ? formattedPrice : undefined,
-        hedgeMode: strategy.hedgeMode
-      },
-      siteId
-    );
+    const client = this.exchangeFactory.get(Exchange.BYBIT);
+    const ctx = this.buildCtx(apiKey, apiSecret, strategy.isTestnet, siteId);
+    const result = await client.createOrder(ctx, {
+      symbol,
+      side: bybitSide,
+      orderType: isLimitOrder ? 'LIMIT' : 'MARKET',
+      qty: formattedQty,
+      price: isLimitOrder ? formattedPrice : undefined,
+      hedgeMode: strategy.hedgeMode,
+    });
 
     this.logger.log(`[BYBIT] Order placed! Order ID: ${result.orderId}`);
 
