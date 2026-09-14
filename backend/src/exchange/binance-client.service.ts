@@ -257,14 +257,25 @@ export class BinanceClientService implements ExchangeClient {
     }
 
     if (params.hedgeMode) {
-      const positionSide = params.side === 'BUY' ? 'LONG' : 'SHORT';
-      orderParams.append('positionSide', positionSide);
+      const positionRef = params.positionSide ?? params.side;
+      orderParams.append('positionSide', positionRef === 'BUY' ? 'LONG' : 'SHORT');
     } else if (params.reduceOnly) {
       orderParams.append('reduceOnly', 'true');
     }
 
-    const result = await this.createRegularOrder(ctx, orderParams);
-    return { orderId: String(result.orderId) };
+    try {
+      const result = await this.createRegularOrder(ctx, orderParams);
+      return { orderId: String(result.orderId) };
+    } catch (error: any) {
+      const errorCode = error.response?.data?.code;
+      if (errorCode === -4061 && params.hedgeMode) {
+        orderParams.delete('positionSide');
+        orderParams.set('reduceOnly', 'true');
+        const retry = await this.createRegularOrder(ctx, orderParams);
+        return { orderId: String(retry.orderId) };
+      }
+      throw error;
+    }
   }
 
   async createStopLossOrder(
@@ -375,7 +386,11 @@ export class BinanceClientService implements ExchangeClient {
     }
   }
 
-  async cancelAllOrders(ctx: AccountContext, symbol: string): Promise<boolean> {
+  async cancelAllOrders(ctx: AccountContext, symbol: string, positionSide?: NeutralSide): Promise<boolean> {
+    if (positionSide) {
+      return this.cancelOrdersForPositionSide(ctx, symbol, positionSide === 'BUY' ? 'LONG' : 'SHORT');
+    }
+
     let ok = true;
     try {
       const params = new URLSearchParams();
@@ -410,6 +425,38 @@ export class BinanceClientService implements ExchangeClient {
     }
 
     return ok;
+  }
+
+  private async cancelOrdersForPositionSide(ctx: AccountContext, symbol: string, positionSide: 'LONG' | 'SHORT'): Promise<boolean> {
+    try {
+      const ordersResponse = await this.signedGet(ctx, '/fapi/v1/openOrders', new URLSearchParams({ symbol }));
+      const ordersToCancel = (ordersResponse.data as any[]).filter((o) => o.positionSide === positionSide || o.positionSide === 'BOTH');
+      for (const order of ordersToCancel) {
+        try {
+          await this.cancelRegularOrder(ctx, symbol, String(order.orderId));
+        } catch (e: any) {
+          this.logger.warn(`[BINANCE] Failed to cancel order ${order.orderId}: ${e.message}`);
+        }
+      }
+    } catch (e: any) {
+      this.logger.warn(`[BINANCE] Failed to fetch/cancel orders for ${positionSide}: ${e.message}`);
+    }
+
+    try {
+      const algoOrdersResponse = await this.signedGet(ctx, '/fapi/v1/openAlgoOrders', new URLSearchParams({ symbol }));
+      const algoOrdersToCancel = (algoOrdersResponse.data as any[]).filter((o) => o.positionSide === positionSide || o.positionSide === 'BOTH');
+      for (const algoOrder of algoOrdersToCancel) {
+        try {
+          await this.cancelAlgoOrder(ctx, String(algoOrder.algoId));
+        } catch (e: any) {
+          this.logger.warn(`[BINANCE] Failed to cancel algo order ${algoOrder.algoId}: ${e.message}`);
+        }
+      }
+    } catch (e: any) {
+      this.logger.warn(`[BINANCE] Failed to fetch/cancel algo orders for ${positionSide}: ${e.message}`);
+    }
+
+    return true;
   }
 
   async getOpenOrders(

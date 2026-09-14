@@ -78,6 +78,34 @@ describe('BinanceClientService (extrai as chamadas HTTP hoje espalhadas por webh
     expect(params.get('reduceOnly')).toBe('true');
   });
 
+  it('createOrder hedge mode fechando posicao: positionSide vem de positionSide explicito (posicao original), nao do side transacional invertido', async () => {
+    (BinanceRequestUtil.post as jest.Mock).mockResolvedValue({ data: { orderId: 45 } });
+
+    await client.createOrder(makeCtx(), {
+      symbol: 'BTCUSDT', side: 'SELL', orderType: 'MARKET', qty: '1',
+      reduceOnly: true, hedgeMode: true, positionSide: 'BUY',
+    });
+
+    const body = (BinanceRequestUtil.post as jest.Mock).mock.calls[0][1] as string;
+    const params = new URLSearchParams(body);
+    expect(params.get('side')).toBe('SELL');
+    expect(params.get('positionSide')).toBe('LONG');
+  });
+
+  it('createOrder: erro -4061 em hedge mode -> reenvia com reduceOnly no lugar de positionSide', async () => {
+    (BinanceRequestUtil.post as jest.Mock)
+      .mockRejectedValueOnce({ response: { data: { code: -4061 } } })
+      .mockResolvedValueOnce({ data: { orderId: 46 } });
+
+    const result = await client.createOrder(makeCtx(), { symbol: 'BTCUSDT', side: 'SELL', orderType: 'MARKET', qty: '1', hedgeMode: true });
+
+    expect(result).toEqual({ orderId: '46' });
+    const retryBody = (BinanceRequestUtil.post as jest.Mock).mock.calls[1][1] as string;
+    const retryParams = new URLSearchParams(retryBody);
+    expect(retryParams.has('positionSide')).toBe(false);
+    expect(retryParams.get('reduceOnly')).toBe('true');
+  });
+
   it('createStopLossOrder: usa a rota algo (STOP_MARKET), normaliza qty/preco pelo SymbolRulesService e usa reduceOnly em one-way', async () => {
     (BinanceRequestUtil.post as jest.Mock).mockResolvedValue({ data: { algoId: 999 } });
 
@@ -138,6 +166,41 @@ describe('BinanceClientService (extrai as chamadas HTTP hoje espalhadas por webh
 
     expect(ok).toBe(true);
     expect(BinanceRequestUtil.delete).toHaveBeenCalledTimes(1);
+  });
+
+  it('cancelAllOrders sem positionSide: cancela tudo do simbolo (regular + algo), sem filtro -- comportamento one-way', async () => {
+    (BinanceRequestUtil.delete as jest.Mock).mockResolvedValue({ data: {} });
+    (BinanceRequestUtil.get as jest.Mock).mockResolvedValueOnce({ data: [{ algoId: 1 }, { algoId: 2 }] });
+
+    const ok = await client.cancelAllOrders(makeCtx(), 'BTCUSDT');
+
+    expect(ok).toBe(true);
+    expect((BinanceRequestUtil.delete as jest.Mock).mock.calls[0][0]).toContain('/fapi/v1/allOpenOrders');
+    expect(BinanceRequestUtil.delete).toHaveBeenCalledTimes(3);
+  });
+
+  it('cancelAllOrders com positionSide: cancela so as ordens (regulares e algo) daquele lado ou BOTH -- preserva a posicao oposta em hedge mode', async () => {
+    (BinanceRequestUtil.get as jest.Mock)
+      .mockResolvedValueOnce({ data: [
+        { orderId: 1, positionSide: 'LONG' },
+        { orderId: 2, positionSide: 'SHORT' },
+        { orderId: 3, positionSide: 'BOTH' },
+      ] })
+      .mockResolvedValueOnce({ data: [
+        { algoId: 10, positionSide: 'LONG' },
+        { algoId: 11, positionSide: 'SHORT' },
+      ] });
+    (BinanceRequestUtil.delete as jest.Mock).mockResolvedValue({ data: {} });
+
+    const ok = await client.cancelAllOrders(makeCtx(), 'BTCUSDT', 'BUY');
+
+    expect(ok).toBe(true);
+    const deleteUrls = (BinanceRequestUtil.delete as jest.Mock).mock.calls.map((c) => c[0] as string);
+    expect(deleteUrls.some((u) => u.includes('orderId=1'))).toBe(true);
+    expect(deleteUrls.some((u) => u.includes('orderId=3'))).toBe(true);
+    expect(deleteUrls.some((u) => u.includes('orderId=2'))).toBe(false);
+    expect(deleteUrls.some((u) => u.includes('algoId=10'))).toBe(true);
+    expect(deleteUrls.some((u) => u.includes('algoId=11'))).toBe(false);
   });
 
   it('getOrderInfo: tenta algoOrder primeiro; erro nao-4143/1102/2013 -> null sem tentar regular', async () => {

@@ -85,6 +85,33 @@ describe('BybitExchangeClient (adapter -- traduz AccountContext para o BybitClie
     );
   });
 
+  it('createOrder resolve positionIdx sempre a partir da posicao original (positionSide), nunca do side transacional -- critico para fechar em hedge mode', async () => {
+    (bybit.getPositionIdx as jest.Mock).mockResolvedValue(1);
+
+    await client.createOrder(makeCtx(), {
+      symbol: 'BTCUSDT',
+      side: 'SELL',
+      orderType: 'MARKET',
+      qty: '1',
+      reduceOnly: true,
+      hedgeMode: true,
+      positionSide: 'BUY',
+    });
+
+    expect(bybit.getPositionIdx).toHaveBeenCalledWith('key', 'secret', false, 'BTCUSDT', 'Buy', true, null);
+    expect(bybit.createOrder).toHaveBeenCalledWith(
+      'key', 'secret', false,
+      expect.objectContaining({ side: 'Sell', reduceOnly: true, positionIdx: 1 }),
+      null,
+    );
+  });
+
+  it('createOrder sem positionSide explicito: resolve positionIdx a partir do proprio side (abertura de posicao)', async () => {
+    await client.createOrder(makeCtx(), { symbol: 'BTCUSDT', side: 'BUY', orderType: 'MARKET', qty: '1', hedgeMode: true });
+
+    expect(bybit.getPositionIdx).toHaveBeenCalledWith('key', 'secret', false, 'BTCUSDT', 'Buy', true, null);
+  });
+
   it('region e repassado como siteId em toda chamada autenticada', async () => {
     const ctx = makeCtx({ region: 'BRA_BTL' });
     await client.getPositions(ctx, 'BTCUSDT');

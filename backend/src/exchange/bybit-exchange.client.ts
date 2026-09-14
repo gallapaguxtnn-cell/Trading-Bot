@@ -30,6 +30,16 @@ export class BybitExchangeClient implements ExchangeClient {
     ctx: AccountContext,
     params: CreateOrderParams,
   ): Promise<OrderResult> {
+    const positionIdx = await this.bybit.getPositionIdx(
+      ctx.credentials.apiKey,
+      ctx.credentials.apiSecret,
+      ctx.mode === 'DEMO',
+      params.symbol,
+      toBybitSide(params.positionSide ?? params.side),
+      params.hedgeMode,
+      ctx.region,
+    );
+
     const result = await this.bybit.createOrder(
       ctx.credentials.apiKey,
       ctx.credentials.apiSecret,
@@ -42,6 +52,7 @@ export class BybitExchangeClient implements ExchangeClient {
         price: params.price,
         reduceOnly: params.reduceOnly,
         hedgeMode: params.hedgeMode,
+        positionIdx,
       },
       ctx.region,
     );
@@ -63,7 +74,7 @@ export class BybitExchangeClient implements ExchangeClient {
     );
   }
 
-  async cancelAllOrders(ctx: AccountContext, symbol: string): Promise<boolean> {
+  async cancelAllOrders(ctx: AccountContext, symbol: string, _positionSide?: NeutralSide): Promise<boolean> {
     return this.bybit.cancelAllOrders(
       ctx.credentials.apiKey,
       ctx.credentials.apiSecret,

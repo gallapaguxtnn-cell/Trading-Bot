@@ -33,6 +33,7 @@ export interface CreateOrderParams {
   price?: string;
   reduceOnly?: boolean;
   hedgeMode?: boolean;
+  positionSide?: NeutralSide;
 }
 
 export interface OrderResult {
@@ -85,7 +86,7 @@ export interface ExchangeClient {
     orderId: string,
   ): Promise<boolean>;
 
-  cancelAllOrders(ctx: AccountContext, symbol: string): Promise<boolean>;
+  cancelAllOrders(ctx: AccountContext, symbol: string, positionSide?: NeutralSide): Promise<boolean>;
 
   getOpenOrders(ctx: AccountContext, symbol?: string): Promise<OrderInfo[]>;
 
