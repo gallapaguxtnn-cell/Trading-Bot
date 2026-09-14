@@ -6,9 +6,10 @@ import { PortfolioMigrationService } from './portfolio-migration.service';
 import { Portfolio } from './portfolio.entity';
 import { Strategy } from '../strategies/strategy.entity';
 import { ExchangeModule } from '../exchange/exchange.module';
+import { CommonModule } from '../common/common.module';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Portfolio, Strategy]), ExchangeModule],
+  imports: [TypeOrmModule.forFeature([Portfolio, Strategy]), ExchangeModule, CommonModule],
   controllers: [PortfoliosController],
   providers: [PortfoliosService, PortfolioMigrationService],
   exports: [PortfoliosService, PortfolioMigrationService],

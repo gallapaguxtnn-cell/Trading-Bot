@@ -15,7 +15,7 @@ import { SignalLog } from '../webhook/signal-log.entity';
 import { Strategy, Exchange } from '../strategies/strategy.entity';
 import { AuditLog, AuditCategory } from '../auditor/audit-log.entity';
 import { CredentialsResolverService } from '../common/credentials-resolver.service';
-import { BybitClientService } from '../exchange/bybit-client.service';
+import { ExchangeClientFactory } from '../exchange/exchange-client.factory';
 
 function makeTrade(overrides: Record<string, unknown> = {}) {
   return {
@@ -52,6 +52,7 @@ describe('AdminService.resetTrades', () => {
   let auditRepository: { create: jest.Mock; save: jest.Mock };
   let credentialsResolver: { resolveCredentials: jest.Mock };
   let bybitClient: { getOrderInfo: jest.Mock; getOrderHistory: jest.Mock; cancelOrder: jest.Mock };
+  let exchangeFactory: { get: jest.Mock };
 
   beforeEach(async () => {
     jest.clearAllMocks();
@@ -66,6 +67,7 @@ describe('AdminService.resetTrades', () => {
       getOrderHistory: jest.fn().mockResolvedValue(null),
       cancelOrder: jest.fn().mockResolvedValue(true),
     };
+    exchangeFactory = { get: jest.fn().mockReturnValue(bybitClient) };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -76,7 +78,7 @@ describe('AdminService.resetTrades', () => {
         { provide: getRepositoryToken(Strategy), useValue: strategyRepository },
         { provide: getRepositoryToken(AuditLog), useValue: auditRepository },
         { provide: CredentialsResolverService, useValue: credentialsResolver },
-        { provide: BybitClientService, useValue: bybitClient },
+        { provide: ExchangeClientFactory, useValue: exchangeFactory },
       ],
     }).compile();
 
@@ -220,7 +222,11 @@ describe('AdminService.resetTrades', () => {
 
     const result = await service.resetTrades({ dryRun: false, confirm: 'RESET', cancelOrphanOrders: true });
 
-    expect(bybitClient.cancelOrder).toHaveBeenCalledWith('plain-key', 'plain-secret', true, 'BTCUSDT', 'order-123', 'BRA_BTL');
+    expect(bybitClient.cancelOrder).toHaveBeenCalledWith(
+      { credentials: { apiKey: 'plain-key', apiSecret: 'plain-secret' }, mode: 'DEMO', region: 'BRA_BTL' },
+      'BTCUSDT',
+      'order-123',
+    );
     expect(tradeRepository.delete).toHaveBeenCalled();
     expect((result as any).cancelledOrphanOrders).toEqual([
       { tradeId: 't1', symbol: 'BTCUSDT', orderId: 'order-123', status: 'New', exchange: Exchange.BYBIT },

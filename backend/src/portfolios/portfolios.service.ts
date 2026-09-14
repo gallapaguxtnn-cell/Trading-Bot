@@ -6,7 +6,7 @@ import { PortfolioPublic, PortfolioSummary } from './portfolio-public.interface'
 import { Strategy, Exchange } from '../strategies/strategy.entity';
 import { EncryptionUtil } from '../utils/encryption.util';
 import { ExchangeService } from '../exchange/exchange.service';
-import { BybitClientService } from '../exchange/bybit-client.service';
+import { ExchangeClientFactory } from '../exchange/exchange-client.factory';
 
 const PORTFOLIO_PUBLIC_COLUMNS = [
   'id',
@@ -29,7 +29,7 @@ export class PortfoliosService {
     @InjectRepository(Strategy)
     private readonly strategiesRepository: Repository<Strategy>,
     private readonly exchangeService: ExchangeService,
-    private readonly bybitClient: BybitClientService,
+    private readonly exchangeFactory: ExchangeClientFactory,
   ) {}
 
   private async maskApiKey(encryptedApiKey: string | null | undefined): Promise<string> {
@@ -156,7 +156,8 @@ export class PortfoliosService {
     try {
       if (portfolio.exchange === Exchange.BYBIT) {
         const siteId = portfolio.bybitSiteId || process.env.BYBIT_SITE_ID || null;
-        const balance = await this.bybitClient.getWalletBalance(apiKey, apiSecret, isTestnet, siteId);
+        const client = this.exchangeFactory.get(Exchange.BYBIT);
+        const balance = await client.getWalletBalance({ credentials: { apiKey, apiSecret }, mode: isTestnet ? 'DEMO' : 'REAL', region: siteId as any });
         return { success: true, balance };
       }
       if (portfolio.exchange === Exchange.BINANCE) {

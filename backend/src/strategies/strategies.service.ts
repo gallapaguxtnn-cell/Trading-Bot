@@ -4,26 +4,22 @@ import { Repository } from 'typeorm';
 import { Strategy, Exchange } from './strategy.entity';
 import { Trade } from './trade.entity';
 import { EncryptionUtil } from '../utils/encryption.util';
-import { BinanceRequestUtil } from '../utils/binance-request.util';
-import { BybitClientService } from '../exchange/bybit-client.service';
 import { CredentialsResolverService } from '../common/credentials-resolver.service';
 import { PortfoliosService } from '../portfolios/portfolios.service';
 import { PortfolioSummary } from '../portfolios/portfolio-public.interface';
-import axios from 'axios';
-import * as crypto from 'crypto';
+import { ExchangeClientFactory } from '../exchange/exchange-client.factory';
+import { toAccountContext } from '../common/account-context.util';
 
 @Injectable()
 export class StrategiesService {
   private readonly logger = new Logger(StrategiesService.name);
-  private readonly BINANCE_TESTNET_URL = 'https://testnet.binancefuture.com';
-  private readonly BINANCE_MAINNET_URL = 'https://fapi.binance.com';
 
   constructor(
     @InjectRepository(Strategy)
     private strategiesRepository: Repository<Strategy>,
     @InjectRepository(Trade)
     private tradesRepository: Repository<Trade>,
-    private readonly bybitClient: BybitClientService,
+    private readonly exchangeFactory: ExchangeClientFactory,
     private readonly credentialsResolver: CredentialsResolverService,
     private readonly portfoliosService: PortfoliosService,
   ) {}
@@ -196,19 +192,13 @@ export class StrategiesService {
       const apiKey = (await EncryptionUtil.decrypt(resolvedStrategy.apiKey)).trim();
       const apiSecret = (await EncryptionUtil.decrypt(resolvedStrategy.apiSecret)).trim();
       const exchange = resolvedStrategy.exchange || Exchange.BINANCE;
+      const client = this.exchangeFactory.get(exchange);
+      const ctx = toAccountContext(resolvedStrategy, apiKey, apiSecret);
 
       for (const trade of pendingTrades) {
         if (!trade.exchangeOrderId) continue;
         try {
-          if (exchange === Exchange.BYBIT) {
-            await this.bybitClient.cancelOrder(apiKey, apiSecret, resolvedStrategy.isTestnet, trade.symbol, trade.exchangeOrderId, resolvedStrategy.siteId);
-          } else {
-            const baseUrl = resolvedStrategy.isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
-            const ts = Date.now();
-            const qs = `symbol=${trade.symbol}&orderId=${trade.exchangeOrderId}&timestamp=${ts}`;
-            const sig = crypto.createHmac('sha256', apiSecret).update(qs).digest('hex');
-            await BinanceRequestUtil.delete(`${baseUrl}/fapi/v1/order?${qs}&signature=${sig}`, { headers: { 'X-MBX-APIKEY': apiKey } });
-          }
+          await client.cancelOrder(ctx, trade.symbol, trade.exchangeOrderId);
           await this.tradesRepository.update(trade.id, {
             status: 'ERROR',
             error: 'Ordem cancelada: estratégia pausada/desativada',
@@ -256,6 +246,8 @@ export class StrategiesService {
     const apiKey = (await EncryptionUtil.decrypt(resolvedStrategy.apiKey)).trim();
     const apiSecret = (await EncryptionUtil.decrypt(resolvedStrategy.apiSecret)).trim();
     const exchange = resolvedStrategy.exchange || Exchange.BINANCE;
+    const client = this.exchangeFactory.get(exchange);
+    const ctx = toAccountContext(resolvedStrategy, apiKey, apiSecret);
 
     const result: any = {
       strategy: {
@@ -277,71 +269,28 @@ export class StrategiesService {
     }
 
     try {
-      if (exchange === Exchange.BYBIT) {
-        const orders = await this.bybitClient.getOpenOrders(apiKey, apiSecret, resolvedStrategy.isTestnet, undefined, resolvedStrategy.siteId);
-        result.openOrders = orders.map((order: any) => ({
-          orderId: order.orderId,
-          symbol: order.symbol,
-          side: order.side,
-          type: order.orderType,
-          price: parseFloat(order.price),
-          quantity: parseFloat(order.qty),
-          status: order.orderStatus,
+      const orders = await client.getOpenOrders(ctx);
+      result.openOrders = orders.map((order) => ({
+        orderId: order.orderId,
+        symbol: order.symbol,
+        side: order.side,
+        type: order.orderType,
+        price: parseFloat(order.price),
+        quantity: parseFloat(order.qty),
+        status: order.orderStatus,
+      }));
+
+      const positions = await client.getPositions(ctx);
+      result.openPositions = positions
+        .filter((pos) => parseFloat(pos.size) > 0)
+        .map((pos) => ({
+          symbol: pos.symbol,
+          side: exchange === Exchange.BYBIT ? (pos.side === 'BUY' ? 'Buy' : 'Sell') : (pos.side === 'BUY' ? 'LONG' : 'SHORT'),
+          size: parseFloat(pos.size),
+          entryPrice: parseFloat(pos.avgPrice),
+          unrealizedPnl: parseFloat(pos.unrealizedPnl),
+          leverage: parseFloat(pos.leverage),
         }));
-
-        const positions = await this.bybitClient.getPositions(apiKey, apiSecret, resolvedStrategy.isTestnet, undefined, resolvedStrategy.siteId);
-        result.openPositions = positions
-          .filter((pos: any) => parseFloat(pos.size) > 0)
-          .map((pos: any) => ({
-            symbol: pos.symbol,
-            side: pos.side,
-            size: parseFloat(pos.size),
-            entryPrice: parseFloat(pos.avgPrice),
-            unrealizedPnl: parseFloat(pos.unrealisedPnl),
-            leverage: parseFloat(pos.leverage),
-          }));
-      } else {
-        const baseUrl = resolvedStrategy.isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
-
-        const ordersTimestamp = Date.now();
-        const ordersQuery = `timestamp=${ordersTimestamp}`;
-        const ordersSignature = crypto.createHmac('sha256', apiSecret).update(ordersQuery).digest('hex');
-
-        const ordersResponse = await BinanceRequestUtil.get(
-          `${baseUrl}/fapi/v1/openOrders?${ordersQuery}&signature=${ordersSignature}`,
-          { headers: { 'X-MBX-APIKEY': apiKey } }
-        );
-
-        result.openOrders = ordersResponse.data.map((order: any) => ({
-          orderId: order.orderId,
-          symbol: order.symbol,
-          side: order.side,
-          type: order.type,
-          price: parseFloat(order.price),
-          quantity: parseFloat(order.origQty),
-          status: order.status,
-        }));
-
-        const positionsTimestamp = Date.now();
-        const positionsQuery = `timestamp=${positionsTimestamp}`;
-        const positionsSignature = crypto.createHmac('sha256', apiSecret).update(positionsQuery).digest('hex');
-
-        const positionsResponse = await BinanceRequestUtil.get(
-          `${baseUrl}/fapi/v2/positionRisk?${positionsQuery}&signature=${positionsSignature}`,
-          { headers: { 'X-MBX-APIKEY': apiKey } }
-        );
-
-        result.openPositions = positionsResponse.data
-          .filter((pos: any) => parseFloat(pos.positionAmt) !== 0)
-          .map((pos: any) => ({
-            symbol: pos.symbol,
-            side: parseFloat(pos.positionAmt) > 0 ? 'LONG' : 'SHORT',
-            size: Math.abs(parseFloat(pos.positionAmt)),
-            entryPrice: parseFloat(pos.entryPrice),
-            unrealizedPnl: parseFloat(pos.unRealizedProfit),
-            leverage: parseFloat(pos.leverage),
-          }));
-      }
 
       this.logger.log(
         `[ORDERS CHECK] ${resolvedStrategy.name}: ${result.openOrders.length} open orders, ${result.openPositions.length} open positions`

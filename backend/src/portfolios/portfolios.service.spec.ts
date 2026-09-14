@@ -5,7 +5,7 @@ import { PortfoliosService } from './portfolios.service';
 import { Portfolio, PortfolioMode } from './portfolio.entity';
 import { Strategy, Exchange } from '../strategies/strategy.entity';
 import { ExchangeService } from '../exchange/exchange.service';
-import { BybitClientService } from '../exchange/bybit-client.service';
+import { ExchangeClientFactory } from '../exchange/exchange-client.factory';
 import { EncryptionUtil } from '../utils/encryption.util';
 
 function createQueryBuilderMock(result: any, isMany: boolean) {
@@ -25,6 +25,7 @@ describe('PortfoliosService', () => {
   let strategiesRepository: { count: jest.Mock };
   let exchangeService: { getExchange: jest.Mock };
   let bybitClient: { getWalletBalance: jest.Mock };
+  let exchangeFactory: { get: jest.Mock };
 
   beforeEach(async () => {
     jest.clearAllMocks();
@@ -44,6 +45,7 @@ describe('PortfoliosService', () => {
     strategiesRepository = { count: jest.fn().mockResolvedValue(0) };
     exchangeService = { getExchange: jest.fn() };
     bybitClient = { getWalletBalance: jest.fn() };
+    exchangeFactory = { get: jest.fn().mockReturnValue(bybitClient) };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -51,7 +53,7 @@ describe('PortfoliosService', () => {
         { provide: getRepositoryToken(Portfolio), useValue: portfoliosRepository },
         { provide: getRepositoryToken(Strategy), useValue: strategiesRepository },
         { provide: ExchangeService, useValue: exchangeService },
-        { provide: BybitClientService, useValue: bybitClient },
+        { provide: ExchangeClientFactory, useValue: exchangeFactory },
       ],
     }).compile();
 
@@ -223,7 +225,12 @@ describe('PortfoliosService', () => {
 
       const result = await service.testConnection('p1');
 
-      expect(bybitClient.getWalletBalance).toHaveBeenCalledWith('key123', 'secret123', true, null);
+      expect(exchangeFactory.get).toHaveBeenCalledWith(Exchange.BYBIT);
+      expect(bybitClient.getWalletBalance).toHaveBeenCalledWith({
+        credentials: { apiKey: 'key123', apiSecret: 'secret123' },
+        mode: 'DEMO',
+        region: null,
+      });
       expect(result).toEqual({ success: true, balance: 1234.5 });
     });
 
@@ -239,7 +246,11 @@ describe('PortfoliosService', () => {
 
       await service.testConnection('p1');
 
-      expect(bybitClient.getWalletBalance).toHaveBeenCalledWith('key123', 'secret123', true, 'BRA_BTL');
+      expect(bybitClient.getWalletBalance).toHaveBeenCalledWith({
+        credentials: { apiKey: 'key123', apiSecret: 'secret123' },
+        mode: 'DEMO',
+        region: 'BRA_BTL',
+      });
     });
 
     it('binance: usa isTestnet=false para modo REAL e le o saldo USDT via ccxt', async () => {

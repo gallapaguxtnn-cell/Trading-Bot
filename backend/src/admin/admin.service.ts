@@ -3,16 +3,15 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { In, Repository } from 'typeorm';
 import * as fs from 'fs';
 import * as path from 'path';
-import * as crypto from 'crypto';
 import { Trade } from '../strategies/trade.entity';
 import { TradeExecution } from '../trades/trade-execution.entity';
 import { SignalLog } from '../webhook/signal-log.entity';
 import { Strategy, Exchange } from '../strategies/strategy.entity';
 import { AuditLog, AuditCategory, AuditSeverity } from '../auditor/audit-log.entity';
 import { CredentialsResolverService } from '../common/credentials-resolver.service';
-import { BybitClientService } from '../exchange/bybit-client.service';
+import { ExchangeClientFactory } from '../exchange/exchange-client.factory';
+import { toAccountContext } from '../common/account-context.util';
 import { EncryptionUtil } from '../utils/encryption.util';
-import { BinanceRequestUtil } from '../utils/binance-request.util';
 
 export interface ResetTradesParams {
   dryRun?: boolean;
@@ -32,8 +31,6 @@ export interface LiveOrphanOrder {
 
 const LIVE_BYBIT_STATUSES = new Set(['New', 'PartiallyFilled', 'Untriggered']);
 const LIVE_BINANCE_STATUSES = new Set(['NEW', 'PARTIALLY_FILLED']);
-const BINANCE_TESTNET_URL = 'https://testnet.binancefuture.com';
-const BINANCE_MAINNET_URL = 'https://fapi.binance.com';
 
 @Injectable()
 export class AdminService {
@@ -51,49 +48,8 @@ export class AdminService {
     @InjectRepository(AuditLog)
     private readonly auditRepository: Repository<AuditLog>,
     private readonly credentialsResolver: CredentialsResolverService,
-    private readonly bybitClient: BybitClientService,
+    private readonly exchangeFactory: ExchangeClientFactory,
   ) {}
-
-  private async checkBinanceOrderStatus(
-    apiKey: string,
-    apiSecret: string,
-    isTestnet: boolean,
-    symbol: string,
-    orderId: string,
-  ): Promise<string | null> {
-    try {
-      const baseUrl = isTestnet ? BINANCE_TESTNET_URL : BINANCE_MAINNET_URL;
-      const queryString = `symbol=${symbol}&orderId=${orderId}&timestamp=${Date.now()}`;
-      const signature = crypto.createHmac('sha256', apiSecret).update(queryString).digest('hex');
-
-      const response = await BinanceRequestUtil.get(
-        `${baseUrl}/fapi/v1/order?${queryString}&signature=${signature}`,
-        { headers: { 'X-MBX-APIKEY': apiKey } },
-      );
-
-      return response.data?.status ?? null;
-    } catch (error: any) {
-      this.logger.warn(`[RESET] Falha ao consultar ordem Binance ${orderId} (${symbol}): ${error.message}`);
-      return null;
-    }
-  }
-
-  private async cancelBinanceOrder(
-    apiKey: string,
-    apiSecret: string,
-    isTestnet: boolean,
-    symbol: string,
-    orderId: string,
-  ): Promise<void> {
-    const baseUrl = isTestnet ? BINANCE_TESTNET_URL : BINANCE_MAINNET_URL;
-    const queryString = `symbol=${symbol}&orderId=${orderId}&timestamp=${Date.now()}`;
-    const signature = crypto.createHmac('sha256', apiSecret).update(queryString).digest('hex');
-
-    await BinanceRequestUtil.delete(
-      `${baseUrl}/fapi/v1/order?${queryString}&signature=${signature}`,
-      { headers: { 'X-MBX-APIKEY': apiKey } },
-    );
-  }
 
   private async checkLiveOrders(trades: Trade[]): Promise<LiveOrphanOrder[]> {
     const candidates = trades.filter((t) => t.status !== 'OPEN' && !!t.exchangeOrderId);
@@ -123,21 +79,17 @@ export class AdminService {
       const apiKey = (await EncryptionUtil.decrypt(credentials.apiKey)).trim();
       const apiSecret = (await EncryptionUtil.decrypt(credentials.apiSecret)).trim();
       const orderId = trade.exchangeOrderId!;
+      const client = this.exchangeFactory.get(credentials.exchange);
+      const ctx = toAccountContext(credentials, apiKey, apiSecret);
 
-      if (credentials.exchange === Exchange.BYBIT) {
-        let orderInfo = await this.bybitClient.getOrderInfo(apiKey, apiSecret, credentials.isTestnet, trade.symbol, orderId, credentials.siteId);
-        if (!orderInfo) {
-          orderInfo = await this.bybitClient.getOrderHistory(apiKey, apiSecret, credentials.isTestnet, trade.symbol, orderId, credentials.siteId);
-        }
-        const status = orderInfo?.orderStatus;
-        if (status && LIVE_BYBIT_STATUSES.has(status)) {
-          live.push({ tradeId: trade.id, symbol: trade.symbol, orderId, status, exchange: Exchange.BYBIT });
-        }
-      } else if (credentials.exchange === Exchange.BINANCE) {
-        const status = await this.checkBinanceOrderStatus(apiKey, apiSecret, credentials.isTestnet, trade.symbol, orderId);
-        if (status && LIVE_BINANCE_STATUSES.has(status)) {
-          live.push({ tradeId: trade.id, symbol: trade.symbol, orderId, status, exchange: Exchange.BINANCE });
-        }
+      let orderInfo = await client.getOrderInfo(ctx, trade.symbol, orderId);
+      if (!orderInfo) {
+        orderInfo = await client.getOrderHistory(ctx, trade.symbol, orderId);
+      }
+      const status = orderInfo?.orderStatus;
+      const liveStatuses = credentials.exchange === Exchange.BYBIT ? LIVE_BYBIT_STATUSES : LIVE_BINANCE_STATUSES;
+      if (status && liveStatuses.has(status)) {
+        live.push({ tradeId: trade.id, symbol: trade.symbol, orderId, status, exchange: credentials.exchange });
       }
     }
 
@@ -166,12 +118,10 @@ export class AdminService {
         const credentials = await this.credentialsResolver.resolveCredentials(strategy);
         const apiKey = (await EncryptionUtil.decrypt(credentials.apiKey)).trim();
         const apiSecret = (await EncryptionUtil.decrypt(credentials.apiSecret)).trim();
+        const client = this.exchangeFactory.get(order.exchange);
+        const ctx = toAccountContext(credentials, apiKey, apiSecret);
 
-        if (order.exchange === Exchange.BYBIT) {
-          await this.bybitClient.cancelOrder(apiKey, apiSecret, credentials.isTestnet, order.symbol, order.orderId, credentials.siteId);
-        } else {
-          await this.cancelBinanceOrder(apiKey, apiSecret, credentials.isTestnet, order.symbol, order.orderId);
-        }
+        await client.cancelOrder(ctx, order.symbol, order.orderId);
 
         this.logger.warn(`[RESET] Ordem orfa cancelada: trade=${order.tradeId} symbol=${order.symbol} orderId=${order.orderId} status=${order.status} exchange=${order.exchange}`);
         cancelled.push(order);
