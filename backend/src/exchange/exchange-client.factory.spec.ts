@@ -1,5 +1,10 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { ExchangeClientFactory, EXCHANGE_CLIENT_BYBIT, EXCHANGE_CLIENT_BINANCE, EXCHANGE_CLIENT_OKX } from './exchange-client.factory';
+import {
+  ExchangeClientFactory,
+  EXCHANGE_CLIENT_BYBIT,
+  EXCHANGE_CLIENT_BINANCE,
+  EXCHANGE_CLIENT_OKX,
+} from './exchange-client.factory';
 import { Exchange } from '../strategies/strategy.entity';
 import { ExchangeClient } from './exchange-client.interface';
 
@@ -15,9 +20,15 @@ describe('ExchangeClientFactory', () => {
 
     const factory = module.get<ExchangeClientFactory>(ExchangeClientFactory);
 
-    expect(() => factory.get(Exchange.BYBIT)).toThrow('Nenhum ExchangeClient registrado para bybit');
-    expect(() => factory.get(Exchange.BINANCE)).toThrow('Nenhum ExchangeClient registrado para binance');
-    expect(() => factory.get(Exchange.OKX)).toThrow('Nenhum ExchangeClient registrado para okx');
+    expect(() => factory.get(Exchange.BYBIT)).toThrow(
+      'Nenhum ExchangeClient registrado para bybit',
+    );
+    expect(() => factory.get(Exchange.BINANCE)).toThrow(
+      'Nenhum ExchangeClient registrado para binance',
+    );
+    expect(() => factory.get(Exchange.OKX)).toThrow(
+      'Nenhum ExchangeClient registrado para okx',
+    );
     expect(factory.has(Exchange.BYBIT)).toBe(false);
   });
 

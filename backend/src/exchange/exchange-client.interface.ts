@@ -1,6 +1,12 @@
 export type AccountMode = 'DEMO' | 'REAL';
 
-export type AccountRegion = null | 'BRA_BTL' | 'ARG_BTL' | 'EL_SALVADOR' | 'EEA' | 'US';
+export type AccountRegion =
+  | null
+  | 'BRA_BTL'
+  | 'ARG_BTL'
+  | 'EL_SALVADOR'
+  | 'EEA'
+  | 'US';
 
 export interface AccountCredentials {
   apiKey: string;
@@ -68,17 +74,32 @@ export interface SymbolRules {
 }
 
 export interface ExchangeClient {
-  createOrder(ctx: AccountContext, params: CreateOrderParams): Promise<OrderResult>;
+  createOrder(
+    ctx: AccountContext,
+    params: CreateOrderParams,
+  ): Promise<OrderResult>;
 
-  cancelOrder(ctx: AccountContext, symbol: string, orderId: string): Promise<boolean>;
+  cancelOrder(
+    ctx: AccountContext,
+    symbol: string,
+    orderId: string,
+  ): Promise<boolean>;
 
   cancelAllOrders(ctx: AccountContext, symbol: string): Promise<boolean>;
 
   getOpenOrders(ctx: AccountContext, symbol?: string): Promise<OrderInfo[]>;
 
-  getOrderInfo(ctx: AccountContext, symbol: string, orderId: string): Promise<OrderInfo | null>;
+  getOrderInfo(
+    ctx: AccountContext,
+    symbol: string,
+    orderId: string,
+  ): Promise<OrderInfo | null>;
 
-  getOrderHistory(ctx: AccountContext, symbol: string, orderId: string): Promise<OrderInfo | null>;
+  getOrderHistory(
+    ctx: AccountContext,
+    symbol: string,
+    orderId: string,
+  ): Promise<OrderInfo | null>;
 
   createStopLossOrder(
     ctx: AccountContext,
@@ -98,13 +119,26 @@ export interface ExchangeClient {
     hedgeMode?: boolean,
   ): Promise<boolean>;
 
-  clearTradingStop(ctx: AccountContext, symbol: string, side: NeutralSide, hedgeMode?: boolean): Promise<boolean>;
+  clearTradingStop(
+    ctx: AccountContext,
+    symbol: string,
+    side: NeutralSide,
+    hedgeMode?: boolean,
+  ): Promise<boolean>;
 
   getPositions(ctx: AccountContext, symbol?: string): Promise<PositionInfo[]>;
 
-  detectPositionMode(ctx: AccountContext, symbol: string): Promise<NeutralPositionMode | null>;
+  detectPositionMode(
+    ctx: AccountContext,
+    symbol: string,
+  ): Promise<NeutralPositionMode | null>;
 
-  getPositionIdx(ctx: AccountContext, symbol: string, side: NeutralSide, hedgeMode?: boolean): Promise<number>;
+  getPositionIdx(
+    ctx: AccountContext,
+    symbol: string,
+    side: NeutralSide,
+    hedgeMode?: boolean,
+  ): Promise<number>;
 
   waitForPosition(
     ctx: AccountContext,
@@ -115,15 +149,33 @@ export interface ExchangeClient {
     hedgeMode?: boolean,
   ): Promise<boolean>;
 
-  setLeverage(ctx: AccountContext, symbol: string, leverage: number): Promise<void>;
+  setLeverage(
+    ctx: AccountContext,
+    symbol: string,
+    leverage: number,
+  ): Promise<void>;
 
-  setMarginMode(ctx: AccountContext, symbol: string, marginMode: NeutralMarginMode, leverage: number): Promise<void>;
+  setMarginMode(
+    ctx: AccountContext,
+    symbol: string,
+    marginMode: NeutralMarginMode,
+    leverage: number,
+  ): Promise<void>;
+
+  ensurePositionMode(
+    ctx: AccountContext,
+    symbol: string,
+    hedgeMode: boolean,
+  ): Promise<void>;
 
   getWalletBalance(ctx: AccountContext): Promise<number>;
 
   getCurrentPrice(ctx: AccountContext, symbol: string): Promise<number>;
 
-  getLastTradePrice(ctx: AccountContext, symbol: string): Promise<number | null>;
+  getLastTradePrice(
+    ctx: AccountContext,
+    symbol: string,
+  ): Promise<number | null>;
 
   getSymbolRules(ctx: AccountContext, symbol: string): Promise<SymbolRules>;
 
