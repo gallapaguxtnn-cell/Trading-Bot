@@ -5,12 +5,12 @@ import { StrategiesService } from '../strategies/strategies.service';
 import { EncryptionUtil } from '../utils/encryption.util';
 import { BinanceRequestUtil } from '../utils/binance-request.util';
 import { Exchange } from '../strategies/strategy.entity';
-import { BybitClientService } from '../exchange/bybit-client.service';
 import { Trade } from '../strategies/trade.entity';
 import { ExecutionType } from './trade-execution.entity';
 import { CredentialsResolverService } from '../common/credentials-resolver.service';
-import axios from 'axios';
-import * as crypto from 'crypto';
+import { ExchangeClientFactory } from '../exchange/exchange-client.factory';
+import { toAccountContext } from '../common/account-context.util';
+import { NeutralSide } from '../exchange/exchange-client.interface';
 import Decimal from 'decimal.js';
 
 interface SymbolRules {
@@ -29,7 +29,7 @@ export class TradesController {
     private readonly tradesService: TradesService,
     private readonly positionSyncService: PositionSyncService,
     private readonly strategiesService: StrategiesService,
-    private readonly bybitClient: BybitClientService,
+    private readonly exchangeFactory: ExchangeClientFactory,
     private readonly credentialsResolver: CredentialsResolverService,
   ) {}
 
@@ -276,22 +276,17 @@ export class TradesController {
     try {
       this.logger.log(`[CLOSE] Starting to close trade ${trade.id} for ${trade.symbol} (hedgeMode: ${strategy.hedgeMode})`);
 
-      await this.cancelAllOrders(trade.symbol, exchange, apiKey, apiSecret, strategy.isTestnet, strategy.hedgeMode, trade.side, strategy.siteId);
+      const client = this.exchangeFactory.get(exchange);
+      const ctx = toAccountContext(strategy, apiKey, apiSecret);
+      const tradeSide = trade.side as NeutralSide;
 
-      const positionSize = await this.getPositionSize(
-        trade.symbol,
-        exchange,
-        apiKey,
-        apiSecret,
-        strategy.isTestnet,
-        strategy.hedgeMode,
-        trade.side,
-        strategy.siteId
-      );
+      await client.cancelAllOrders(ctx, trade.symbol, strategy.hedgeMode ? tradeSide : undefined);
+
+      const positionSize = await this.getPositionSize(exchange, client, ctx, trade.symbol, tradeSide);
 
       this.logger.log(`[CLOSE] Position size on exchange: ${positionSize}`);
 
-      const exitPrice = await this.getCurrentPrice(trade.symbol, exchange, strategy.isTestnet);
+      const exitPrice = await client.getCurrentPrice(ctx, trade.symbol);
       const entryPrice = parseFloat(trade.entryPrice as any);
       const dbQuantity = parseFloat(trade.quantity as any);
 
@@ -312,38 +307,20 @@ export class TradesController {
       }
 
       const rules = await this.getSymbolRules(trade.symbol, strategy.isTestnet, exchange);
-      const closeSide = trade.side === 'BUY' ? 'SELL' : 'BUY';
+      const closeSide: NeutralSide = trade.side === 'BUY' ? 'SELL' : 'BUY';
       const formattedQty = this.normalizeQuantity(positionSize, rules.qtyStep, rules.minQty);
 
       this.logger.log(`[CLOSE] Closing ${trade.symbol}: side=${closeSide}, qty=${formattedQty}`);
 
-      if (exchange === Exchange.BYBIT) {
-        const originalSide = trade.side === 'BUY' ? 'Buy' : 'Sell';
-        const positionIdx = await this.bybitClient.getPositionIdx(
-          apiKey, apiSecret, strategy.isTestnet, trade.symbol, originalSide, strategy.hedgeMode, strategy.siteId
-        );
-
-        await this.bybitClient.createOrder(apiKey, apiSecret, strategy.isTestnet, {
-          symbol: trade.symbol,
-          side: closeSide === 'BUY' ? 'Buy' : 'Sell',
-          orderType: 'Market',
-          qty: formattedQty,
-          positionIdx,
-          reduceOnly: true,
-          hedgeMode: strategy.hedgeMode
-        }, strategy.siteId);
-      } else {
-        await this.closeBinancePosition(
-          trade.symbol,
-          closeSide,
-          formattedQty,
-          apiKey,
-          apiSecret,
-          strategy.isTestnet,
-          strategy.hedgeMode,
-          trade.side
-        );
-      }
+      await client.createOrder(ctx, {
+        symbol: trade.symbol,
+        side: closeSide,
+        orderType: 'MARKET',
+        qty: formattedQty,
+        reduceOnly: true,
+        hedgeMode: strategy.hedgeMode,
+        positionSide: tradeSide,
+      });
 
       let pnl: number;
       if (trade.side === 'BUY') {
@@ -385,214 +362,19 @@ export class TradesController {
     }
   }
 
-  private async cancelAllOrders(
-    symbol: string,
-    exchange: Exchange,
-    apiKey: string,
-    apiSecret: string,
-    isTestnet: boolean,
-    hedgeMode: boolean = false,
-    tradeSide?: string,
-    siteId?: string | null
-  ): Promise<void> {
-    try {
-      if (exchange === Exchange.BYBIT) {
-        await this.bybitClient.cancelAllOrders(apiKey, apiSecret, isTestnet, symbol, siteId);
-      } else {
-        const baseURL = isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
-
-        // First, get all open orders to filter by position side if in hedge mode
-        if (hedgeMode && tradeSide) {
-          const positionSide = tradeSide === 'BUY' ? 'LONG' : 'SHORT';
-
-          // Get open orders first
-          const getParams = new URLSearchParams();
-          getParams.append('symbol', symbol);
-          getParams.append('timestamp', Date.now().toString());
-          const getQuery = getParams.toString();
-          const getSig = crypto.createHmac('sha256', apiSecret).update(getQuery).digest('hex');
-
-          const ordersResponse = await BinanceRequestUtil.get(
-            `${baseURL}/fapi/v1/openOrders?${getQuery}&signature=${getSig}`,
-            { headers: { 'X-MBX-APIKEY': apiKey } }
-          );
-
-          // Cancel orders for this position side, including BOTH for One-Way Mode
-          const ordersToCancel = ordersResponse.data.filter(
-            (order: any) => order.positionSide === positionSide || order.positionSide === 'BOTH'
-          );
-
-          this.logger.log(`[CLOSE] Found ${ordersToCancel.length} orders to cancel (${positionSide} or BOTH)`);
-
-          // Cancel regular orders (LIMIT, etc)
-          for (const order of ordersToCancel) {
-            try {
-              const cancelParams = new URLSearchParams();
-              cancelParams.append('symbol', symbol);
-              cancelParams.append('orderId', order.orderId.toString());
-              cancelParams.append('timestamp', Date.now().toString());
-              const cancelQuery = cancelParams.toString();
-              const cancelSig = crypto.createHmac('sha256', apiSecret).update(cancelQuery).digest('hex');
-
-              await BinanceRequestUtil.delete(`${baseURL}/fapi/v1/order?${cancelQuery}&signature=${cancelSig}`, {
-                headers: { 'X-MBX-APIKEY': apiKey }
-              });
-              this.logger.log(`[CLOSE] Cancelled order ${order.orderId}`);
-            } catch (e: any) {
-              this.logger.warn(`[CLOSE] Failed to cancel order ${order.orderId}: ${e.message}`);
-            }
-          }
-
-          // Also cancel Algo Orders (CONDITIONAL - STOP_MARKET, etc)
-          try {
-            const algoParams = new URLSearchParams();
-            algoParams.append('symbol', symbol);
-            algoParams.append('timestamp', Date.now().toString());
-            const algoQuery = algoParams.toString();
-            const algoSig = crypto.createHmac('sha256', apiSecret).update(algoQuery).digest('hex');
-
-            const algoOrdersResponse = await BinanceRequestUtil.get(
-              `${baseURL}/fapi/v1/openAlgoOrders?${algoQuery}&signature=${algoSig}`,
-              { headers: { 'X-MBX-APIKEY': apiKey } }
-            );
-
-            // Filter by positionSide, including BOTH for One-Way Mode
-            const algoOrdersToCancel = algoOrdersResponse.data.filter(
-              (order: any) => order.positionSide === positionSide || order.positionSide === 'BOTH'
-            );
-
-            this.logger.log(`[CLOSE] Found ${algoOrdersToCancel.length} algo orders to cancel (${positionSide} or BOTH)`);
-
-            for (const algoOrder of algoOrdersToCancel) {
-              try {
-                const cancelAlgoParams = new URLSearchParams();
-                cancelAlgoParams.append('algoId', algoOrder.algoId.toString());
-                cancelAlgoParams.append('timestamp', Date.now().toString());
-                const cancelAlgoQuery = cancelAlgoParams.toString();
-                const cancelAlgoSig = crypto.createHmac('sha256', apiSecret).update(cancelAlgoQuery).digest('hex');
-
-                await BinanceRequestUtil.delete(`${baseURL}/fapi/v1/algoOrder?${cancelAlgoQuery}&signature=${cancelAlgoSig}`, {
-                  headers: { 'X-MBX-APIKEY': apiKey }
-                });
-                this.logger.log(`[CLOSE] Cancelled algo order ${algoOrder.algoId}`);
-              } catch (e: any) {
-                this.logger.warn(`[CLOSE] Failed to cancel algo order ${algoOrder.algoId}: ${e.message}`);
-              }
-            }
-          } catch (e: any) {
-            this.logger.warn(`[CLOSE] Failed to fetch/cancel algo orders: ${e.message}`);
-          }
-        } else {
-          // One-way mode: cancel all orders for symbol
-          const params = new URLSearchParams();
-          params.append('symbol', symbol);
-          params.append('timestamp', Date.now().toString());
-
-          const queryString = params.toString();
-          const signature = crypto.createHmac('sha256', apiSecret).update(queryString).digest('hex');
-
-          // Cancel all regular orders
-          await BinanceRequestUtil.delete(`${baseURL}/fapi/v1/allOpenOrders?${queryString}&signature=${signature}`, {
-            headers: { 'X-MBX-APIKEY': apiKey }
-          });
-
-          // Also cancel all Algo Orders (CONDITIONAL)
-          try {
-            const algoParams = new URLSearchParams();
-            algoParams.append('symbol', symbol);
-            algoParams.append('timestamp', Date.now().toString());
-            const algoQuery = algoParams.toString();
-            const algoSig = crypto.createHmac('sha256', apiSecret).update(algoQuery).digest('hex');
-
-            const algoOrdersResponse = await BinanceRequestUtil.get(
-              `${baseURL}/fapi/v1/openAlgoOrders?${algoQuery}&signature=${algoSig}`,
-              { headers: { 'X-MBX-APIKEY': apiKey } }
-            );
-
-            for (const algoOrder of algoOrdersResponse.data) {
-              try {
-                const cancelAlgoParams = new URLSearchParams();
-                cancelAlgoParams.append('algoId', algoOrder.algoId.toString());
-                cancelAlgoParams.append('timestamp', Date.now().toString());
-                const cancelAlgoQuery = cancelAlgoParams.toString();
-                const cancelAlgoSig = crypto.createHmac('sha256', apiSecret).update(cancelAlgoQuery).digest('hex');
-
-                await BinanceRequestUtil.delete(`${baseURL}/fapi/v1/algoOrder?${cancelAlgoQuery}&signature=${cancelAlgoSig}`, {
-                  headers: { 'X-MBX-APIKEY': apiKey }
-                });
-                this.logger.log(`[CLOSE] Cancelled algo order ${algoOrder.algoId}`);
-              } catch (e: any) {
-                this.logger.warn(`[CLOSE] Failed to cancel algo order ${algoOrder.algoId}: ${e.message}`);
-              }
-            }
-          } catch (e: any) {
-            this.logger.warn(`[CLOSE] Failed to fetch/cancel algo orders: ${e.message}`);
-          }
-        }
-      }
-      this.logger.log(`[CLOSE] Cancelled all orders for ${symbol}`);
-    } catch (error: any) {
-      this.logger.warn(`[CLOSE] Failed to cancel orders for ${symbol}: ${error.message}`);
-    }
-  }
-
   private async getPositionSize(
-    symbol: string,
     exchange: Exchange,
-    apiKey: string,
-    apiSecret: string,
-    isTestnet: boolean,
-    hedgeMode: boolean = false,
-    tradeSide?: string,
-    siteId?: string | null
+    client: ReturnType<ExchangeClientFactory['get']>,
+    ctx: ReturnType<typeof toAccountContext>,
+    symbol: string,
+    tradeSide: NeutralSide,
   ): Promise<number> {
     try {
-      if (exchange === Exchange.BYBIT) {
-        const positions = await this.bybitClient.getPositions(apiKey, apiSecret, isTestnet, symbol, siteId);
-        const position = positions.find((p: any) => p.symbol === symbol && parseFloat(p.size) > 0);
-        return position ? Math.abs(parseFloat(position.size)) : 0;
-      } else {
-        const baseURL = isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
-        const params = new URLSearchParams();
-        params.append('symbol', symbol);
-        params.append('timestamp', Date.now().toString());
-
-        const queryString = params.toString();
-        const signature = crypto.createHmac('sha256', apiSecret).update(queryString).digest('hex');
-
-        const response = await BinanceRequestUtil.get(
-          `${baseURL}/fapi/v2/positionRisk?${queryString}&signature=${signature}`,
-          { headers: { 'X-MBX-APIKEY': apiKey } }
-        );
-
-        // Try hedge mode first if configured
-        if (hedgeMode && tradeSide) {
-          const positionSide = tradeSide === 'BUY' ? 'LONG' : 'SHORT';
-          let position = response.data.find(
-            (p: any) => p.symbol === symbol && p.positionSide === positionSide
-          );
-
-          // If not found, try One-Way Mode (BOTH) as fallback
-          if (!position) {
-            this.logger.log(`[CLOSE] Position not found with ${positionSide}, trying One-Way Mode (BOTH)`);
-            position = response.data.find(
-              (p: any) => p.symbol === symbol && p.positionSide === 'BOTH' && parseFloat(p.positionAmt) !== 0
-            );
-          }
-
-          if (position) {
-            this.logger.log(`[CLOSE] Position found: ${position.positionSide}, size: ${Math.abs(parseFloat(position.positionAmt))}`);
-          } else {
-            this.logger.log(`[CLOSE] No position found for ${symbol}`);
-          }
-
-          return position ? Math.abs(parseFloat(position.positionAmt)) : 0;
-        } else {
-          // One-way mode: just find any position for the symbol
-          const position = response.data.find((p: any) => p.symbol === symbol && parseFloat(p.positionAmt) !== 0);
-          return position ? Math.abs(parseFloat(position.positionAmt)) : 0;
-        }
-      }
+      const positions = await client.getPositions(ctx, symbol);
+      const position = exchange === Exchange.BYBIT
+        ? positions.find((p) => p.symbol === symbol && parseFloat(p.size) > 0)
+        : positions.find((p) => p.symbol === symbol && p.side === tradeSide);
+      return position ? Math.abs(parseFloat(position.size)) : 0;
     } catch (error: any) {
       this.logger.error(`[CLOSE] Failed to get position size: ${error.message}`);
       return 0;
@@ -642,102 +424,4 @@ export class TradesController {
     return result.toFixed(decimalPlaces);
   }
 
-  private async closeBinancePosition(
-    symbol: string,
-    side: string,
-    quantity: string,
-    apiKey: string,
-    apiSecret: string,
-    isTestnet: boolean,
-    hedgeMode: boolean = false,
-    tradeSide?: string
-  ): Promise<void> {
-    const baseURL = isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
-    const params = new URLSearchParams();
-    params.append('symbol', symbol);
-    params.append('side', side);
-    params.append('type', 'MARKET');
-    params.append('quantity', quantity);
-
-    // CRITICAL: In hedge mode, we need positionSide instead of reduceOnly
-    // The positionSide should match the position we're closing (LONG for BUY trades, SHORT for SELL trades)
-    if (hedgeMode && tradeSide) {
-      const positionSide = tradeSide === 'BUY' ? 'LONG' : 'SHORT';
-      params.append('positionSide', positionSide);
-      this.logger.log(`[BINANCE] Hedge mode close: positionSide=${positionSide}`);
-    } else {
-      params.append('reduceOnly', 'true');
-    }
-
-    params.append('timestamp', Date.now().toString());
-
-    const queryString = params.toString();
-    const signature = crypto.createHmac('sha256', apiSecret).update(queryString).digest('hex');
-
-    this.logger.log(`[BINANCE] Closing position: ${symbol} ${side} ${quantity} (hedgeMode: ${hedgeMode})`);
-
-    try {
-      const response = await BinanceRequestUtil.post(
-        `${baseURL}/fapi/v1/order`,
-        `${queryString}&signature=${signature}`,
-        {
-          headers: {
-            'X-MBX-APIKEY': apiKey,
-            'Content-Type': 'application/x-www-form-urlencoded'
-          }
-        }
-      );
-
-      this.logger.log(`[BINANCE] Close order response: ${JSON.stringify(response.data)}`);
-    } catch (firstError: any) {
-      const errorCode = firstError.response?.data?.code;
-
-      // If error -4061 (position side mismatch) and we used positionSide, retry with reduceOnly
-      if (errorCode === -4061 && hedgeMode && tradeSide) {
-        this.logger.warn(`[BINANCE] Error -4061 detected - Retrying with One-Way Mode (reduceOnly)`);
-
-        // Remove positionSide and add reduceOnly
-        params.delete('positionSide');
-        params.set('reduceOnly', 'true');
-        params.set('timestamp', Date.now().toString());
-
-        const retryQueryString = params.toString();
-        const retrySignature = crypto.createHmac('sha256', apiSecret).update(retryQueryString).digest('hex');
-
-        const retryResponse = await BinanceRequestUtil.post(
-          `${baseURL}/fapi/v1/order`,
-          `${retryQueryString}&signature=${retrySignature}`,
-          {
-            headers: {
-              'X-MBX-APIKEY': apiKey,
-              'Content-Type': 'application/x-www-form-urlencoded'
-            }
-          }
-        );
-
-        this.logger.log(`[BINANCE] Close order response (One-Way Mode fallback): ${JSON.stringify(retryResponse.data)}`);
-      } else {
-        throw firstError;
-      }
-    }
-  }
-
-  private async getCurrentPrice(
-    symbol: string,
-    exchange: Exchange,
-    isTestnet: boolean
-  ): Promise<number> {
-    try {
-      if (exchange === Exchange.BYBIT) {
-        return await this.bybitClient.getCurrentPrice(isTestnet, symbol);
-      }
-
-      const baseURL = isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
-      const response = await BinanceRequestUtil.get(`${baseURL}/fapi/v1/ticker/price?symbol=${symbol}`);
-      return parseFloat(response.data.price);
-    } catch (error) {
-      this.logger.error(`Failed to get price for ${symbol}`);
-      return 0;
-    }
-  }
 }
