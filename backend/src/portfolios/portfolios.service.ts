@@ -203,6 +203,19 @@ export class PortfoliosService {
         const balance = balanceInfo?.total?.USDT ?? 0;
         return { success: true, balance };
       }
+      if (portfolio.exchange === Exchange.OKX) {
+        if (!portfolio.apiPassphrase) {
+          return { success: false, message: 'Portfólio OKX sem Passphrase configurada' };
+        }
+        const apiPassphrase = (await EncryptionUtil.decrypt(portfolio.apiPassphrase)).trim();
+        const client = this.exchangeFactory.get(Exchange.OKX);
+        const balance = await client.getWalletBalance({
+          credentials: { apiKey, apiSecret, passphrase: apiPassphrase },
+          mode: isTestnet ? 'DEMO' : 'REAL',
+          region: (portfolio.region as any) ?? null,
+        });
+        return { success: true, balance };
+      }
       return { success: false, message: `Corretora ${portfolio.exchange} ainda não é suportada` };
     } catch (error: any) {
       this.logger.warn(`[TEST CONNECTION] Falha ao validar portfólio ${id}: ${error.message}`);

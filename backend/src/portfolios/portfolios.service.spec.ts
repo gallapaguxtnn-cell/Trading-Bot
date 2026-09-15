@@ -438,11 +438,11 @@ describe('PortfoliosService', () => {
       expect(result).toEqual({ success: true, balance: 500 });
     });
 
-    it('OKX/BingX ainda sem client: retorna mensagem de nao suportado em vez de lancar', async () => {
+    it('BingX ainda sem client: retorna mensagem de nao suportado em vez de lancar', async () => {
       const encKey = await EncryptionUtil.encrypt('k');
       const encSecret = await EncryptionUtil.encrypt('s');
       const qb = createQueryBuilderMock(
-        { id: 'p1', exchange: Exchange.OKX, mode: PortfolioMode.DEMO, apiKey: encKey, apiSecret: encSecret },
+        { id: 'p1', exchange: Exchange.BINGX, mode: PortfolioMode.DEMO, apiKey: encKey, apiSecret: encSecret },
         false,
       );
       portfoliosRepository.createQueryBuilder.mockReturnValue(qb);
@@ -450,7 +450,48 @@ describe('PortfoliosService', () => {
       const result = await service.testConnection('p1');
 
       expect(result.success).toBe(false);
-      expect(result.message).toContain('okx');
+      expect(result.message).toContain('bingx');
+    });
+
+    it('OKX (FASE 7): sem passphrase gravada -- retorna mensagem clara em vez de tentar conectar', async () => {
+      const encKey = await EncryptionUtil.encrypt('k');
+      const encSecret = await EncryptionUtil.encrypt('s');
+      const qb = createQueryBuilderMock(
+        { id: 'p1', exchange: Exchange.OKX, mode: PortfolioMode.DEMO, apiKey: encKey, apiSecret: encSecret, apiPassphrase: null },
+        false,
+      );
+      portfoliosRepository.createQueryBuilder.mockReturnValue(qb);
+
+      const result = await service.testConnection('p1');
+
+      expect(result.success).toBe(false);
+      expect(result.message).toContain('Passphrase');
+      expect(exchangeFactory.get).not.toHaveBeenCalledWith(Exchange.OKX);
+    });
+
+    it('OKX (FASE 7): com passphrase, decripta as 3 credenciais e consulta o saldo via OkxClientService', async () => {
+      const encKey = await EncryptionUtil.encrypt('okx-key');
+      const encSecret = await EncryptionUtil.encrypt('okx-secret');
+      const encPassphrase = await EncryptionUtil.encrypt('okx-pass');
+      const qb = createQueryBuilderMock(
+        {
+          id: 'p1', exchange: Exchange.OKX, mode: PortfolioMode.DEMO,
+          apiKey: encKey, apiSecret: encSecret, apiPassphrase: encPassphrase, region: 'EL_SALVADOR',
+        },
+        false,
+      );
+      portfoliosRepository.createQueryBuilder.mockReturnValue(qb);
+      const okxClient = { getWalletBalance: jest.fn().mockResolvedValue(1000) };
+      exchangeFactory.get.mockImplementation((exchange: Exchange) => (exchange === Exchange.OKX ? okxClient : bybitClient));
+
+      const result = await service.testConnection('p1');
+
+      expect(okxClient.getWalletBalance).toHaveBeenCalledWith({
+        credentials: { apiKey: 'okx-key', apiSecret: 'okx-secret', passphrase: 'okx-pass' },
+        mode: 'DEMO',
+        region: 'EL_SALVADOR',
+      });
+      expect(result).toEqual({ success: true, balance: 1000 });
     });
   });
 });

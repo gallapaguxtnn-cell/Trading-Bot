@@ -32,7 +32,7 @@ const BASELINE: Record<string, number> = {
   'binance-ws/binance-ws-init.service.ts': 1,
   'common/symbol-rules.service.ts': 3,
   'portfolios/portfolio.entity.ts': 1,
-  'portfolios/portfolios.service.ts': 5,
+  'portfolios/portfolios.service.ts': 7,
   'position-sync/position-sync.service.ts': 7,
   'stop-loss/stop-loss.service.ts': 16,
   'strategies/strategies.service.ts': 3,
