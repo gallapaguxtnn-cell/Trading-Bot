@@ -815,7 +815,7 @@ export class PositionSyncService implements OnModuleInit {
                         }
 
                         const tradeQuantity = Math.abs(safeParseFloat(trade.quantity as any));
-                        const rules = await this.symbolRulesService.getSymbolRules(trade.symbol, strategy.isTestnet, Exchange.BINANCE);
+                        const rules = await client.getSymbolRules(ctx, trade.symbol);
                         const normalizedQty = normalizeQuantity(tradeQuantity, rules.qtyStep, rules.minQty);
 
                         if (normalizedQty === '0') {

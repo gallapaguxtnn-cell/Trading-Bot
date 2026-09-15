@@ -73,7 +73,7 @@ describe('PositionSyncService (FASE 3 -- arredondamento via SymbolRulesService)'
   });
 
   it('normaliza a quantidade pelo qtyStep real da corretora ao recriar o SL na Binance apos break-even (nunca toFixed(2) fixo)', async () => {
-    symbolRulesService.getSymbolRules.mockResolvedValue({ qtyStep: '10', priceTick: '0.10', minQty: '10', minNotional: '5' });
+    client.getSymbolRules.mockResolvedValue({ qtyStep: '10', priceTick: '0.10', minQty: '10', minNotional: '5' });
 
     const trade = {
       id: 'trade-1',
@@ -107,7 +107,7 @@ describe('PositionSyncService (FASE 3 -- arredondamento via SymbolRulesService)'
   });
 
   it('aborta a atualizacao do SL (nao envia a ordem) quando a quantidade normalizada arredonda para 0', async () => {
-    symbolRulesService.getSymbolRules.mockResolvedValue({ qtyStep: '10', priceTick: '0.10', minQty: '10', minNotional: '5' });
+    client.getSymbolRules.mockResolvedValue({ qtyStep: '10', priceTick: '0.10', minQty: '10', minNotional: '5' });
 
     const trade = {
       id: 'trade-1',

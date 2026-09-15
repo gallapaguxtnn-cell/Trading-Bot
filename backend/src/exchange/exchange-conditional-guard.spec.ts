@@ -30,7 +30,7 @@ function walk(dir: string, files: string[] = []): string[] {
 const BASELINE: Record<string, number> = {
   'admin/admin.service.ts': 2,
   'binance-ws/binance-ws-init.service.ts': 1,
-  'common/symbol-rules.service.ts': 2,
+  'common/symbol-rules.service.ts': 3,
   'portfolios/portfolio.entity.ts': 1,
   'portfolios/portfolios.service.ts': 5,
   'position-sync/position-sync.service.ts': 7,

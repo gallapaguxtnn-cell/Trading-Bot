@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { BybitClientService } from '../exchange/bybit-client.service';
+import { OkxClientService } from '../exchange/okx-client.service';
 import { BinanceRequestUtil } from '../utils/binance-request.util';
 import { RateLimiterUtil } from '../utils/rate-limiter.util';
 import { Exchange } from '../strategies/strategy.entity';
@@ -21,7 +22,10 @@ export class SymbolRulesService {
   private readonly logger = new Logger(SymbolRulesService.name);
   private readonly rateLimiter = RateLimiterUtil.getInstance();
 
-  constructor(private readonly bybitClient: BybitClientService) {}
+  constructor(
+    private readonly bybitClient: BybitClientService,
+    private readonly okxClient: OkxClientService,
+  ) {}
 
   private sleep(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms));
@@ -48,6 +52,22 @@ export class SymbolRulesService {
         return rules;
       } catch (error: any) {
         this.logger.error(`[BYBIT] Failed to fetch symbol rules: ${error.message}`);
+        return { ...DEFAULT_RULES };
+      }
+    }
+
+    if (exchange === Exchange.OKX) {
+      try {
+        await this.rateLimiter.throttle(`symbolRules:${symbol}`, 'okx');
+        const rules = await this.okxClient.getSymbolRules(
+          { credentials: { apiKey: '', apiSecret: '' }, mode: isTestnet ? 'DEMO' : 'REAL', region: null },
+          symbol,
+        );
+        this.rateLimiter.setCached(cacheKey, rules, SYMBOL_RULES_TTL_MS);
+        this.logger.log(`[OKX] Fetched rules for ${symbol}: Step=${rules.qtyStep}, Tick=${rules.priceTick}, MinNotional=${rules.minNotional}`);
+        return rules;
+      } catch (error: any) {
+        this.logger.error(`[OKX] Failed to fetch symbol rules: ${error.message}`);
         return { ...DEFAULT_RULES };
       }
     }

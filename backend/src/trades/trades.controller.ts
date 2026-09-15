@@ -3,7 +3,6 @@ import { TradesService } from './trades.service';
 import { PositionSyncService } from '../position-sync/position-sync.service';
 import { StrategiesService } from '../strategies/strategies.service';
 import { EncryptionUtil } from '../utils/encryption.util';
-import { BinanceRequestUtil } from '../utils/binance-request.util';
 import { Exchange } from '../strategies/strategy.entity';
 import { Trade } from '../strategies/trade.entity';
 import { ExecutionType } from './trade-execution.entity';
@@ -11,19 +10,11 @@ import { CredentialsResolverService } from '../common/credentials-resolver.servi
 import { ExchangeClientFactory } from '../exchange/exchange-client.factory';
 import { toAccountContext } from '../common/account-context.util';
 import { NeutralSide } from '../exchange/exchange-client.interface';
-import Decimal from 'decimal.js';
-
-interface SymbolRules {
-  qtyStep: number;
-  minQty: number;
-  priceTick: number;
-}
+import { normalizeQuantity } from '../common/exchange-precision.util';
 
 @Controller('trades')
 export class TradesController {
   private readonly logger = new Logger(TradesController.name);
-  private readonly BINANCE_TESTNET_URL = 'https://testnet.binancefuture.com';
-  private readonly BINANCE_MAINNET_URL = 'https://fapi.binance.com';
 
   constructor(
     private readonly tradesService: TradesService,
@@ -306,9 +297,9 @@ export class TradesController {
         return { success: false, alreadyClosed: true, pnl };
       }
 
-      const rules = await this.getSymbolRules(trade.symbol, strategy.isTestnet, exchange);
+      const rules = await client.getSymbolRules(ctx, trade.symbol);
       const closeSide: NeutralSide = trade.side === 'BUY' ? 'SELL' : 'BUY';
-      const formattedQty = this.normalizeQuantity(positionSize, rules.qtyStep, rules.minQty);
+      const formattedQty = normalizeQuantity(positionSize, rules.qtyStep, rules.minQty);
 
       this.logger.log(`[CLOSE] Closing ${trade.symbol}: side=${closeSide}, qty=${formattedQty}`);
 
@@ -379,49 +370,6 @@ export class TradesController {
       this.logger.error(`[CLOSE] Failed to get position size: ${error.message}`);
       return 0;
     }
-  }
-
-  private async getSymbolRules(
-    symbol: string,
-    isTestnet: boolean,
-    exchange: Exchange
-  ): Promise<SymbolRules> {
-    const defaultRules = { qtyStep: 0.001, minQty: 0.001, priceTick: 0.01 };
-
-    try {
-      if (exchange === Exchange.BYBIT) {
-        return defaultRules;
-      }
-
-      const baseURL = isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
-      const response = await BinanceRequestUtil.get(`${baseURL}/fapi/v1/exchangeInfo`);
-      const symbolInfo = response.data.symbols.find((s: any) => s.symbol === symbol);
-
-      if (!symbolInfo) return defaultRules;
-
-      const lotSizeFilter = symbolInfo.filters.find((f: any) => f.filterType === 'LOT_SIZE');
-      const priceFilter = symbolInfo.filters.find((f: any) => f.filterType === 'PRICE_FILTER');
-
-      return {
-        qtyStep: lotSizeFilter ? parseFloat(lotSizeFilter.stepSize) : defaultRules.qtyStep,
-        minQty: lotSizeFilter ? parseFloat(lotSizeFilter.minQty) : defaultRules.minQty,
-        priceTick: priceFilter ? parseFloat(priceFilter.tickSize) : defaultRules.priceTick
-      };
-    } catch (error) {
-      return defaultRules;
-    }
-  }
-
-  private normalizeQuantity(quantity: number, step: number, minQty: number): string {
-    const decimal = new Decimal(quantity);
-    const stepDecimal = new Decimal(step);
-    const normalized = decimal.div(stepDecimal).floor().mul(stepDecimal);
-    const result = normalized.lessThan(minQty) ? new Decimal(minQty) : normalized;
-
-    const stepStr = step.toString();
-    const decimalPlaces = stepStr.includes('.') ? stepStr.split('.')[1].length : 0;
-
-    return result.toFixed(decimalPlaces);
   }
 
 }

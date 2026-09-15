@@ -5,6 +5,7 @@ jest.mock('../utils/binance-request.util', () => ({
 import { Test, TestingModule } from '@nestjs/testing';
 import { SymbolRulesService } from './symbol-rules.service';
 import { BybitClientService } from '../exchange/bybit-client.service';
+import { OkxClientService } from '../exchange/okx-client.service';
 import { BinanceRequestUtil } from '../utils/binance-request.util';
 import { RateLimiterUtil } from '../utils/rate-limiter.util';
 import { Exchange } from '../strategies/strategy.entity';
@@ -12,15 +13,18 @@ import { Exchange } from '../strategies/strategy.entity';
 describe('SymbolRulesService', () => {
   let service: SymbolRulesService;
   let bybitClient: { getSymbolRules: jest.Mock };
+  let okxClient: { getSymbolRules: jest.Mock };
 
   beforeEach(async () => {
     RateLimiterUtil.getInstance().clearCache();
     bybitClient = { getSymbolRules: jest.fn() };
+    okxClient = { getSymbolRules: jest.fn() };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         SymbolRulesService,
         { provide: BybitClientService, useValue: bybitClient },
+        { provide: OkxClientService, useValue: okxClient },
       ],
     }).compile();
 
@@ -85,6 +89,35 @@ describe('SymbolRulesService', () => {
     (BinanceRequestUtil.get as jest.Mock).mockRejectedValueOnce(new Error('timeout'));
 
     const rules = await service.getSymbolRules('ETHUSDT', true, Exchange.BINANCE);
+
+    expect(rules).toEqual({ qtyStep: '0.001', priceTick: '0.01', minQty: '0.001', minNotional: '5' });
+  });
+
+  it('busca as regras da OKX via OkxClientService (FASE 6 -- PLANO_INTEGRACAO_OKX)', async () => {
+    okxClient.getSymbolRules.mockResolvedValue({ qtyStep: '1', priceTick: '0.0001', minQty: '1', minNotional: '5' });
+
+    const rules = await service.getSymbolRules('SUIUSDT', true, Exchange.OKX);
+
+    expect(rules).toEqual({ qtyStep: '1', priceTick: '0.0001', minQty: '1', minNotional: '5' });
+    expect(okxClient.getSymbolRules).toHaveBeenCalledWith(
+      { credentials: { apiKey: '', apiSecret: '' }, mode: 'DEMO', region: null },
+      'SUIUSDT',
+    );
+  });
+
+  it('usa cache de 1h: a segunda chamada da OKX para o mesmo simbolo nao bate no client de novo', async () => {
+    okxClient.getSymbolRules.mockResolvedValue({ qtyStep: '1', priceTick: '0.0001', minQty: '1', minNotional: '5' });
+
+    await service.getSymbolRules('SUIUSDT_OKX_CACHE', true, Exchange.OKX);
+    await service.getSymbolRules('SUIUSDT_OKX_CACHE', true, Exchange.OKX);
+
+    expect(okxClient.getSymbolRules).toHaveBeenCalledTimes(1);
+  });
+
+  it('devolve as regras padrao quando a OKX falha, sem lancar excecao', async () => {
+    okxClient.getSymbolRules.mockRejectedValue(new Error('instrument not found'));
+
+    const rules = await service.getSymbolRules('DOESNOTEXIST', true, Exchange.OKX);
 
     expect(rules).toEqual({ qtyStep: '0.001', priceTick: '0.01', minQty: '0.001', minNotional: '5' });
   });

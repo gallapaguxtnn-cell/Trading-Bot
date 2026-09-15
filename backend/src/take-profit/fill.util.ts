@@ -32,6 +32,8 @@ export function mapBybitFill(o: Record<string, unknown> | null | undefined): Ord
   };
 }
 
+export const mapOkxFill = mapBybitFill;
+
 export function mapBinanceFill(d: Record<string, unknown> | null | undefined): OrderFill | null {
   if (!d) return null;
   return {

@@ -87,7 +87,7 @@ export class AdminService {
         orderInfo = await client.getOrderHistory(ctx, trade.symbol, orderId);
       }
       const status = orderInfo?.orderStatus;
-      const liveStatuses = credentials.exchange === Exchange.BYBIT ? LIVE_BYBIT_STATUSES : LIVE_BINANCE_STATUSES;
+      const liveStatuses = credentials.exchange === Exchange.BINANCE ? LIVE_BINANCE_STATUSES : LIVE_BYBIT_STATUSES;
       if (status && liveStatuses.has(status)) {
         live.push({ tradeId: trade.id, symbol: trade.symbol, orderId, status, exchange: credentials.exchange });
       }

@@ -506,7 +506,8 @@ export class WebhookService {
     await this.verifyHedgeModeSet(apiKey, apiSecret, isTestnet, hedgeMode);
   }
 
-  private async configureBybitPositionSettings(
+  private async configureNeutralPositionSettings(
+    exchange: Exchange,
     symbol: string,
     leverage: number,
     marginMode: MarginMode,
@@ -515,7 +516,7 @@ export class WebhookService {
     isTestnet: boolean,
     siteId?: string | null
   ): Promise<void> {
-    const client = this.exchangeFactory.get(Exchange.BYBIT);
+    const client = this.exchangeFactory.get(exchange);
     const ctx = this.buildCtx(apiKey, apiSecret, isTestnet, siteId);
     await client.setMarginMode(ctx, symbol, marginMode as unknown as 'ISOLATED' | 'CROSS', leverage);
     await client.setLeverage(ctx, symbol, leverage);
@@ -2506,7 +2507,8 @@ export class WebhookService {
       let tpWarnings: string | null = null;
 
       if (exchange === Exchange.BYBIT) {
-        tradeDetails = await this.executeBybitOrder(
+        tradeDetails = await this.executeNeutralOrder(
+          exchange,
           resolvedStrategy,
           normalizedSymbol,
           side,
@@ -3046,7 +3048,8 @@ export class WebhookService {
     }
   }
 
-  private async executeBybitOrder(
+  private async executeNeutralOrder(
+    exchange: Exchange,
     strategy: Strategy,
     symbol: string,
     side: 'BUY' | 'SELL',
@@ -3057,7 +3060,8 @@ export class WebhookService {
     apiSecret: string,
     siteId?: string | null
   ): Promise<any> {
-    await this.configureBybitPositionSettings(
+    await this.configureNeutralPositionSettings(
+      exchange,
       symbol,
       strategy.leverage || 1,
       strategy.marginMode || MarginMode.ISOLATED,
@@ -3067,28 +3071,27 @@ export class WebhookService {
       siteId
     );
 
-    const bybitSide = (side === 'BUY' ? 'BUY' : 'SELL') as NeutralSide;
+    const neutralOrderSide = (side === 'BUY' ? 'BUY' : 'SELL') as NeutralSide;
     const orderType = isLimitOrder ? 'Limit' : 'Market';
 
-    // Fetch Bybit-specific symbol rules
-    const rules = await this.getSymbolRules(symbol, strategy.isTestnet, Exchange.BYBIT);
+    const rules = await this.getSymbolRules(symbol, strategy.isTestnet, exchange);
     const formattedQty = normalizeQuantity(quantity, rules.qtyStep, rules.minQty);
     const formattedPrice = signal.price ? roundPriceToTick(signal.price, rules.priceTick) : undefined;
 
-    this.logger.log(`[BYBIT] Creating ${orderType} order: ${bybitSide} ${formattedQty} ${symbol}`);
+    this.logger.log(`[${exchange.toUpperCase()}] Creating ${orderType} order: ${neutralOrderSide} ${formattedQty} ${symbol}`);
 
-    const client = this.exchangeFactory.get(Exchange.BYBIT);
+    const client = this.exchangeFactory.get(exchange);
     const ctx = this.buildCtx(apiKey, apiSecret, strategy.isTestnet, siteId);
     const result = await client.createOrder(ctx, {
       symbol,
-      side: bybitSide,
+      side: neutralOrderSide,
       orderType: isLimitOrder ? 'LIMIT' : 'MARKET',
       qty: formattedQty,
       price: isLimitOrder ? formattedPrice : undefined,
       hedgeMode: strategy.hedgeMode,
     });
 
-    this.logger.log(`[BYBIT] Order placed! Order ID: ${result.orderId}`);
+    this.logger.log(`[${exchange.toUpperCase()}] Order placed! Order ID: ${result.orderId}`);
 
     return {
       id: result.orderId,

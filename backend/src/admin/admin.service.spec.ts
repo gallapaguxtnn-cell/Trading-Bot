@@ -180,6 +180,30 @@ describe('AdminService.resetTrades', () => {
     ]);
   });
 
+  it('OKX (FASE 6): usa o vocabulario capitalizado (New/PartiallyFilled), nao o vocabulario maiusculo da Binance', async () => {
+    tradeRepository.find.mockResolvedValue([
+      makeTrade({ id: 't1', status: 'ERROR', exchangeOrderId: 'order-123' }),
+    ]);
+    strategyRepository.find.mockResolvedValue([makeStrategy()]);
+    credentialsResolver.resolveCredentials.mockResolvedValue({
+      apiKey: 'plain-key',
+      apiSecret: 'plain-secret',
+      exchange: Exchange.OKX,
+      isTestnet: true,
+      isRealAccount: false,
+      portfolioId: null,
+      siteId: null,
+      source: 'strategy',
+    });
+    bybitClient.getOrderInfo.mockResolvedValue({ orderId: 'order-123', orderStatus: 'New' });
+
+    const result = await service.resetTrades({ dryRun: true });
+
+    expect((result as any).liveOrders).toEqual([
+      { tradeId: 't1', symbol: 'BTCUSDT', orderId: 'order-123', status: 'New', exchange: Exchange.OKX },
+    ]);
+  });
+
   it('reset real com ordem New na corretora -- RECUSA mesmo com confirm correto, nao apaga nada', async () => {
     tradeRepository.find.mockResolvedValue([
       makeTrade({ id: 't1', status: 'ERROR', exchangeOrderId: 'order-123' }),

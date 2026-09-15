@@ -99,6 +99,7 @@ describe('TradesController (FASE 2 PLANO_INTEGRACAO_OKX -- closeTradeOnExchange 
       getPositions: jest.fn().mockResolvedValue([]),
       getCurrentPrice: jest.fn().mockResolvedValue(50000),
       createOrder: jest.fn().mockResolvedValue({ orderId: 'o1' }),
+      getSymbolRules: jest.fn().mockResolvedValue({ qtyStep: '0.001', priceTick: '0.01', minQty: '0.001', minNotional: '5' }),
     };
   }
 
