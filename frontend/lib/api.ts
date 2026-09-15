@@ -98,6 +98,12 @@ export async function testPortfolioConnection(id: string): Promise<{ success: bo
   return res.json();
 }
 
+export async function fetchPublicConfig(): Promise<{ okxEnabled: boolean }> {
+  const res = await fetch(`${API_URL}/api/config`);
+  if (!res.ok) return { okxEnabled: false };
+  return res.json();
+}
+
 export async function migrateLegacyPortfolios() {
   const res = await fetch(`${API_URL}/api/portfolios/migrate-legacy`, { method: 'POST' });
   if (!res.ok) throw new Error(await parseErrorMessage(res, 'Failed to migrate legacy strategies'));

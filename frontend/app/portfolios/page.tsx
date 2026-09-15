@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { PageHeader } from '@/components/layout/PageHeader';
 import {
   fetchPortfolios,
+  fetchPublicConfig,
   createPortfolio,
   updatePortfolio,
   deletePortfolio,
@@ -14,12 +15,16 @@ import {
   Region,
 } from '@/lib/api';
 
-const EXCHANGE_OPTIONS: Array<{ value: PortfolioExchange; label: string; disabled?: boolean }> = [
-  { value: 'bybit', label: 'Bybit' },
-  { value: 'binance', label: 'Binance' },
-  { value: 'okx', label: 'OKX El Salvador (em breve)', disabled: true },
-  { value: 'bingx', label: 'BingX (em breve)', disabled: true },
-];
+function buildExchangeOptions(okxEnabled: boolean): Array<{ value: PortfolioExchange; label: string; disabled?: boolean }> {
+  return [
+    { value: 'bybit', label: 'Bybit' },
+    { value: 'binance', label: 'Binance' },
+    okxEnabled
+      ? { value: 'okx', label: 'OKX El Salvador' }
+      : { value: 'okx', label: 'OKX El Salvador (em breve)', disabled: true },
+    { value: 'bingx', label: 'BingX (em breve)', disabled: true },
+  ];
+}
 
 const REGION_OPTIONS_BY_EXCHANGE: Record<string, Array<{ value: '' | Region; label: string }>> = {
   bybit: [
@@ -54,8 +59,12 @@ export default function PortfoliosPage() {
   const [isSaving, setIsSaving] = useState(false);
   const [testResults, setTestResults] = useState<Record<string, { success: boolean; balance?: number; message?: string }>>({});
   const [testingId, setTestingId] = useState<string | null>(null);
+  const [okxEnabled, setOkxEnabled] = useState(false);
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    load();
+    fetchPublicConfig().then((config) => setOkxEnabled(config.okxEnabled)).catch(() => setOkxEnabled(false));
+  }, []);
 
   async function load() {
     try {
@@ -273,7 +282,7 @@ export default function PortfoliosPage() {
                   value={formData.exchange}
                   onChange={(e) => setFormData((prev) => ({ ...prev, exchange: e.target.value as PortfolioExchange }))}
                 >
-                  {EXCHANGE_OPTIONS.map((opt) => (
+                  {buildExchangeOptions(okxEnabled).map((opt) => (
                     <option key={opt.value} value={opt.value} disabled={opt.disabled}>
                       {opt.label}
                     </option>
