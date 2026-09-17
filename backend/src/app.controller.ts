@@ -51,13 +51,6 @@ export class AppController {
     };
   }
 
-  @Get('/config')
-  getPublicConfig() {
-    return {
-      okxEnabled: process.env.OKX_ENABLED === 'true',
-    };
-  }
-
   @Get('/test/binance-ban')
   async testBinanceBan(@Query('strategyId') strategyId?: string) {
     try {

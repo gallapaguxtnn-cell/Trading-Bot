@@ -1,6 +1,6 @@
 # Trading Bot
 
-Automated cryptocurrency trading system with TradingView webhook integration for Binance and Bybit exchanges (OKX in beta, see below).
+Automated cryptocurrency trading system with TradingView webhook integration for Binance, Bybit and OKX exchanges.
 
 ## Quick Start
 
@@ -18,7 +18,7 @@ Access:
 
 **Backend**: NestJS + TypeORM + PostgreSQL
 **Frontend**: Next.js + React
-**Exchanges**: Binance, Bybit (Testnet & Production), OKX (beta — ver seção OKX abaixo)
+**Exchanges**: Binance, Bybit, OKX (Testnet/Demo & Production — ver seção OKX abaixo)
 
 ## Environment Variables
 
@@ -31,17 +31,13 @@ DB_NAME=trading_bot
 WEBHOOK_SECRET=default_secret_123
 ENCRYPTION_KEY=your-32-char-key
 PORT=4000
-# Opcional -- libera a OKX no seletor de corretora da UI e permite criar
-# portfólios OKX em modo REAL. Deixe ausente/false até completar o roteiro
-# de validação em conta demo (ver ROTEIRO_ACEITE_OKX.md).
-OKX_ENABLED=false
 ```
 
-## OKX (beta)
+## OKX
 
-A integração com a OKX segue `PLANO_INTEGRACAO_OKX.md`. Por padrão ela fica
-escondida na UI (rótulo "em breve") e a criação de portfólio OKX em modo
-`REAL` é bloqueada — isso é controlado por uma única flag, `OKX_ENABLED`.
+A integração com a OKX segue `PLANO_INTEGRACAO_OKX.md` e `PLANO_OKX_CONTA_REAL.md`.
+A OKX é uma corretora de primeira classe no bot, igual a Bybit e Binance — não
+existe flag nem tratamento especial: cadastre o portfólio (Demo ou Real) e opere.
 
 ### Como criar a API Key na OKX (com passphrase)
 
@@ -58,26 +54,9 @@ escondida na UI (rótulo "em breve") e a criação de portfólio OKX em modo
    necessário nenhum passo extra: a região `EL_SALVADOR` no formulário do
    portfólio usa o domínio global padrão (`www.okx.com`). Contas européias ou
    americanas usam `EEA`/`US`, que roteiam para `eea.okx.com`/`us.okx.com`.
-5. No formulário de portfólio do bot, selecione a corretora OKX (só aparece
-   se `OKX_ENABLED=true`), preencha API Key, Secret Key, Passphrase e a
-   Entidade/Região, e use "Testar conexão" para confirmar o saldo antes de
-   vincular qualquer estratégia.
-
-### Habilitando OKX_ENABLED
-
-- **Sem a flag** (padrão): OKX continua "(em breve)" no seletor de corretora
-  da UI; só é possível criar portfólio OKX em modo `DEMO` via chamada direta
-  à API (útil para o roteiro de validação).
-- **Com `OKX_ENABLED=true`**: OKX aparece selecionável na UI e portfólios
-  `REAL` passam a ser aceitos. Só ligue essa flag depois de completar o
-  roteiro em `ROTEIRO_ACEITE_OKX.md`.
-
-### Limitação atual (importante)
-
-A execução de ordens a partir de sinais do TradingView (`webhook.service.ts`)
-ainda só tem dois caminhos: Bybit e Binance. Um portfólio OKX já conecta e
-mostra saldo corretamente, mas **ainda não processa sinais de entrada/SL/TP**
-— isso é trabalho futuro, documentado no roteiro de aceite.
+5. No formulário de portfólio do bot, selecione a corretora OKX, preencha API
+   Key, Secret Key, Passphrase e a Entidade/Região, e use "Testar conexão"
+   para confirmar o saldo antes de vincular qualquer estratégia.
 
 ## TradingView Webhook
 

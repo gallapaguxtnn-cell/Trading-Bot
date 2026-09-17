@@ -110,17 +110,8 @@ export class PortfoliosService {
     }
   }
 
-  private assertOkxRealAllowed(exchange: Exchange | undefined, mode: PortfolioMode | undefined): void {
-    if (exchange === Exchange.OKX && mode === PortfolioMode.REAL && process.env.OKX_ENABLED !== 'true') {
-      throw new BadRequestException(
-        'Portfólios OKX em modo REAL ainda não estão liberados. Complete o roteiro de validação em DEMO (FASE 7 do PLANO_INTEGRACAO_OKX) antes de habilitar OKX_ENABLED.',
-      );
-    }
-  }
-
   async create(data: Partial<Portfolio>): Promise<PortfolioPublic | null> {
     this.assertOkxHasPassphrase(data.exchange, data.apiPassphrase);
-    this.assertOkxRealAllowed(data.exchange, data.mode);
 
     const portfolio = this.portfoliosRepository.create(data);
     if (portfolio.apiKey) {
@@ -142,9 +133,7 @@ export class PortfoliosService {
     if (update.exchange !== undefined || update.mode !== undefined) {
       const existing = await this.findWithCredentials(id);
       const effectiveExchange = update.exchange ?? existing?.exchange;
-      const effectiveMode = update.mode ?? existing?.mode;
       this.assertOkxHasPassphrase(effectiveExchange, update.apiPassphrase || existing?.apiPassphrase);
-      this.assertOkxRealAllowed(effectiveExchange, effectiveMode);
     }
 
     if (update.apiKey) {

@@ -184,16 +184,14 @@ describe('PortfoliosService', () => {
       expect(savedArg.apiPassphrase).toBeDefined();
     });
 
-    describe('FASE 4 -- trava de OKX REAL ate a flag de release', () => {
-      const originalOkxEnabled = process.env.OKX_ENABLED;
-
-      afterEach(() => {
-        if (originalOkxEnabled === undefined) delete process.env.OKX_ENABLED;
-        else process.env.OKX_ENABLED = originalOkxEnabled;
-      });
-
-      it('OKX REAL sem OKX_ENABLED=true -> erro de validacao claro, nunca chega a salvar', async () => {
+    describe('PLANO_OKX_CONTA_REAL FASE 1 -- OKX REAL sem nenhuma variavel de ambiente', () => {
+      it('OKX REAL e criado normalmente sem OKX_ENABLED nem qualquer outra env var', async () => {
         delete process.env.OKX_ENABLED;
+        const qb = createQueryBuilderMock(
+          { id: 'portfolio-real', name: 'okx real', exchange: Exchange.OKX, mode: PortfolioMode.REAL, isActive: true, createdAt: new Date(), updatedAt: new Date() },
+          false,
+        );
+        portfoliosRepository.createQueryBuilder.mockReturnValue(qb);
 
         await expect(
           service.create({
@@ -204,51 +202,11 @@ describe('PortfoliosService', () => {
             apiSecret: 'plain-secret',
             apiPassphrase: 'plain-pass',
           } as Partial<Portfolio>),
-        ).rejects.toThrow('OKX_ENABLED');
-        expect(portfoliosRepository.save).not.toHaveBeenCalled();
-      });
-
-      it('OKX DEMO sem OKX_ENABLED=true -> permitido normalmente (a trava e so para REAL)', async () => {
-        delete process.env.OKX_ENABLED;
-        const qb = createQueryBuilderMock(
-          { id: 'portfolio-3', name: 'okx demo', exchange: Exchange.OKX, mode: PortfolioMode.DEMO, isActive: true, createdAt: new Date(), updatedAt: new Date() },
-          false,
-        );
-        portfoliosRepository.createQueryBuilder.mockReturnValue(qb);
-
-        await expect(
-          service.create({
-            name: 'okx demo',
-            exchange: Exchange.OKX,
-            mode: PortfolioMode.DEMO,
-            apiKey: 'plain-key',
-            apiSecret: 'plain-secret',
-            apiPassphrase: 'plain-pass',
-          } as Partial<Portfolio>),
         ).resolves.not.toBeNull();
+        expect(portfoliosRepository.save).toHaveBeenCalled();
       });
 
-      it('OKX REAL com OKX_ENABLED=true -> permitido', async () => {
-        process.env.OKX_ENABLED = 'true';
-        const qb = createQueryBuilderMock(
-          { id: 'portfolio-4', name: 'okx real ok', exchange: Exchange.OKX, mode: PortfolioMode.REAL, isActive: true, createdAt: new Date(), updatedAt: new Date() },
-          false,
-        );
-        portfoliosRepository.createQueryBuilder.mockReturnValue(qb);
-
-        await expect(
-          service.create({
-            name: 'okx real ok',
-            exchange: Exchange.OKX,
-            mode: PortfolioMode.REAL,
-            apiKey: 'plain-key',
-            apiSecret: 'plain-secret',
-            apiPassphrase: 'plain-pass',
-          } as Partial<Portfolio>),
-        ).resolves.not.toBeNull();
-      });
-
-      it('trocar um portfolio OKX existente de DEMO para REAL sem OKX_ENABLED=true -> erro, nao atualiza', async () => {
+      it('trocar um portfolio OKX existente de DEMO para REAL nao exige nenhuma env var', async () => {
         delete process.env.OKX_ENABLED;
         const qb = createQueryBuilderMock(
           { id: 'p1', exchange: Exchange.OKX, mode: PortfolioMode.DEMO, apiPassphrase: 'existing-pass' },
@@ -258,8 +216,8 @@ describe('PortfoliosService', () => {
 
         await expect(
           service.update('p1', { mode: PortfolioMode.REAL } as Partial<Portfolio>),
-        ).rejects.toThrow('OKX_ENABLED');
-        expect(portfoliosRepository.update).not.toHaveBeenCalled();
+        ).resolves.not.toBeNull();
+        expect(portfoliosRepository.update).toHaveBeenCalled();
       });
     });
   });

@@ -32,28 +32,4 @@ describe('AppController', () => {
       expect(appController.getHello()).toBe('Hello World!');
     });
   });
-
-  describe('GET /config (FASE 8 -- PLANO_INTEGRACAO_OKX)', () => {
-    const originalOkxEnabled = process.env.OKX_ENABLED;
-
-    afterEach(() => {
-      if (originalOkxEnabled === undefined) delete process.env.OKX_ENABLED;
-      else process.env.OKX_ENABLED = originalOkxEnabled;
-    });
-
-    it('OKX_ENABLED nao setada -> okxEnabled false (padrao seguro)', () => {
-      delete process.env.OKX_ENABLED;
-      expect(appController.getPublicConfig()).toEqual({ okxEnabled: false });
-    });
-
-    it('OKX_ENABLED="true" -> okxEnabled true', () => {
-      process.env.OKX_ENABLED = 'true';
-      expect(appController.getPublicConfig()).toEqual({ okxEnabled: true });
-    });
-
-    it('OKX_ENABLED com qualquer outro valor (ex.: "1") -> okxEnabled false, so a string exata "true" liga', () => {
-      process.env.OKX_ENABLED = '1';
-      expect(appController.getPublicConfig()).toEqual({ okxEnabled: false });
-    });
-  });
 });
