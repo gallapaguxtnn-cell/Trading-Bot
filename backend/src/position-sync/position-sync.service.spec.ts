@@ -291,3 +291,349 @@ describe('PositionSyncService (FASE 2 -- CredentialsResolver)', () => {
     expect(result).toEqual({ synced: 0, closed: 0, imported: 0, consolidated: 0 });
   });
 });
+
+describe('PositionSyncService (PLANO_FIX_PROTECAO_NAO_CRIADA -- deteccao de orfa escopada por portfolio, nao strategyId)', () => {
+  let service: PositionSyncService;
+  let tradesRepository: { save: jest.Mock; create: jest.Mock; find: jest.Mock };
+  let credentialsResolver: { resolveCredentials: jest.Mock };
+  let exchangeFactory: { get: jest.Mock };
+  let client: ReturnType<typeof makeExchangeClient>;
+
+  const openPosition = {
+    symbol: 'DOGEUSDT',
+    side: 'SELL' as const,
+    size: '390.1711',
+    avgPrice: '0.0848',
+    unrealizedPnl: '0',
+    leverage: '50',
+    markPrice: '0.0848',
+  };
+
+  function makeStrategyRow(overrides: Record<string, any> = {}) {
+    return {
+      id: 'strategy-A',
+      name: 'FF1 1H TEST',
+      exchange: Exchange.BYBIT,
+      isTestnet: false,
+      apiKey: 'enc-key',
+      apiSecret: 'enc-secret',
+      portfolioId: 'portfolio-shared',
+      breakAgain: false,
+      moveSLToBreakeven: false,
+      ...overrides,
+    } as unknown as Strategy;
+  }
+
+  function makeCredentials(overrides: Record<string, any> = {}) {
+    return {
+      apiKey: 'enc-key',
+      apiSecret: 'enc-secret',
+      exchange: Exchange.BYBIT,
+      isTestnet: false,
+      isRealAccount: true,
+      portfolioId: 'portfolio-shared',
+      siteId: null,
+      source: 'portfolio',
+      ...overrides,
+    };
+  }
+
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    client = makeExchangeClient();
+    client.getPositions.mockResolvedValue([openPosition]);
+    client.getSymbolRules.mockResolvedValue({ qtyStep: '1', priceTick: '0.0001', minQty: '1', minNotional: '5' });
+    exchangeFactory = { get: jest.fn().mockReturnValue(client) };
+    credentialsResolver = { resolveCredentials: jest.fn().mockResolvedValue(makeCredentials()) };
+    tradesRepository = { save: jest.fn(t => t), create: jest.fn(t => t), find: jest.fn().mockResolvedValue([]) };
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        PositionSyncService,
+        { provide: getRepositoryToken(Trade), useValue: tradesRepository },
+        { provide: getRepositoryToken(Strategy), useValue: { findOne: jest.fn() } },
+        { provide: StrategiesService, useValue: {} },
+        { provide: ExchangeService, useValue: {} },
+        { provide: ExchangeClientFactory, useValue: exchangeFactory },
+        { provide: TradesService, useValue: {} },
+        { provide: BinanceWebSocketService, useValue: {} },
+        { provide: EventEmitter2, useValue: { emit: jest.fn() } },
+        { provide: SymbolRulesService, useValue: { getSymbolRules: jest.fn() } },
+        { provide: CredentialsResolverService, useValue: credentialsResolver },
+      ],
+    }).compile();
+
+    service = module.get<PositionSyncService>(PositionSyncService);
+  });
+
+  it('posicao ja pertence a um trade OPEN de outra estrategia do MESMO portfolio -> nao importa como orfa (bug real do incidente DOGEUSDT)', async () => {
+    const siblingTrade = {
+      id: 'trade-31e47dd0',
+      strategyId: 'strategy-B',
+      portfolioId: 'portfolio-shared',
+      symbol: 'DOGEUSDT',
+      side: 'SELL',
+      status: 'OPEN',
+      entryPrice: 0.0848,
+      quantity: 390.1711,
+      stopLossOrderId: 'sl-real',
+      takeProfitOrderId: '1:tp-real',
+    };
+
+    tradesRepository.find.mockImplementation(async ({ where }: any) => {
+      if (where.status === 'OPEN' && where.portfolioId === 'portfolio-shared') {
+        return [siblingTrade];
+      }
+      return [];
+    });
+
+    const strategyA = makeStrategyRow({ id: 'strategy-A' });
+    const result = await (service as any).syncStrategyPositions(strategyA);
+
+    expect(tradesRepository.create).not.toHaveBeenCalled();
+    expect(result.imported).toBe(0);
+    expect(result.synced).toBe(1);
+  });
+
+  it('trade encontrado pertence a OUTRA estrategia do portfolio -> nao aplica breakAgain/moveSLToBreakeven da estrategia errada', async () => {
+    const siblingTrade = {
+      id: 'trade-sibling',
+      strategyId: 'strategy-B',
+      portfolioId: 'portfolio-shared',
+      symbol: 'DOGEUSDT',
+      side: 'SELL',
+      status: 'OPEN',
+      entryPrice: 0.0848,
+      quantity: 390.1711,
+      currentStopLoss: 0.0852,
+      stopLossOrderId: 'sl-real',
+      takeProfitOrderId: '1:tp-real',
+    };
+
+    tradesRepository.find.mockImplementation(async ({ where }: any) => {
+      if (where.status === 'OPEN' && where.portfolioId === 'portfolio-shared') {
+        return [siblingTrade];
+      }
+      return [];
+    });
+
+    const strategyA = makeStrategyRow({ id: 'strategy-A', breakAgain: true, moveSLToBreakeven: true, takeProfitPercentage1: 1 });
+    await (service as any).syncStrategyPositions(strategyA);
+
+    expect(client.setTradingStop).not.toHaveBeenCalled();
+    expect(client.createStopLossOrder).not.toHaveBeenCalled();
+    expect(tradesRepository.save).toHaveBeenCalledWith(expect.objectContaining({ id: 'trade-sibling' }));
+  });
+
+  it('duplicata cross-strategy no mesmo portfolio (2 trades OPEN, strategyId diferentes) e consolidada em uma so', async () => {
+    const primary = {
+      id: 'trade-primary',
+      strategyId: 'strategy-A',
+      portfolioId: 'portfolio-shared',
+      symbol: 'DOGEUSDT',
+      side: 'SELL',
+      status: 'OPEN',
+      timestamp: new Date('2026-09-14T17:24:18Z'),
+      entryPrice: 0.0848,
+      quantity: 390.1711,
+      stopLossOrderId: 'sl-real',
+      takeProfitOrderId: '1:tp-real',
+    };
+    const duplicate = {
+      id: 'trade-duplicate',
+      strategyId: 'strategy-B',
+      portfolioId: 'portfolio-shared',
+      symbol: 'DOGEUSDT',
+      side: 'SELL',
+      status: 'OPEN',
+      timestamp: new Date('2026-09-14T17:25:00Z'),
+      entryPrice: 0.0848,
+      quantity: 390.1711,
+      stopLossOrderId: null,
+      takeProfitOrderId: null,
+    };
+
+    tradesRepository.find.mockImplementation(async ({ where }: any) => {
+      if (where.status === 'OPEN' && where.portfolioId === 'portfolio-shared') {
+        return [primary, duplicate];
+      }
+      return [];
+    });
+
+    const strategyA = makeStrategyRow({ id: 'strategy-A' });
+    const result = await (service as any).syncStrategyPositions(strategyA);
+
+    expect(result.consolidated).toBeGreaterThanOrEqual(1);
+    const closedCall = tradesRepository.save.mock.calls.find((c: any) => c[0].id === 'trade-duplicate');
+    expect(closedCall[0].status).toBe('CLOSED');
+    expect(closedCall[0].excludeFromStats).toBe(true);
+  });
+
+  it('estrategia legada sem portfolio (portfolioId null) mantem o escopo por strategyId -- comportamento atual preservado', async () => {
+    credentialsResolver.resolveCredentials.mockResolvedValue(makeCredentials({ portfolioId: null }));
+
+    tradesRepository.find.mockResolvedValue([]);
+
+    const strategyLegacy = makeStrategyRow({ id: 'strategy-legacy', portfolioId: null });
+    await (service as any).syncStrategyPositions(strategyLegacy);
+
+    const openTradesCall = tradesRepository.find.mock.calls.find((c: any) => c[0].where.status === 'OPEN');
+    expect(openTradesCall[0].where).toEqual(
+      expect.objectContaining({ strategyId: 'strategy-legacy' }),
+    );
+    expect(openTradesCall[0].where).not.toHaveProperty('portfolioId');
+  });
+});
+
+describe('PositionSyncService (PLANO_FIX_PROTECAO_NAO_CRIADA -- limpeza de trades zumbi de estrategias inativas)', () => {
+  let service: PositionSyncService;
+  let tradesRepository: { save: jest.Mock; find: jest.Mock };
+  let strategiesRepository: { find: jest.Mock };
+  let tradesService: { findExecutions: jest.Mock; createExecution: jest.Mock };
+  let credentialsResolver: { resolveCredentials: jest.Mock };
+  let exchangeFactory: { get: jest.Mock };
+  let client: ReturnType<typeof makeExchangeClient>;
+
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    client = makeExchangeClient();
+    client.getLastTradePrice.mockResolvedValue(0.083);
+    exchangeFactory = { get: jest.fn().mockReturnValue(client) };
+    tradesRepository = { save: jest.fn(t => t), find: jest.fn().mockResolvedValue([]) };
+    strategiesRepository = { find: jest.fn().mockResolvedValue([]) };
+    tradesService = { findExecutions: jest.fn().mockResolvedValue([]), createExecution: jest.fn() };
+    credentialsResolver = {
+      resolveCredentials: jest.fn().mockResolvedValue({
+        apiKey: 'enc-key', apiSecret: 'enc-secret', exchange: Exchange.BYBIT,
+        isTestnet: false, isRealAccount: true, portfolioId: 'portfolio-shared', siteId: null, source: 'portfolio',
+      }),
+    };
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        PositionSyncService,
+        { provide: getRepositoryToken(Trade), useValue: tradesRepository },
+        { provide: getRepositoryToken(Strategy), useValue: strategiesRepository },
+        { provide: StrategiesService, useValue: {} },
+        { provide: ExchangeService, useValue: {} },
+        { provide: ExchangeClientFactory, useValue: exchangeFactory },
+        { provide: TradesService, useValue: tradesService },
+        { provide: BinanceWebSocketService, useValue: {} },
+        { provide: EventEmitter2, useValue: { emit: jest.fn() } },
+        { provide: SymbolRulesService, useValue: { getSymbolRules: jest.fn() } },
+        { provide: CredentialsResolverService, useValue: credentialsResolver },
+      ],
+    }).compile();
+
+    service = module.get<PositionSyncService>(PositionSyncService);
+  });
+
+  it('trade OPEN de estrategia DESATIVADA sem posicao correspondente na corretora -> fecha como manual (zumbi do incidente DOGEUSDT)', async () => {
+    const zombieTrade = {
+      id: 'zombie-1',
+      strategyId: 'strategy-inactive',
+      portfolioId: 'portfolio-shared',
+      symbol: 'DOGEUSDT',
+      side: 'BUY',
+      status: 'OPEN',
+      timestamp: new Date(Date.now() - 5 * 60 * 1000),
+      entryPrice: 0.085,
+      quantity: 390,
+      stopLossOrderId: null,
+      takeProfitOrderId: null,
+    };
+
+    strategiesRepository.find.mockImplementation(async ({ where }: any) => {
+      if (where.isActive === true) return [];
+      if (where.id) return [{ id: 'strategy-inactive', name: 'Old Test', exchange: Exchange.BYBIT, apiKey: 'enc-key', apiSecret: 'enc-secret', portfolioId: 'portfolio-shared' }];
+      return [];
+    });
+    tradesRepository.find.mockImplementation(async ({ where }: any) => {
+      if (where.status === 'OPEN' && !where.strategyId) return [zombieTrade];
+      return [];
+    });
+    client.getPositions.mockResolvedValue([]);
+
+    const result = await (service as any).closeZombieTradesFromInactiveStrategies();
+
+    expect(result.closed).toBe(1);
+    const savedClose = tradesRepository.save.mock.calls.find((c: any) => c[0].id === 'zombie-1');
+    expect(savedClose[0].status).toBe('CLOSED');
+  });
+
+  it('trade de estrategia inativa AINDA TEM posicao real na corretora -> nao fecha (protege posicao legitima)', async () => {
+    const stillOpenTrade = {
+      id: 'still-open-1',
+      strategyId: 'strategy-inactive',
+      portfolioId: 'portfolio-shared',
+      symbol: 'DOGEUSDT',
+      side: 'SELL',
+      status: 'OPEN',
+      timestamp: new Date(Date.now() - 5 * 60 * 1000),
+      entryPrice: 0.0848,
+      quantity: 390,
+    };
+
+    strategiesRepository.find.mockImplementation(async ({ where }: any) => {
+      if (where.isActive === true) return [];
+      if (where.id) return [{ id: 'strategy-inactive', name: 'Old Test', exchange: Exchange.BYBIT, apiKey: 'enc-key', apiSecret: 'enc-secret', portfolioId: 'portfolio-shared' }];
+      return [];
+    });
+    tradesRepository.find.mockImplementation(async ({ where }: any) => {
+      if (where.status === 'OPEN' && !where.strategyId) return [stillOpenTrade];
+      return [];
+    });
+    client.getPositions.mockResolvedValue([
+      { symbol: 'DOGEUSDT', side: 'SELL', size: '390', avgPrice: '0.0848', unrealizedPnl: '0', leverage: '50', markPrice: '0.0848' },
+    ]);
+
+    const result = await (service as any).closeZombieTradesFromInactiveStrategies();
+
+    expect(result.closed).toBe(0);
+    expect(tradesRepository.save).not.toHaveBeenCalled();
+  });
+
+  it('trade recem-criado (< 30s) de estrategia inativa -> nao fecha ainda, evita corrida com a proria criacao', async () => {
+    const freshTrade = {
+      id: 'fresh-1',
+      strategyId: 'strategy-inactive',
+      portfolioId: 'portfolio-shared',
+      symbol: 'DOGEUSDT',
+      side: 'BUY',
+      status: 'OPEN',
+      timestamp: new Date(),
+      entryPrice: 0.085,
+      quantity: 390,
+    };
+
+    strategiesRepository.find.mockImplementation(async ({ where }: any) => {
+      if (where.isActive === true) return [];
+      if (where.id) return [{ id: 'strategy-inactive', name: 'Old Test', exchange: Exchange.BYBIT, apiKey: 'enc-key', apiSecret: 'enc-secret', portfolioId: 'portfolio-shared' }];
+      return [];
+    });
+    tradesRepository.find.mockImplementation(async ({ where }: any) => {
+      if (where.status === 'OPEN' && !where.strategyId) return [freshTrade];
+      return [];
+    });
+    client.getPositions.mockResolvedValue([]);
+
+    const result = await (service as any).closeZombieTradesFromInactiveStrategies();
+
+    expect(result.closed).toBe(0);
+  });
+
+  it('nenhum trade OPEN pertence a estrategia inativa -> nao consulta a corretora, retorna cedo', async () => {
+    strategiesRepository.find.mockImplementation(async ({ where }: any) => {
+      if (where.isActive === true) return [{ id: 'strategy-active' }];
+      return [];
+    });
+    tradesRepository.find.mockResolvedValue([
+      { id: 't1', strategyId: 'strategy-active', status: 'OPEN', symbol: 'BTCUSDT', side: 'BUY', timestamp: new Date() },
+    ]);
+
+    const result = await (service as any).closeZombieTradesFromInactiveStrategies();
+
+    expect(result.closed).toBe(0);
+    expect(exchangeFactory.get).not.toHaveBeenCalled();
+  });
+});

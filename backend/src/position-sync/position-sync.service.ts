@@ -3,7 +3,7 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 import { OnEvent, EventEmitter2 } from '@nestjs/event-emitter';
 import { decideLimitSyncAction, shouldCancelPendingForStrategy } from '../webhook/buffer-expiry.util';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, MoreThan } from 'typeorm';
+import { Repository, MoreThan, In } from 'typeorm';
 import { Trade } from '../strategies/trade.entity';
 import { Strategy, Exchange } from '../strategies/strategy.entity';
 import { StrategiesService } from '../strategies/strategies.service';
@@ -161,10 +161,81 @@ export class PositionSyncService implements OnModuleInit {
         this.logger.error(`Failed to cancel pending orders for inactive strategies: ${error.message}`);
       }
 
+      try {
+        await this.closeZombieTradesFromInactiveStrategies();
+      } catch (error: any) {
+        this.logger.error(`Failed to close zombie trades from inactive strategies: ${error.message}`);
+      }
+
       this.lastSyncTime = new Date();
     } finally {
       this.syncInProgress = false;
     }
+  }
+
+  private async closeZombieTradesFromInactiveStrategies(): Promise<{ closed: number }> {
+    const activeStrategyIds = new Set(
+      (await this.strategiesRepository.find({ where: { isActive: true }, select: ['id'] })).map(s => s.id)
+    );
+
+    const openTrades = await this.tradesRepository.find({ where: { status: 'OPEN' } });
+    const staleTrades = openTrades.filter(t => !activeStrategyIds.has(t.strategyId));
+    if (staleTrades.length === 0) return { closed: 0 };
+
+    const strategyIds = [...new Set(staleTrades.map(t => t.strategyId))];
+    const strategies = await this.strategiesRepository.find({
+      where: { id: In(strategyIds) },
+      select: ['id', 'name', 'exchange', 'isTestnet', 'isRealAccount', 'apiKey', 'apiSecret', 'portfolioId'],
+    });
+    const strategyById = new Map(strategies.map(s => [s.id, s]));
+
+    const groups = new Map<string, Trade[]>();
+    for (const trade of staleTrades) {
+      if (!strategyById.has(trade.strategyId)) continue;
+      const key = trade.portfolioId || `strategy:${trade.strategyId}`;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key)!.push(trade);
+    }
+
+    const MIN_TRADE_AGE_SECONDS = 30;
+    const now = Date.now();
+    let closed = 0;
+
+    for (const trades of groups.values()) {
+      const representativeStrategy = strategyById.get(trades[0].strategyId)!;
+      try {
+        const credentials = await this.credentialsResolver.resolveCredentials(representativeStrategy);
+        const resolvedStrategy = { ...representativeStrategy, ...credentials };
+        if (!resolvedStrategy.apiKey || !resolvedStrategy.apiSecret) continue;
+
+        const exchange = resolvedStrategy.exchange || Exchange.BINANCE;
+        const { apiKey, apiSecret } = await this.decryptCredentials(resolvedStrategy);
+        const client = this.exchangeFactory.get(exchange);
+        const ctx = toAccountContext(resolvedStrategy, apiKey, apiSecret);
+        const openPositions = (await this.fetchPositions(client, ctx, exchange)).filter(p => p.size !== 0);
+
+        for (const trade of trades) {
+          const matchingPosition = openPositions.find(p => p.symbol === trade.symbol && p.side === trade.side);
+          if (matchingPosition) continue;
+
+          const tradeAgeSeconds = (now - new Date(trade.timestamp).getTime()) / 1000;
+          if (tradeAgeSeconds < MIN_TRADE_AGE_SECONDS) continue;
+
+          await this.closeTradeAsManual(trade, client, ctx);
+          closed++;
+          this.logger.warn(
+            `[SYNC] [STALE STRATEGY CLEANUP] Closed zombie trade ${trade.id} (${trade.symbol} ${trade.side}) ` +
+            `from inactive strategy ${trade.strategyId} - no longer exists on exchange`
+          );
+        }
+      } catch (error: any) {
+        this.logger.error(
+          `[SYNC] [STALE STRATEGY CLEANUP] Failed to process trades for strategy ${representativeStrategy.id}: ${error.message}`
+        );
+      }
+    }
+
+    return { closed };
   }
 
   async forceSync(): Promise<{ synced: number; closed: number; imported: number; consolidated: number }> {
@@ -194,6 +265,13 @@ export class PositionSyncService implements OnModuleInit {
     return { synced, closed, imported, consolidated };
   }
 
+  private accountScopeWhere(resolvedStrategy: { id: string; portfolioId?: string | null }): { portfolioId: string } | { strategyId: string } {
+    if (resolvedStrategy.portfolioId) {
+      return { portfolioId: resolvedStrategy.portfolioId };
+    }
+    return { strategyId: resolvedStrategy.id };
+  }
+
   private async syncStrategyPositions(strategy: Strategy): Promise<{ synced: number; closed: number; imported: number; consolidated: number }> {
     const credentials = await this.credentialsResolver.resolveCredentials(strategy);
     const resolvedStrategy = { ...strategy, ...credentials };
@@ -217,7 +295,7 @@ export class PositionSyncService implements OnModuleInit {
     for (const position of openPositions) {
       const existingTrades = await this.tradesRepository.find({
         where: {
-          strategyId: resolvedStrategy.id,
+          ...this.accountScopeWhere(resolvedStrategy),
           symbol: position.symbol,
           side: position.side,
           status: 'OPEN'
@@ -249,7 +327,7 @@ export class PositionSyncService implements OnModuleInit {
 
         const recentlyClosed = await this.tradesRepository.find({
           where: {
-            strategyId: resolvedStrategy.id,
+            ...this.accountScopeWhere(resolvedStrategy),
             symbol: position.symbol,
             side: position.side,
             status: 'CLOSED',
@@ -275,14 +353,14 @@ export class PositionSyncService implements OnModuleInit {
         await this.importOrphanPosition(resolvedStrategy, position);
         imported++;
       } else if (existingTrades.length === 1) {
-        if (resolvedStrategy.breakAgain || resolvedStrategy.moveSLToBreakeven) {
+        if (existingTrades[0].strategyId === resolvedStrategy.id && (resolvedStrategy.breakAgain || resolvedStrategy.moveSLToBreakeven)) {
              await this.checkBreakAgain(existingTrades[0], position, resolvedStrategy, apiKey, apiSecret, resolvedStrategy.siteId);
         }
 
         await this.updateTradeFromPosition(existingTrades[0], position);
         synced++;
       } else {
-        if (resolvedStrategy.breakAgain || resolvedStrategy.moveSLToBreakeven) {
+        if (existingTrades[0].strategyId === resolvedStrategy.id && (resolvedStrategy.breakAgain || resolvedStrategy.moveSLToBreakeven)) {
           await this.checkBreakAgain(existingTrades[0], position, resolvedStrategy, apiKey, apiSecret, resolvedStrategy.siteId);
         }
 
@@ -296,7 +374,7 @@ export class PositionSyncService implements OnModuleInit {
     for (const position of openPositions) {
       const duplicateCheck = await this.tradesRepository.find({
         where: {
-          strategyId: resolvedStrategy.id,
+          ...this.accountScopeWhere(resolvedStrategy),
           symbol: position.symbol,
           side: position.side,
           status: 'OPEN'
