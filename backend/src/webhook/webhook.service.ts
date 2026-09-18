@@ -22,6 +22,7 @@ import { resolveProtectionPrice, resolveFinalEntryPrice } from './protection-pri
 import { shouldRepriceProtection } from './protection-reprice.util';
 import { planTakeProfits, buildEnabledTpConfigs, buildTpWarnings } from './tp-planner.util';
 import { withOneRetry } from './retry.util';
+import { buildSlFailurePolicy, isCloseOnSlFailureEnabled } from './sl-failure-policy.util';
 import { parseTrackedTpOrders, countLiveTrackedOrders } from '../auditor/missing-tp-orders.util';
 import axios from 'axios';
 import * as crypto from 'crypto';
@@ -568,6 +569,49 @@ export class WebhookService {
         }));
       },
       side,
+    });
+  }
+
+  private async closePositionDueToUnprotectedSl(
+    tradeId: string,
+    exchange: Exchange,
+    symbol: string,
+    side: 'BUY' | 'SELL',
+    quantity: number,
+    apiKey: string,
+    apiSecret: string,
+    isTestnet: boolean,
+    hedgeMode: boolean | undefined,
+    siteId: string | null | undefined,
+    reason: string
+  ): Promise<void> {
+    const rules = await this.getSymbolRules(symbol, isTestnet, exchange);
+    const closeSide = (side === 'BUY' ? 'SELL' : 'BUY') as NeutralSide;
+    const client = this.exchangeFactory.get(exchange);
+    const ctx = this.buildCtx(apiKey, apiSecret, isTestnet, siteId);
+
+    await client.createOrder(ctx, {
+      symbol,
+      side: closeSide,
+      orderType: 'MARKET',
+      qty: normalizeQuantity(quantity, rules.qtyStep, rules.minQty),
+      reduceOnly: true,
+      hedgeMode,
+      positionSide: side as NeutralSide,
+    });
+
+    this.logger.warn(
+      `[PROTECTION ALERT] Closed unprotected position for trade ${tradeId} (${symbol}) via CLOSE_ON_SL_FAILURE market order.`
+    );
+
+    await this.tradesService.updateTrade(tradeId, {
+      status: 'CLOSED',
+      closeReason: 'MANUAL',
+      closeDetail: `CLOSE_ON_SL_FAILURE: ${reason}`,
+      closedAt: new Date(),
+      error: reason,
+      slWarnings: reason,
+      unprotectedSince: new Date(),
     });
   }
 
@@ -2528,6 +2572,8 @@ export class WebhookService {
       let takeProfitOrderId: string | null = null;
       let actualStopLossPrice: number | null = null;
       let tpWarnings: string | null = null;
+      let slWarnings: string | null = null;
+      let unprotectedSince: Date | null = null;
 
       if (exchange === Exchange.BYBIT) {
         tradeDetails = await this.executeNeutralOrder(
@@ -2775,14 +2821,18 @@ export class WebhookService {
             try {
               const slClient = this.exchangeFactory.get(Exchange.BYBIT);
               const slCtx = this.buildCtx(decryptedKey, decryptedSecret, resolvedStrategy.isTestnet, resolvedStrategy.siteId);
-              const slOrder = await slClient.createStopLossOrder(
+              const slOrder = await withOneRetry(() => slClient.createStopLossOrder(
                 slCtx, normalizedSymbol, bybitSide, normalizeQuantity(quantity, rules.qtyStep, rules.minQty),
                 roundPriceToTick(stopLossPrice, rules.priceTick), resolvedStrategy.hedgeMode
-              );
+              ), (ms) => this.sleep(ms));
               stopLossOrderId = slOrder.orderId;
               this.logger.log(`[SL] Bybit Stop Loss order created: ${stopLossOrderId} at ${roundPriceToTick(stopLossPrice, rules.priceTick)}`);
             } catch (slError: any) {
-              this.logger.error(`[SL] Failed to create Bybit SL order: ${slError.message}. Continuing with TP creation...`);
+              ({ slWarnings, unprotectedSince } = buildSlFailurePolicy(slError.message));
+              this.logger.error(
+                `[PROTECTION ALERT] Failed to create Bybit SL order after retry: ${slError.message}. ` +
+                `Trade ${savedTrade.id} (${normalizedSymbol}) is UNPROTECTED (no stop loss on the exchange).`
+              );
             }
           } else if (exchange === Exchange.BYBIT && isAveragingTrade) {
             this.logger.log(
@@ -2804,13 +2854,40 @@ export class WebhookService {
             );
           } else {
             try {
-              stopLossOrderId = await this.createBinanceStopLossOrder(
+              stopLossOrderId = await withOneRetry(() => this.createBinanceStopLossOrder(
                 normalizedSymbol, side, quantity, stopLossPrice, decryptedKey, decryptedSecret, resolvedStrategy.isTestnet, resolvedStrategy.hedgeMode, detectedPositionSide
-              );
+              ), (ms) => this.sleep(ms));
               this.logger.log(`[SL] Successfully created Stop Loss order: ${stopLossOrderId}`);
             } catch (slError: any) {
-              this.logger.error(`[SL] Failed to create Binance SL order: ${slError.message}. Continuing with TP creation...`);
+              ({ slWarnings, unprotectedSince } = buildSlFailurePolicy(slError.message));
+              this.logger.error(
+                `[PROTECTION ALERT] Failed to create Binance SL order after retry: ${slError.message}. ` +
+                `Trade ${savedTrade.id} (${normalizedSymbol}) is UNPROTECTED (no stop loss on the exchange).`
+              );
             }
+          }
+        }
+
+        if (unprotectedSince && isCloseOnSlFailureEnabled()) {
+          this.logger.error(
+            `[PROTECTION ALERT] CLOSE_ON_SL_FAILURE=true: closing trade ${savedTrade.id} (${normalizedSymbol}) ` +
+            `immediately because no Stop Loss could be created on the exchange after retry.`
+          );
+          try {
+            await this.closePositionDueToUnprotectedSl(
+              savedTrade.id, exchange, normalizedSymbol, side, quantity, decryptedKey, decryptedSecret,
+              resolvedStrategy.isTestnet, resolvedStrategy.hedgeMode, resolvedStrategy.siteId, slWarnings!
+            );
+            return {
+              status: 'error',
+              message: `Position opened but Stop Loss creation failed after retry. Position was closed automatically (CLOSE_ON_SL_FAILURE=true). ${slWarnings}`,
+              trade: { ...tradeData, id: savedTrade.id },
+            };
+          } catch (closeError: any) {
+            this.logger.error(
+              `[PROTECTION ALERT] CRITICAL - Failed to close unprotected position ${savedTrade.id} (${normalizedSymbol}): ${closeError.message}. ` +
+              `MANUAL INTERVENTION REQUIRED — position has no Stop Loss and could not be closed automatically.`
+            );
           }
         }
 
@@ -3042,6 +3119,8 @@ export class WebhookService {
         takeProfitOrderId: takeProfitOrderId || undefined,
         currentStopLoss: actualStopLossPrice ? parseFloat(roundPriceToTick(actualStopLossPrice, (await this.getSymbolRules(normalizedSymbol, resolvedStrategy.isTestnet, exchange)).priceTick)) as any : undefined,
         tpWarnings,
+        slWarnings,
+        unprotectedSince,
       });
 
       this.logger.log(`[TRADE] Updated trade ${savedTrade.id} with order details`);

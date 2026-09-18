@@ -22,6 +22,8 @@ interface Trade {
   excludeFromStats?: boolean;
   origin?: string | null;
   tpWarnings?: string | null;
+  slWarnings?: string | null;
+  unprotectedSince?: string | null;
   signalPrice?: number | string | null;
   filledAt?: string | null;
   protectionRepricedAt?: string | null;
@@ -58,6 +60,14 @@ function TradeBadges({ trade }: { trade: Trade }) {
           className="px-2 py-0.5 rounded text-[10px] font-bold border bg-amber-500/15 text-amber-400 border-amber-500/30"
         >
           TP incompleto
+        </span>
+      )}
+      {trade.status === 'OPEN' && trade.unprotectedSince && (
+        <span
+          title={`Sem Stop Loss na corretora desde ${formatDateUTC(trade.unprotectedSince)} ${formatTimeUTC(trade.unprotectedSince)} UTC${trade.slWarnings ? ` -- ${trade.slWarnings}` : ''}`}
+          className="px-2 py-0.5 rounded text-[10px] font-bold border bg-red-500/20 text-red-400 border-red-500/40 animate-pulse"
+        >
+          ⚠ SEM STOP LOSS
         </span>
       )}
       {trade.closeReason === 'TAKE_PROFIT_FALLBACK_MARKET' && (

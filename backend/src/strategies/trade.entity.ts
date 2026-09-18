@@ -87,6 +87,12 @@ export class Trade {
   @Column({ type: 'text', nullable: true })
   tpWarnings: string | null;
 
+  @Column({ type: 'text', nullable: true })
+  slWarnings: string | null;
+
+  @Column({ type: 'timestamptz', nullable: true })
+  unprotectedSince: Date | null;
+
   @Column({ type: 'timestamptz', nullable: true })
   protectionRepricedAt: Date | null;
 
