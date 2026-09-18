@@ -4,6 +4,7 @@ jest.mock('../utils/binance-request.util', () => ({
 
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { StopLossService } from './stop-loss.service';
 import { BinanceRequestUtil } from '../utils/binance-request.util';
 import { Trade } from '../strategies/trade.entity';
@@ -55,6 +56,7 @@ describe('StopLossService (FASE 3 -- arredondamento via SymbolRulesService, nunc
         { provide: BinanceWebSocketService, useValue: {} },
         { provide: SymbolRulesService, useValue: symbolRulesService },
         { provide: CredentialsResolverService, useValue: { resolveCredentials: jest.fn() } },
+        { provide: EventEmitter2, useValue: { emit: jest.fn() } },
       ],
     }).compile();
 
@@ -117,6 +119,31 @@ describe('StopLossService (FASE 3 -- arredondamento via SymbolRulesService, nunc
 
       expect(recreated).toBe(false);
       expect(exchangeClient.createStopLossOrder).not.toHaveBeenCalled();
+    });
+
+    it('PLANO_FIX_PROTECAO_NAO_CRIADA (FASE 2): funciona tambem na Bybit, nao so na Binance -- caso real DOGEUSDT', async () => {
+      symbolRulesService.getSymbolRules.mockResolvedValue({ qtyStep: '1', priceTick: '0.00001', minQty: '1', minNotional: '5' });
+      exchangeClient.getPositions.mockResolvedValue([
+        { symbol: 'DOGEUSDT', side: 'SELL', size: '390', avgPrice: '0.0848', unrealizedPnl: '0', leverage: '50', markPrice: '0.0848' },
+      ]);
+      exchangeClient.createStopLossOrder.mockResolvedValue({ orderId: 'bybit-sl-recreated' });
+
+      const trade = {
+        id: 'trade-1', symbol: 'DOGEUSDT', side: 'SELL', quantity: 390, entryPrice: 0.0848, currentStopLoss: 0.08522,
+      } as unknown as Trade;
+      const strategy = { isTestnet: false, hedgeMode: false, stopLossPercentage: 0.5 };
+
+      const recreated = await (service as any).recreateStopLoss(trade, strategy, Exchange.BYBIT, 'key', 'secret');
+
+      expect(recreated).toBe(true);
+      expect(exchangeClient.createStopLossOrder).toHaveBeenCalledWith(
+        expect.objectContaining({ credentials: { apiKey: 'key', apiSecret: 'secret' } }),
+        'DOGEUSDT',
+        'SELL',
+        '390',
+        '0.08522',
+        false,
+      );
     });
   });
 
@@ -195,6 +222,7 @@ describe('StopLossService (FASE 2 -- CredentialsResolver)', () => {
         { provide: BinanceWebSocketService, useValue: {} },
         { provide: SymbolRulesService, useValue: { getSymbolRules: jest.fn() } },
         { provide: CredentialsResolverService, useValue: credentialsResolver },
+        { provide: EventEmitter2, useValue: { emit: jest.fn() } },
       ],
     }).compile();
 
@@ -263,6 +291,7 @@ describe('StopLossService (FASE 4 -- PnL do SL lido da corretora)', () => {
         { provide: BinanceWebSocketService, useValue: {} },
         { provide: SymbolRulesService, useValue: symbolRulesService },
         { provide: CredentialsResolverService, useValue: { resolveCredentials: jest.fn() } },
+        { provide: EventEmitter2, useValue: { emit: jest.fn() } },
       ],
     }).compile();
 
@@ -388,5 +417,123 @@ describe('StopLossService (FASE 4 -- PnL do SL lido da corretora)', () => {
     const execArg = tradesService.createExecution.mock.calls[0][0];
     expect(execArg.price).toBe(0.8015);
     expect(execArg.quantity).toBe(50);
+  });
+});
+
+describe('StopLossService (PLANO_FIX_PROTECAO_NAO_CRIADA -- FASE 2: software nao substitui o condicional em silencio)', () => {
+  let service: StopLossService;
+  let tradesRepository: { save: jest.Mock; update: jest.Mock };
+  let tradesService: { createExecution: jest.Mock };
+  let strategiesService: { findOne: jest.Mock };
+  let credentialsResolver: { resolveCredentials: jest.Mock };
+  let symbolRulesService: { getSymbolRules: jest.Mock };
+  let exchangeClient: ReturnType<typeof makeExchangeClient>;
+  let exchangeFactory: { get: jest.Mock };
+  let eventEmitter: { emit: jest.Mock };
+
+  const strategy = {
+    id: 'strategy-1',
+    exchange: Exchange.BYBIT,
+    isTestnet: false,
+    hedgeMode: false,
+    apiKey: 'key',
+    apiSecret: 'secret',
+    stopLossPercentage: 0.5,
+  };
+
+  const baseTrade = {
+    id: 'trade-1',
+    symbol: 'DOGEUSDT',
+    side: 'SELL',
+    strategyId: 'strategy-1',
+    entryPrice: 0.0848,
+    quantity: 390,
+    stopLossOrderId: null,
+    slWarnings: null,
+    isFromAveraging: false,
+    currentStopLoss: null,
+  };
+
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    tradesRepository = { save: jest.fn(), update: jest.fn() };
+    tradesService = { createExecution: jest.fn() };
+    strategiesService = { findOne: jest.fn().mockResolvedValue(strategy) };
+    credentialsResolver = { resolveCredentials: jest.fn().mockResolvedValue(strategy) };
+    symbolRulesService = { getSymbolRules: jest.fn().mockResolvedValue({ qtyStep: '1', priceTick: '0.00001', minQty: '1', minNotional: '5' }) };
+    exchangeClient = makeExchangeClient();
+    exchangeFactory = { get: jest.fn().mockReturnValue(exchangeClient) };
+    eventEmitter = { emit: jest.fn() };
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        StopLossService,
+        { provide: getRepositoryToken(Trade), useValue: tradesRepository },
+        { provide: TradesService, useValue: tradesService },
+        { provide: StrategiesService, useValue: strategiesService },
+        { provide: ExchangeService, useValue: {} },
+        { provide: ExchangeClientFactory, useValue: exchangeFactory },
+        { provide: BinanceWebSocketService, useValue: {} },
+        { provide: SymbolRulesService, useValue: symbolRulesService },
+        { provide: CredentialsResolverService, useValue: credentialsResolver },
+        { provide: EventEmitter2, useValue: eventEmitter },
+      ],
+    }).compile();
+
+    service = module.get<StopLossService>(StopLossService);
+  });
+
+  it('sem stopLossOrderId, ainda dentro do limite de tentativas -> tenta recriar o condicional na corretora e retorna sem fechar nada', async () => {
+    exchangeClient.getPositions.mockResolvedValue([
+      { symbol: 'DOGEUSDT', side: 'SELL', size: '390', avgPrice: '0.0848', unrealizedPnl: '0', leverage: '50', markPrice: '0.0848' },
+    ]);
+    exchangeClient.createStopLossOrder.mockResolvedValue({ orderId: 'sl-recreated' });
+
+    const trade = { ...baseTrade } as unknown as Trade;
+    await (service as any).checkStopLoss(trade);
+
+    expect(exchangeClient.createStopLossOrder).toHaveBeenCalled();
+    expect(tradesRepository.save).toHaveBeenCalledWith(expect.objectContaining({ stopLossOrderId: 'sl-recreated' }));
+    expect(exchangeClient.createOrder).not.toHaveBeenCalled();
+    expect(eventEmitter.emit).not.toHaveBeenCalled();
+  });
+
+  it('sem stopLossOrderId e recriacao falha (sem posicao na corretora) -> incrementa o contador em slWarnings, emite limit.protection.resume e NAO fecha', async () => {
+    exchangeClient.getPositions.mockResolvedValue([]);
+
+    const trade = { ...baseTrade } as unknown as Trade;
+    await (service as any).checkStopLoss(trade);
+
+    expect(exchangeClient.createStopLossOrder).not.toHaveBeenCalled();
+    expect(tradesRepository.update).toHaveBeenCalledWith('trade-1', { slWarnings: 'SL_MISSING_RETRY:1' });
+    expect(eventEmitter.emit).toHaveBeenCalledWith('limit.protection.resume', { tradeId: 'trade-1' });
+    expect(exchangeClient.createOrder).not.toHaveBeenCalled();
+  });
+
+  it('limite de tentativas esgotado (SL_MISSING_RETRY:3) e preco cruza o alvo -> fecha a mercado com closeReason STOP_LOSS_FALLBACK_MARKET (nao STOP_LOSS)', async () => {
+    exchangeClient.getCurrentPrice.mockResolvedValue(0.0853);
+    exchangeClient.createOrder.mockResolvedValue({ orderId: 'close-order-1' });
+
+    const trade = { ...baseTrade, slWarnings: 'SL_MISSING_RETRY:3' } as unknown as Trade;
+    await (service as any).checkStopLoss(trade);
+
+    expect(exchangeClient.createStopLossOrder).not.toHaveBeenCalled();
+    expect(exchangeClient.createOrder).toHaveBeenCalled();
+    const savedCall = tradesRepository.save.mock.calls.find((c: any) => c[0].closeReason === 'STOP_LOSS_FALLBACK_MARKET');
+    expect(savedCall).toBeDefined();
+    expect(savedCall[0].closeDetail).toMatch(/^TARGET:/);
+  });
+
+  it('trade de averaging (isFromAveraging=true) sem stopLossOrderId -> NUNCA tenta recriar nem emite resume, mantem o comportamento atual (fecha via STOP_LOSS quando o preco cruza)', async () => {
+    exchangeClient.getCurrentPrice.mockResolvedValue(0.0853);
+    exchangeClient.createOrder.mockResolvedValue({ orderId: 'close-order-2' });
+
+    const trade = { ...baseTrade, isFromAveraging: true, currentStopLoss: 0.08522 } as unknown as Trade;
+    await (service as any).checkStopLoss(trade);
+
+    expect(exchangeClient.createStopLossOrder).not.toHaveBeenCalled();
+    expect(eventEmitter.emit).not.toHaveBeenCalled();
+    const savedCall = tradesRepository.save.mock.calls.find((c: any) => c[0].closeReason);
+    expect(savedCall[0].closeReason).toBe('STOP_LOSS');
   });
 });

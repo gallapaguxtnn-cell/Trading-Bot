@@ -78,6 +78,14 @@ function TradeBadges({ trade }: { trade: Trade }) {
           TP a mercado (fallback)
         </span>
       )}
+      {trade.closeReason === 'STOP_LOSS_FALLBACK_MARKET' && (
+        <span
+          title="O SL nao existia como ordem condicional na corretora -- fechou a mercado pelo software como ultimo recurso apos tentativas de recriacao"
+          className="px-2 py-0.5 rounded text-[10px] font-bold border bg-orange-500/15 text-orange-400 border-orange-500/30"
+        >
+          SL a mercado (fallback)
+        </span>
+      )}
       {(trade.closeReason === 'TAKE_PROFIT_1' || trade.closeReason === 'TAKE_PROFIT_2' || trade.closeReason === 'TAKE_PROFIT_3') && (
         <span
           title="TP executado como ordem LIMIT na corretora, exatamente no preco-alvo"

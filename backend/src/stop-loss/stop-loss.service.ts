@@ -1,6 +1,6 @@
 import { Injectable, Logger, Inject, forwardRef, OnModuleInit } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
-import { OnEvent } from '@nestjs/event-emitter';
+import { OnEvent, EventEmitter2 } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Trade, CloseReason } from '../strategies/trade.entity';
@@ -21,6 +21,15 @@ import { SymbolRulesService } from '../common/symbol-rules.service';
 import { normalizeQuantity, roundPriceToTick } from '../common/exchange-precision.util';
 import { CredentialsResolverService } from '../common/credentials-resolver.service';
 import { OrderFill, mapBybitFill, mapBinanceFill, mapCcxtFill, tpPnl, sumCommission } from '../take-profit/fill.util';
+import {
+  SL_MISSING_RETRY_LIMIT,
+  parseSlMissingRetryCount,
+  incrementSlMissingRetry,
+  clearSlMissingRetry,
+  shouldFallbackToMarketSl,
+  computeSlTargetVsExecutedDiffPct,
+  formatSlFallbackCloseDetail,
+} from './sl-missing-fallback.util';
 import * as crypto from 'crypto';
 
 @Injectable()
@@ -42,6 +51,7 @@ export class StopLossService implements OnModuleInit {
     private binanceWs: BinanceWebSocketService,
     private symbolRulesService: SymbolRulesService,
     private credentialsResolver: CredentialsResolverService,
+    private eventEmitter: EventEmitter2,
   ) {
     this.fallbackEnabled = process.env.BINANCE_WS_FALLBACK_ENABLED !== 'false';
   }
@@ -166,6 +176,30 @@ export class StopLossService implements OnModuleInit {
 
     if (!resolvedStrategy.stopLossPercentage) return;
 
+    const missingOrder = !trade.stopLossOrderId || trade.stopLossOrderId.trim() === '';
+
+    if (missingOrder && !trade.isFromAveraging) {
+      if (!shouldFallbackToMarketSl(trade.slWarnings)) {
+        const recreated = await this.recreateStopLoss(trade, resolvedStrategy, exchange, apiKey, apiSecret);
+        if (recreated) {
+          const clearedWarnings = clearSlMissingRetry(trade.slWarnings);
+          if (clearedWarnings !== trade.slWarnings) {
+            await this.tradesRepository.update(trade.id, { slWarnings: clearedWarnings });
+          }
+          return;
+        }
+
+        const nextSlWarnings = incrementSlMissingRetry(trade.slWarnings);
+        await this.tradesRepository.update(trade.id, { slWarnings: nextSlWarnings });
+        this.eventEmitter.emit('limit.protection.resume', { tradeId: trade.id });
+        this.logger.warn(
+          `[SL] ${trade.symbol} sem ordem de stop na corretora — solicitando recriacao ` +
+          `(tentativa ${parseSlMissingRetryCount(nextSlWarnings)}/${SL_MISSING_RETRY_LIMIT})`
+        );
+        return;
+      }
+    }
+
     const currentPrice = await this.getCurrentPrice(trade, resolvedStrategy);
     if (!currentPrice) return;
 
@@ -181,10 +215,22 @@ export class StopLossService implements OnModuleInit {
         ? ((currentPrice - entryPrice) / entryPrice) * 100
         : ((entryPrice - currentPrice) / entryPrice) * 100;
 
-      this.logger.warn(`[STOP-LOSS TRIGGERED] ${trade.symbol}`);
+      const isFallback = missingOrder && !trade.isFromAveraging;
+      const reason: CloseReason = isFallback ? 'STOP_LOSS_FALLBACK_MARKET' : 'STOP_LOSS';
+
+      if (isFallback) {
+        this.logger.error(
+          `[SL FALLBACK MARKET] ${trade.symbol} apos ${SL_MISSING_RETRY_LIMIT} tentativas sem ordem de stop na corretora — ` +
+          `alvo=${stopLossPrice.toFixed(8)} executado~=${currentPrice.toFixed(8)} diff=${computeSlTargetVsExecutedDiffPct(stopLossPrice, currentPrice).toFixed(4)}%`
+        );
+        trade.slWarnings = clearSlMissingRetry(trade.slWarnings) as any;
+        trade.closeDetail = formatSlFallbackCloseDetail(stopLossPrice) as any;
+      } else {
+        this.logger.warn(`[STOP-LOSS TRIGGERED] ${trade.symbol}`);
+      }
       this.logger.warn(`├─ Entry: ${entryPrice.toFixed(2)} → Exit: ${currentPrice.toFixed(2)} (${lossPercent.toFixed(2)}%)`);
       this.logger.warn(`└─ SL Price: ${stopLossPrice.toFixed(2)}`);
-      await this.closePosition(trade, resolvedStrategy, currentPrice, 'STOP_LOSS', apiKey, apiSecret);
+      await this.closePosition(trade, resolvedStrategy, currentPrice, reason, apiKey, apiSecret);
     }
   }
 
@@ -196,7 +242,6 @@ export class StopLossService implements OnModuleInit {
     apiSecret: string
   ): Promise<boolean> {
     try {
-      if (exchange !== Exchange.BINANCE) return false;
       if (!strategy.stopLossPercentage || strategy.stopLossPercentage <= 0) return false;
 
       const client = this.exchangeFactory.get(exchange);
@@ -237,7 +282,7 @@ export class StopLossService implements OnModuleInit {
         this.logger.log(`[SL RECREATE] Using original SL: ${stopPrice} (${strategy.stopLossPercentage}%)`);
       }
 
-      const rules = await this.symbolRulesService.getSymbolRules(trade.symbol, strategy.isTestnet, Exchange.BINANCE);
+      const rules = await this.symbolRulesService.getSymbolRules(trade.symbol, strategy.isTestnet, exchange);
       const qty = normalizeQuantity(remainingQty, rules.qtyStep, rules.minQty);
 
       if (qty === '0') {
