@@ -45,3 +45,15 @@ export async function resolveBybitActualFillPrice(deps: ResolveBybitActualFillPr
   const positionAvgPrice = parseFloat(position?.avgPrice || '0');
   return positionAvgPrice > 0 ? positionAvgPrice : undefined;
 }
+
+export interface ResolveBybitActualPositionQtyDeps {
+  getPositions: () => Promise<BybitPositionLike[]>;
+  side: 'Buy' | 'Sell';
+}
+
+export async function resolveBybitActualPositionQty(deps: ResolveBybitActualPositionQtyDeps): Promise<number | undefined> {
+  const positions = await deps.getPositions();
+  const position = positions.find(pos => pos.side === deps.side && parseFloat(pos.size || '0') > 0);
+  const size = parseFloat(position?.size || '0');
+  return size > 0 ? size : undefined;
+}

@@ -17,7 +17,7 @@ import { BinanceWebSocketService } from '../binance-ws/binance-ws.service';
 import { SignalLogService } from './signal-log.service';
 import { SignalDecision } from './signal-log.entity';
 import { BinanceRequestUtil } from '../utils/binance-request.util';
-import { resolveBybitActualFillPrice } from './bybit-fill-price.util';
+import { resolveBybitActualFillPrice, resolveBybitActualPositionQty } from './bybit-fill-price.util';
 import { resolveProtectionPrice, resolveFinalEntryPrice } from './protection-price.util';
 import { shouldRepriceProtection } from './protection-reprice.util';
 import { planTakeProfits, buildEnabledTpConfigs, buildTpWarnings } from './tp-planner.util';
@@ -536,6 +536,29 @@ export class WebhookService {
     return resolveBybitActualFillPrice({
       getOrderInfo: () => client.getOrderInfo(ctx, symbol, orderId),
       getOrderHistory: () => client.getOrderHistory(ctx, symbol, orderId),
+      getPositions: async () => {
+        const positions = await client.getPositions(ctx, symbol);
+        return positions.map(p => ({
+          side: p.side === 'BUY' ? 'Buy' : p.side === 'SELL' ? 'Sell' : 'NONE',
+          size: p.size,
+          avgPrice: p.avgPrice,
+        }));
+      },
+      side,
+    });
+  }
+
+  private async getBybitActualPositionQty(
+    apiKey: string,
+    apiSecret: string,
+    isTestnet: boolean,
+    symbol: string,
+    side: 'Buy' | 'Sell',
+    siteId?: string | null
+  ): Promise<number | undefined> {
+    const client = this.exchangeFactory.get(Exchange.BYBIT);
+    const ctx = this.buildCtx(apiKey, apiSecret, isTestnet, siteId);
+    return resolveBybitActualPositionQty({
       getPositions: async () => {
         const positions = await client.getPositions(ctx, symbol);
         return positions.map(p => ({
@@ -2650,6 +2673,31 @@ export class WebhookService {
           this.logger.warn(
             `[PROTECTION ORDERS] Preço real de execução indisponível — TP/SL calculados sobre o preço do sinal (erro: ${fillError.message})`
           );
+        }
+
+        if (!isAveragingTrade) {
+          try {
+            actualEntryQty = await this.getBybitActualPositionQty(
+              decryptedKey,
+              decryptedSecret,
+              resolvedStrategy.isTestnet,
+              normalizedSymbol,
+              bybitSideForFill,
+              resolvedStrategy.siteId
+            );
+
+            if (actualEntryQty) {
+              this.logger.log(`[ENTRY QTY] Using actual position size from Bybit: ${actualEntryQty} (raw calculated was ${quantity})`);
+            } else {
+              this.logger.warn(
+                `[ENTRY QTY] Posicao nao encontrada na Bybit apos a entrada — TPs serao planejados sobre a quantidade normalizada ao qtyStep`
+              );
+            }
+          } catch (qtyError: any) {
+            this.logger.warn(
+              `[ENTRY QTY] Falha ao buscar tamanho real da posicao na Bybit: ${qtyError.message} — TPs serao planejados sobre a quantidade normalizada ao qtyStep`
+            );
+          }
         }
       }
 
