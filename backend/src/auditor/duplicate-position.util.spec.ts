@@ -15,6 +15,16 @@ function trade(overrides: Partial<{
 }
 
 describe('findDuplicatePositionGroups', () => {
+  it('PLANO_FIX_PROTECAO_NAO_CRIADA -- par C (caso mais grave): mesma posicao fechando via TP (+0.08) E via SL (-0.36), sinais opostos, ainda assim agrupa (grouping nao depende de closeReason)', () => {
+    const tpClose = trade({ id: 'trade-tp', symbol: 'DOGEUSDT', side: 'SELL', entryPrice: 0.08314, closedAt: '2026-09-14T18:00:00Z', pnl: 0.08 });
+    const slClose = trade({ id: 'trade-sl', symbol: 'DOGEUSDT', side: 'SELL', entryPrice: 0.08314, closedAt: '2026-09-14T18:05:00Z', pnl: -0.36 });
+
+    const groups = findDuplicatePositionGroups([tpClose, slClose]);
+
+    expect(groups).toHaveLength(1);
+    expect(groups[0].trades.map(t => t.id).sort()).toEqual(['trade-sl', 'trade-tp']);
+  });
+
   it('caso real: A (LIMIT TP3 +5.4555) e B (MARKET MANUAL +2.506) mesma entrada -> um grupo com os dois', () => {
     const tradeA = trade({ id: 'trade-a', entryPrice: 0.65470, closedAt: '2026-08-19T04:30:00Z', pnl: 5.4555 });
     const tradeB = trade({ id: 'trade-b', entryPrice: 0.65470, closedAt: '2026-08-19T05:00:00Z', pnl: 2.506 });
@@ -74,6 +84,17 @@ describe('findDuplicatePositionGroups', () => {
 });
 
 describe('planDedupe', () => {
+  it('PLANO_FIX_PROTECAO_NAO_CRIADA -- par C: fecha via TP e via SL, mantem o mais antigo e marca o outro (resolve o PnL duplicado com sinais opostos)', () => {
+    const tpClose = trade({ id: 'trade-tp', symbol: 'DOGEUSDT', side: 'SELL', entryPrice: 0.08314, closedAt: '2026-09-14T18:00:00Z', pnl: 0.08 });
+    const slClose = trade({ id: 'trade-sl', symbol: 'DOGEUSDT', side: 'SELL', entryPrice: 0.08314, closedAt: '2026-09-14T18:05:00Z', pnl: -0.36 });
+
+    const plan = planDedupe(findDuplicatePositionGroups([slClose, tpClose]));
+
+    expect(plan).toHaveLength(1);
+    expect(plan[0].keepTradeId).toBe('trade-tp');
+    expect(plan[0].markTradeIds).toEqual(['trade-sl']);
+  });
+
   it('caso real: mantem o trade mais antigo (A, correto) e marca o mais novo (B, duplicata)', () => {
     const tradeA = trade({ id: 'trade-a', closedAt: '2026-08-19T04:30:00Z', pnl: 5.4555 });
     const tradeB = trade({ id: 'trade-b', closedAt: '2026-08-19T05:00:00Z', pnl: 2.506 });
