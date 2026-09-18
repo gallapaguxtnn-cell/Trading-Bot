@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, Between, In } from 'typeorm';
+import { Repository, Between, In, LessThan } from 'typeorm';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { AuditLog, AuditCategory, AuditSeverity } from './audit-log.entity';
 import { computePercentMismatch } from './percent-mismatch.util';
@@ -8,6 +8,7 @@ import { findDuplicatePositionGroups, planDedupe, DedupePlanItem, DuplicatePosit
 import { parseTrackedTpOrders, computeExpectedTpLevels, countLiveTrackedOrders } from './missing-tp-orders.util';
 import { buildEnabledTpConfigs } from '../webhook/tp-planner.util';
 import { parseFallbackCloseDetailTarget, computeTargetVsExecutedDiffPct } from '../take-profit/take-profit-fallback.util';
+import { isProtectionFallbackClose, isConsecutiveProtectionFallback, extractLastExchangeErrorMessage } from './protection-fallback.util';
 import { Trade } from '../strategies/trade.entity';
 import { TradeExecution, ExecutionType } from '../trades/trade-execution.entity';
 import { Strategy } from '../strategies/strategy.entity';
@@ -307,20 +308,44 @@ export class AuditorService {
       }
     }
 
-    if (trade.status === 'CLOSED' && trade.closeReason === 'TAKE_PROFIT_FALLBACK_MARKET' && trade.exitPrice) {
+    if (trade.status === 'CLOSED' && isProtectionFallbackClose(trade.closeReason) && trade.exitPrice) {
+      const isSl = trade.closeReason === 'STOP_LOSS_FALLBACK_MARKET';
       const targetPrice = parseFallbackCloseDetailTarget(trade.closeDetail);
       const executedPrice = Number(trade.exitPrice);
       const diffPct = targetPrice != null ? computeTargetVsExecutedDiffPct(targetPrice, executedPrice) : null;
+      const label = isSl ? 'SL' : 'TP';
 
       issues.push(this.createLog(trade,
-        AuditCategory.TP_EXECUTED_AT_MARKET,
+        isSl ? AuditCategory.SL_EXECUTED_AT_MARKET : AuditCategory.TP_EXECUTED_AT_MARKET,
         AuditSeverity.WARNING,
         targetPrice != null
-          ? `TP executado a mercado (fallback), nao no alvo LIMIT: alvo ${targetPrice} x executado ${executedPrice} (diff ${diffPct!.toFixed(4)}%)`
-          : `TP executado a mercado (fallback), nao no alvo LIMIT: executado ${executedPrice}`,
+          ? `${label} executado a mercado (fallback), nao no alvo/condicional: alvo ${targetPrice} x executado ${executedPrice} (diff ${diffPct!.toFixed(4)}%)`
+          : `${label} executado a mercado (fallback), nao no alvo/condicional: executado ${executedPrice}`,
         { targetPrice, executedPrice, diffPct },
         targetPrice ?? undefined, executedPrice, diffPct ?? undefined,
       ));
+
+      const previousClosedTrade = await this.tradeRepo.findOne({
+        where: { strategyId: trade.strategyId, status: 'CLOSED', closedAt: LessThan(trade.closedAt as any) },
+        order: { closedAt: 'DESC' },
+      });
+
+      if (isConsecutiveProtectionFallback(trade.closeReason, previousClosedTrade?.closeReason)) {
+        const lastExchangeError = extractLastExchangeErrorMessage(trade) ?? extractLastExchangeErrorMessage(previousClosedTrade!);
+        issues.push(this.createLog(trade,
+          AuditCategory.PROTECTION_NOT_REACHING_EXCHANGE,
+          AuditSeverity.ERROR,
+          `2 fechamentos consecutivos por fallback a mercado (${previousClosedTrade!.closeReason} -> ${trade.closeReason}) -- ` +
+          `a protecao (SL/TP) nao esta chegando na corretora.` +
+          (lastExchangeError ? ` Ultimo erro da corretora: ${lastExchangeError}` : ''),
+          {
+            previousTradeId: previousClosedTrade!.id,
+            previousCloseReason: previousClosedTrade!.closeReason,
+            currentCloseReason: trade.closeReason,
+            lastExchangeError,
+          },
+        ));
+      }
     }
 
     if (trade.status === 'ERROR' && trade.error) {

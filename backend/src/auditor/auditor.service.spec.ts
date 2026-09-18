@@ -125,6 +125,162 @@ describe('AuditorService (FASE 5 -- TP_EXECUTED_AT_MARKET)', () => {
   });
 });
 
+describe('AuditorService (PLANO_FIX_PROTECAO_NAO_CRIADA -- FASE 3: 2 fallbacks consecutivos vira PROTECTION_NOT_REACHING_EXCHANGE)', () => {
+  let service: AuditorService;
+  let auditRepo: { save: jest.Mock };
+  let tradeRepo: { findOne: jest.Mock };
+  let execRepo: { find: jest.Mock };
+  let strategyRepo: { createQueryBuilder: jest.Mock };
+
+  function makeClosedTrade(overrides: Record<string, unknown>) {
+    return {
+      id: 'trade-current',
+      strategyId: 'strategy-1',
+      symbol: 'DOGEUSDT',
+      side: 'SELL',
+      status: 'CLOSED',
+      entryPrice: 0.0848,
+      exitPrice: 0.08228,
+      closeReason: 'STOP_LOSS_FALLBACK_MARKET',
+      closeDetail: 'TARGET:0.0827243',
+      quantity: 390,
+      pnl: -0.36,
+      exchangeOrderId: null,
+      stopLossOrderId: null,
+      takeProfitOrderId: null,
+      slWarnings: null,
+      tpWarnings: null,
+      timestamp: new Date('2026-09-14T20:24:00Z'),
+      closedAt: new Date('2026-09-14T20:25:00Z'),
+      ...overrides,
+    } as unknown as Trade;
+  }
+
+  beforeEach(async () => {
+    auditRepo = { save: jest.fn() };
+    tradeRepo = { findOne: jest.fn() };
+    execRepo = { find: jest.fn().mockResolvedValue([]) };
+    strategyRepo = { createQueryBuilder: jest.fn().mockReturnValue(makeQueryBuilder({ id: 'strategy-1', apiKey: null, apiSecret: null })) };
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        AuditorService,
+        { provide: getRepositoryToken(AuditLog), useValue: auditRepo },
+        { provide: getRepositoryToken(Trade), useValue: tradeRepo },
+        { provide: getRepositoryToken(TradeExecution), useValue: execRepo },
+        { provide: getRepositoryToken(Strategy), useValue: strategyRepo },
+        { provide: ExchangeService, useValue: {} },
+        {
+          provide: CredentialsResolverService,
+          useValue: {
+            resolveCredentials: jest.fn((strategy: any) =>
+              Promise.resolve({
+                apiKey: strategy.apiKey,
+                apiSecret: strategy.apiSecret,
+                exchange: strategy.exchange,
+                isTestnet: strategy.isTestnet,
+                isRealAccount: strategy.isRealAccount,
+                portfolioId: null,
+                source: 'strategy',
+              }),
+            ),
+          },
+        },
+      ],
+    }).compile();
+
+    service = module.get<AuditorService>(AuditorService);
+  });
+
+  it('trade atual fechou por fallback (SL) e o anterior da mesma estrategia tambem (TP) -> emite PROTECTION_NOT_REACHING_EXCHANGE (ERROR)', async () => {
+    const current = makeClosedTrade({ closeReason: 'STOP_LOSS_FALLBACK_MARKET' });
+    const previous = makeClosedTrade({
+      id: 'trade-previous', closeReason: 'TAKE_PROFIT_FALLBACK_MARKET', closedAt: new Date('2026-09-14T17:24:00Z'),
+    });
+
+    tradeRepo.findOne.mockImplementation(async ({ where }: any) => {
+      if (where.id) return current;
+      if (where.strategyId) return previous;
+      return null;
+    });
+
+    const result = await service.reconcileTrade('trade-current');
+
+    const issue = result.issues.find(i => i.category === AuditCategory.PROTECTION_NOT_REACHING_EXCHANGE);
+    expect(issue).toBeDefined();
+    expect(issue!.severity).toBe(AuditSeverity.ERROR);
+    expect(issue!.message).toContain('TAKE_PROFIT_FALLBACK_MARKET');
+    expect(issue!.message).toContain('STOP_LOSS_FALLBACK_MARKET');
+    expect((issue!.details as any).previousTradeId).toBe('trade-previous');
+  });
+
+  it('trade atual fechou por fallback mas o anterior fechou normalmente -> NAO emite PROTECTION_NOT_REACHING_EXCHANGE (nao e consecutivo)', async () => {
+    const current = makeClosedTrade({ closeReason: 'TAKE_PROFIT_FALLBACK_MARKET' });
+    const previous = makeClosedTrade({ id: 'trade-previous', closeReason: 'TAKE_PROFIT_1' });
+
+    tradeRepo.findOne.mockImplementation(async ({ where }: any) => {
+      if (where.id) return current;
+      if (where.strategyId) return previous;
+      return null;
+    });
+
+    const result = await service.reconcileTrade('trade-current');
+
+    expect(result.issues.find(i => i.category === AuditCategory.PROTECTION_NOT_REACHING_EXCHANGE)).toBeUndefined();
+  });
+
+  it('nenhum trade fechado anteriormente para a estrategia -> primeiro fallback nao dispara o alarme (nada para comparar)', async () => {
+    const current = makeClosedTrade({ closeReason: 'STOP_LOSS_FALLBACK_MARKET' });
+
+    tradeRepo.findOne.mockImplementation(async ({ where }: any) => {
+      if (where.id) return current;
+      if (where.strategyId) return null;
+      return null;
+    });
+
+    const result = await service.reconcileTrade('trade-current');
+
+    expect(result.issues.find(i => i.category === AuditCategory.PROTECTION_NOT_REACHING_EXCHANGE)).toBeUndefined();
+  });
+
+  it('closeReason STOP_LOSS_FALLBACK_MARKET emite SL_EXECUTED_AT_MARKET (WARNING), espelhando o que TP_EXECUTED_AT_MARKET ja faz', async () => {
+    const current = makeClosedTrade({ closeReason: 'STOP_LOSS_FALLBACK_MARKET' });
+
+    tradeRepo.findOne.mockImplementation(async ({ where }: any) => {
+      if (where.id) return current;
+      return null;
+    });
+
+    const result = await service.reconcileTrade('trade-current');
+
+    const issue = result.issues.find(i => i.category === AuditCategory.SL_EXECUTED_AT_MARKET);
+    expect(issue).toBeDefined();
+    expect(issue!.severity).toBe(AuditSeverity.WARNING);
+    expect(issue!.expectedValue).toBeCloseTo(0.0827243, 8);
+    expect(issue!.actualValue).toBeCloseTo(0.08228, 8);
+  });
+
+  it('inclui a ultima mensagem de erro da corretora (gravada na FASE 1 via slWarnings) no PROTECTION_NOT_REACHING_EXCHANGE', async () => {
+    const current = makeClosedTrade({
+      closeReason: 'STOP_LOSS_FALLBACK_MARKET',
+      slWarnings: 'SL_CREATION_FAILED:retCode=110017: position idx not match position mode',
+    });
+    const previous = makeClosedTrade({ id: 'trade-previous', closeReason: 'STOP_LOSS_FALLBACK_MARKET' });
+
+    tradeRepo.findOne.mockImplementation(async ({ where }: any) => {
+      if (where.id) return current;
+      if (where.strategyId) return previous;
+      return null;
+    });
+
+    const result = await service.reconcileTrade('trade-current');
+
+    const issue = result.issues.find(i => i.category === AuditCategory.PROTECTION_NOT_REACHING_EXCHANGE);
+    expect(issue!.message).toContain('retCode=110017: position idx not match position mode');
+    expect((issue!.details as any).lastExchangeError).toBe('retCode=110017: position idx not match position mode');
+  });
+});
+
 describe('AuditorService (FASE 2 -- CredentialsResolver)', () => {
   let service: AuditorService;
   let strategyRepo: { createQueryBuilder: jest.Mock };
