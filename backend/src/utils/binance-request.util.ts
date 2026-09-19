@@ -3,7 +3,7 @@ import { ProxyUtil } from './proxy.util';
 
 export class BinanceRequestUtil {
   static async request<T = any>(config: AxiosRequestConfig): Promise<AxiosResponse<T>> {
-    const proxyConfig = ProxyUtil.getAxiosConfig();
+    const proxyConfig = ProxyUtil.getAxiosConfig('binance');
 
     const finalConfig: AxiosRequestConfig = {
       ...config,

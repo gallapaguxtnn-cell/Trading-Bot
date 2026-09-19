@@ -1,13 +1,28 @@
 import { HttpsProxyAgent } from 'https-proxy-agent';
 import { SocksProxyAgent } from 'socks-proxy-agent';
 
+const KNOWN_PROXY_ELIGIBLE_EXCHANGES = ['binance', 'okx'];
+
 export class ProxyUtil {
   private static httpsAgent: HttpsProxyAgent<string> | null = null;
   private static socksAgent: SocksProxyAgent | null = null;
   private static enabled: boolean = false;
   private static proxyUrl: string = '';
+  private static proxyExchanges: Set<string> = new Set();
 
   static initialize() {
+    const configuredExchanges = (process.env.PROXY_EXCHANGES || 'binance')
+      .split(',')
+      .map((e) => e.trim().toLowerCase())
+      .filter(Boolean);
+    this.proxyExchanges = new Set(configuredExchanges);
+
+    const direct = KNOWN_PROXY_ELIGIBLE_EXCHANGES.filter((e) => !this.proxyExchanges.has(e));
+    console.log(
+      `[PROXY] Geonix ativo para: ${[...this.proxyExchanges].join(', ') || '(nenhuma)'} | ` +
+      `direto: ${direct.join(', ') || '(nenhuma)'} | bybit usa HTTP_PROXY`
+    );
+
     const geonixHost = process.env.GEONIX_PROXY_HOST;
     const geonixUser = process.env.GEONIX_PROXY_USER;
     const geonixPass = process.env.GEONIX_PROXY_PASS;
@@ -56,8 +71,8 @@ export class ProxyUtil {
     return this.socksAgent;
   }
 
-  static getAxiosConfig(): any {
-    if (!this.enabled) {
+  static getAxiosConfig(exchange: string): any {
+    if (!this.enabled || !this.proxyExchanges.has(exchange.toLowerCase())) {
       return {};
     }
 
@@ -66,6 +81,10 @@ export class ProxyUtil {
       httpAgent: this.httpsAgent,
       proxy: false,
     };
+  }
+
+  static usesProxy(exchange: string): boolean {
+    return this.enabled && this.proxyExchanges.has(exchange.toLowerCase());
   }
 
   static getProxyUrl(): string {

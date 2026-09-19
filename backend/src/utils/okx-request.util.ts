@@ -3,7 +3,7 @@ import { ProxyUtil } from './proxy.util';
 
 export class OkxRequestUtil {
   static async request<T = any>(config: AxiosRequestConfig): Promise<AxiosResponse<T>> {
-    const proxyConfig = ProxyUtil.getAxiosConfig();
+    const proxyConfig = ProxyUtil.getAxiosConfig('okx');
 
     const finalConfig: AxiosRequestConfig = {
       ...config,
