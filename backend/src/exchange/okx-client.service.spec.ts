@@ -62,6 +62,36 @@ describe('OkxClientService (FASE 5 -- PLANO_INTEGRACAO_OKX)', () => {
     });
   });
 
+  describe('getPublicInstrumentInfo (PLANO_FIX_PROXY_407_OKX -- FASE 4: dados do instrumento na etapa publica do test-connection)', () => {
+    it('devolve ctVal/ctMult/lotSz/minSz/tickSz crus (sem conversao), consultando so o endpoint publico', async () => {
+      (OkxRequestUtil.get as jest.Mock).mockResolvedValue(okxOk(INSTRUMENT_SUI));
+
+      const info = await client.getPublicInstrumentInfo(null, 'SUIUSDT');
+
+      expect(info).toEqual({ ctVal: '1', ctMult: '1', lotSz: '1', minSz: '1', tickSz: '0.0001' });
+      expect(OkxRequestUtil.get).toHaveBeenCalledTimes(1);
+      expect((OkxRequestUtil.get as jest.Mock).mock.calls[0][0]).toContain('/api/v5/public/instruments');
+      expect((OkxRequestUtil.get as jest.Mock).mock.calls[0][0]).toContain('instId=SUI-USDT-SWAP');
+    });
+
+    it('compartilha o mesmo cache de 1h usado por getSymbolRules (mesmo instId)', async () => {
+      (OkxRequestUtil.get as jest.Mock).mockResolvedValue(okxOk(INSTRUMENT_SUI));
+
+      await client.getSymbolRules(makeCtx(), 'SUIUSDT');
+      await client.getPublicInstrumentInfo(null, 'SUIUSDT');
+
+      expect(OkxRequestUtil.get).toHaveBeenCalledTimes(1);
+    });
+
+    it('propaga o erro quando o endpoint publico falha (proxy/rede) -- quem chama decide como classificar', async () => {
+      const proxyError: any = new Error('Request failed with status code 407');
+      proxyError.response = { status: 407 };
+      (OkxRequestUtil.get as jest.Mock).mockRejectedValue(proxyError);
+
+      await expect(client.getPublicInstrumentInfo(null, 'SUIUSDT')).rejects.toThrow('407');
+    });
+  });
+
   describe('createOrder', () => {
     beforeEach(() => {
       (OkxRequestUtil.get as jest.Mock).mockResolvedValue(okxOk(INSTRUMENT_SUI));

@@ -92,7 +92,12 @@ export async function deletePortfolio(id: string): Promise<{ success: boolean }>
   return res.json();
 }
 
-export async function testPortfolioConnection(id: string): Promise<{ success: boolean; balance?: number; message?: string }> {
+export async function testPortfolioConnection(id: string): Promise<{
+  success: boolean;
+  balance?: number;
+  message?: string;
+  instrument?: { ctVal: string; ctMult: string; lotSz: string; minSz: string; tickSz: string };
+}> {
   const res = await fetch(`${API_URL}/api/portfolios/${id}/test-connection`, { method: 'POST' });
   if (!res.ok) throw new Error(await parseErrorMessage(res, 'Failed to test portfolio connection'));
   return res.json();

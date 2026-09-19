@@ -52,7 +52,12 @@ export default function PortfoliosPage() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [formData, setFormData] = useState(DEFAULT_FORM);
   const [isSaving, setIsSaving] = useState(false);
-  const [testResults, setTestResults] = useState<Record<string, { success: boolean; balance?: number; message?: string }>>({});
+  const [testResults, setTestResults] = useState<Record<string, {
+    success: boolean;
+    balance?: number;
+    message?: string;
+    instrument?: { ctVal: string; ctMult: string; lotSz: string; minSz: string; tickSz: string };
+  }>>({});
   const [testingId, setTestingId] = useState<string | null>(null);
 
   useEffect(() => { load(); }, []);
@@ -210,12 +215,17 @@ export default function PortfoliosPage() {
                 </div>
 
                 {result && (
-                  <div className={`text-[11px] rounded-md px-2 py-1.5 border ${
+                  <div className={`text-[11px] rounded-md px-2 py-1.5 border space-y-1 ${
                     result.success
                       ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
                       : 'bg-red-500/10 text-red-400 border-red-500/20'
                   }`}>
-                    {result.success ? `Saldo: ${result.balance?.toFixed(2) ?? '0.00'} USDT` : result.message}
+                    <div>{result.success ? `Saldo: ${result.balance?.toFixed(2) ?? '0.00'} USDT` : result.message}</div>
+                    {result.instrument && (
+                      <div className="font-mono text-[10px] text-muted-foreground">
+                        BTC-USDT-SWAP · ctVal={result.instrument.ctVal} ctMult={result.instrument.ctMult} lotSz={result.instrument.lotSz} minSz={result.instrument.minSz} tickSz={result.instrument.tickSz}
+                      </div>
+                    )}
                   </div>
                 )}
 

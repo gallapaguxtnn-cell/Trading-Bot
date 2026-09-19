@@ -6,6 +6,7 @@ import { Portfolio, PortfolioMode } from './portfolio.entity';
 import { Strategy, Exchange } from '../strategies/strategy.entity';
 import { ExchangeService } from '../exchange/exchange.service';
 import { ExchangeClientFactory } from '../exchange/exchange-client.factory';
+import { OkxClientService } from '../exchange/okx-client.service';
 import { EncryptionUtil } from '../utils/encryption.util';
 
 function createQueryBuilderMock(result: any, isMany: boolean) {
@@ -26,6 +27,7 @@ describe('PortfoliosService', () => {
   let exchangeService: { getExchange: jest.Mock };
   let bybitClient: { getWalletBalance: jest.Mock };
   let exchangeFactory: { get: jest.Mock };
+  let okxClientService: { getPublicInstrumentInfo: jest.Mock; getWalletBalance: jest.Mock };
 
   beforeEach(async () => {
     jest.clearAllMocks();
@@ -46,6 +48,10 @@ describe('PortfoliosService', () => {
     exchangeService = { getExchange: jest.fn() };
     bybitClient = { getWalletBalance: jest.fn() };
     exchangeFactory = { get: jest.fn().mockReturnValue(bybitClient) };
+    okxClientService = {
+      getPublicInstrumentInfo: jest.fn().mockResolvedValue({ ctVal: '0.01', ctMult: '1', lotSz: '1', minSz: '1', tickSz: '0.1' }),
+      getWalletBalance: jest.fn(),
+    };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -54,6 +60,7 @@ describe('PortfoliosService', () => {
         { provide: getRepositoryToken(Strategy), useValue: strategiesRepository },
         { provide: ExchangeService, useValue: exchangeService },
         { provide: ExchangeClientFactory, useValue: exchangeFactory },
+        { provide: OkxClientService, useValue: okxClientService },
       ],
     }).compile();
 
@@ -424,7 +431,7 @@ describe('PortfoliosService', () => {
 
       expect(result.success).toBe(false);
       expect(result.message).toContain('Passphrase');
-      expect(exchangeFactory.get).not.toHaveBeenCalledWith(Exchange.OKX);
+      expect(okxClientService.getPublicInstrumentInfo).not.toHaveBeenCalled();
     });
 
     it('OKX (FASE 7): com passphrase, decripta as 3 credenciais e consulta o saldo via OkxClientService', async () => {
@@ -439,17 +446,61 @@ describe('PortfoliosService', () => {
         false,
       );
       portfoliosRepository.createQueryBuilder.mockReturnValue(qb);
-      const okxClient = { getWalletBalance: jest.fn().mockResolvedValue(1000) };
-      exchangeFactory.get.mockImplementation((exchange: Exchange) => (exchange === Exchange.OKX ? okxClient : bybitClient));
+      okxClientService.getWalletBalance.mockResolvedValue(1000);
 
       const result = await service.testConnection('p1');
 
-      expect(okxClient.getWalletBalance).toHaveBeenCalledWith({
+      expect(okxClientService.getWalletBalance).toHaveBeenCalledWith({
         credentials: { apiKey: 'okx-key', apiSecret: 'okx-secret', passphrase: 'okx-pass' },
         mode: 'DEMO',
         region: 'EL_SALVADOR',
       });
-      expect(result).toEqual({ success: true, balance: 1000 });
+      expect(result).toEqual({
+        success: true,
+        balance: 1000,
+        instrument: { ctVal: '0.01', ctMult: '1', lotSz: '1', minSz: '1', tickSz: '0.1' },
+      });
+    });
+
+    it('PLANO_FIX_PROXY_407_OKX FASE 4: etapa publica falha -> nao chama o endpoint privado, mensagem indica rede/proxy', async () => {
+      const encKey = await EncryptionUtil.encrypt('okx-key');
+      const encSecret = await EncryptionUtil.encrypt('okx-secret');
+      const encPassphrase = await EncryptionUtil.encrypt('okx-pass');
+      const qb = createQueryBuilderMock(
+        { id: 'p1', exchange: Exchange.OKX, mode: PortfolioMode.DEMO, apiKey: encKey, apiSecret: encSecret, apiPassphrase: encPassphrase },
+        false,
+      );
+      portfoliosRepository.createQueryBuilder.mockReturnValue(qb);
+      const proxyError: any = new Error('Request failed with status code 407');
+      proxyError.response = { status: 407 };
+      okxClientService.getPublicInstrumentInfo.mockRejectedValue(proxyError);
+
+      const result = await service.testConnection('p1');
+
+      expect(result.success).toBe(false);
+      expect(result.message).toContain('PROXY');
+      expect(okxClientService.getWalletBalance).not.toHaveBeenCalled();
+    });
+
+    it('PLANO_FIX_PROXY_407_OKX FASE 4: etapa publica passa e devolve ctVal/ctMult/lotSz/minSz/tickSz junto do saldo', async () => {
+      const encKey = await EncryptionUtil.encrypt('okx-key');
+      const encSecret = await EncryptionUtil.encrypt('okx-secret');
+      const encPassphrase = await EncryptionUtil.encrypt('okx-pass');
+      const qb = createQueryBuilderMock(
+        { id: 'p1', exchange: Exchange.OKX, mode: PortfolioMode.DEMO, apiKey: encKey, apiSecret: encSecret, apiPassphrase: encPassphrase },
+        false,
+      );
+      portfoliosRepository.createQueryBuilder.mockReturnValue(qb);
+      okxClientService.getPublicInstrumentInfo.mockResolvedValue({ ctVal: '0.001', ctMult: '1', lotSz: '10', minSz: '10', tickSz: '0.01' });
+      okxClientService.getWalletBalance.mockResolvedValue(250);
+
+      const result = await service.testConnection('p1');
+
+      expect(result).toEqual({
+        success: true,
+        balance: 250,
+        instrument: { ctVal: '0.001', ctMult: '1', lotSz: '10', minSz: '10', tickSz: '0.01' },
+      });
     });
 
     it('PLANO_FIX_PROXY_407_OKX FASE 2: OKX 407 (proxy) -> mensagem de PROXY, nunca "credencial invalida"', async () => {
@@ -463,8 +514,7 @@ describe('PortfoliosService', () => {
       portfoliosRepository.createQueryBuilder.mockReturnValue(qb);
       const proxyError: any = new Error('Request failed with status code 407');
       proxyError.response = { status: 407 };
-      const okxClient = { getWalletBalance: jest.fn().mockRejectedValue(proxyError) };
-      exchangeFactory.get.mockImplementation((exchange: Exchange) => (exchange === Exchange.OKX ? okxClient : bybitClient));
+      okxClientService.getWalletBalance.mockRejectedValue(proxyError);
 
       const result = await service.testConnection('p1');
 
@@ -484,8 +534,7 @@ describe('PortfoliosService', () => {
       portfoliosRepository.createQueryBuilder.mockReturnValue(qb);
       const networkError: any = new Error('connect ECONNREFUSED 1.2.3.4:443');
       networkError.code = 'ECONNREFUSED';
-      const okxClient = { getWalletBalance: jest.fn().mockRejectedValue(networkError) };
-      exchangeFactory.get.mockImplementation((exchange: Exchange) => (exchange === Exchange.OKX ? okxClient : bybitClient));
+      okxClientService.getWalletBalance.mockRejectedValue(networkError);
 
       const result = await service.testConnection('p1');
 
@@ -502,8 +551,7 @@ describe('PortfoliosService', () => {
         false,
       );
       portfoliosRepository.createQueryBuilder.mockReturnValue(qb);
-      const okxClient = { getWalletBalance: jest.fn().mockRejectedValue(new Error('Passphrase invalida na OKX (codigo 50113): Invalid Sign')) };
-      exchangeFactory.get.mockImplementation((exchange: Exchange) => (exchange === Exchange.OKX ? okxClient : bybitClient));
+      okxClientService.getWalletBalance.mockRejectedValue(new Error('Passphrase invalida na OKX (codigo 50113): Invalid Sign'));
 
       const result = await service.testConnection('p1');
 

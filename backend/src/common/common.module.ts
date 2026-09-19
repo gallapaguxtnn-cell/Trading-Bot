@@ -31,6 +31,7 @@ import { OkxClientService } from '../exchange/okx-client.service';
     SymbolRulesService,
     CredentialsResolverService,
     ExchangeClientFactory,
+    OkxClientService,
   ],
 })
 export class CommonModule {}

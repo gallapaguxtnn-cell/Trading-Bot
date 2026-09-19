@@ -162,6 +162,24 @@ export class OkxClientService implements ExchangeClient {
     return instrument;
   }
 
+  async getPublicInstrumentInfo(region: AccountRegion, symbol: string): Promise<{
+    ctVal: string;
+    ctMult: string;
+    lotSz: string;
+    minSz: string;
+    tickSz: string;
+  }> {
+    const instId = toOkxInstId(symbol);
+    const instrument = await this.getInstrument(region, instId);
+    return {
+      ctVal: instrument.ctVal,
+      ctMult: instrument.ctMult,
+      lotSz: instrument.lotSz,
+      minSz: instrument.minSz,
+      tickSz: instrument.tickSz,
+    };
+  }
+
   async getSymbolRules(ctx: AccountContext, symbol: string): Promise<SymbolRules> {
     const instId = toOkxInstId(symbol);
     const instrument = await this.getInstrument(ctx.region, instId);

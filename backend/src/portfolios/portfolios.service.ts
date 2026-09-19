@@ -7,6 +7,7 @@ import { Strategy, Exchange } from '../strategies/strategy.entity';
 import { EncryptionUtil } from '../utils/encryption.util';
 import { ExchangeService } from '../exchange/exchange.service';
 import { ExchangeClientFactory } from '../exchange/exchange-client.factory';
+import { OkxClientService } from '../exchange/okx-client.service';
 import { classifyConnectionError } from '../utils/connection-error.util';
 
 const PORTFOLIO_PUBLIC_COLUMNS = [
@@ -32,6 +33,7 @@ export class PortfoliosService {
     private readonly strategiesRepository: Repository<Strategy>,
     private readonly exchangeService: ExchangeService,
     private readonly exchangeFactory: ExchangeClientFactory,
+    private readonly okxClientService: OkxClientService,
   ) {}
 
   private async maskApiKey(encryptedApiKey: string | null | undefined): Promise<string> {
@@ -167,7 +169,12 @@ export class PortfoliosService {
     return { success: true };
   }
 
-  async testConnection(id: string): Promise<{ success: boolean; balance?: number; message?: string }> {
+  async testConnection(id: string): Promise<{
+    success: boolean;
+    balance?: number;
+    message?: string;
+    instrument?: { ctVal: string; ctMult: string; lotSz: string; minSz: string; tickSz: string };
+  }> {
     const portfolio = await this.findWithCredentials(id);
     if (!portfolio) {
       throw new NotFoundException('Portfolio not found');
@@ -197,14 +204,26 @@ export class PortfoliosService {
         if (!portfolio.apiPassphrase) {
           return { success: false, message: 'Portfólio OKX sem Passphrase configurada' };
         }
+        const region = (portfolio.region as any) ?? null;
+
+        let instrument: { ctVal: string; ctMult: string; lotSz: string; minSz: string; tickSz: string };
+        try {
+          instrument = await this.okxClientService.getPublicInstrumentInfo(region, 'BTCUSDT');
+        } catch (publicError: any) {
+          const classified = classifyConnectionError(publicError);
+          const message = classified?.message
+            ?? `Falha ao alcançar o endpoint público da OKX (rede/proxy): ${publicError.message}`;
+          this.logger.warn(`[TEST CONNECTION] OKX (etapa pública) falhou para portfólio ${id}: ${message}`);
+          return { success: false, message };
+        }
+
         const apiPassphrase = (await EncryptionUtil.decrypt(portfolio.apiPassphrase)).trim();
-        const client = this.exchangeFactory.get(Exchange.OKX);
-        const balance = await client.getWalletBalance({
+        const balance = await this.okxClientService.getWalletBalance({
           credentials: { apiKey, apiSecret, passphrase: apiPassphrase },
           mode: isTestnet ? 'DEMO' : 'REAL',
-          region: (portfolio.region as any) ?? null,
+          region,
         });
-        return { success: true, balance };
+        return { success: true, balance, instrument };
       }
       return { success: false, message: `Corretora ${portfolio.exchange} ainda não é suportada` };
     } catch (error: any) {
