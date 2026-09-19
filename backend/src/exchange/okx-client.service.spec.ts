@@ -2,7 +2,7 @@ jest.mock('../utils/okx-request.util', () => ({
   OkxRequestUtil: { get: jest.fn(), post: jest.fn() },
 }));
 
-import { OkxClientService, OkxApiError } from './okx-client.service';
+import { OkxClientService, OkxApiError, translateOkxError } from './okx-client.service';
 import { OkxRequestUtil } from '../utils/okx-request.util';
 import { RateLimiterUtil } from '../utils/rate-limiter.util';
 import { AccountContext } from './exchange-client.interface';
@@ -340,5 +340,29 @@ describe('OkxClientService (FASE 5 -- PLANO_INTEGRACAO_OKX)', () => {
     it('sempre retorna 0 (OKX usa posSide, nao indice numerico)', async () => {
       expect(await client.getPositionIdx()).toBe(0);
     });
+  });
+});
+
+describe('translateOkxError (PLANO_FIX_PROXY_407_OKX -- FASE 2: erro de credencial nunca confundido com proxy/rede)', () => {
+  it('50110 -> mensagem especifica de IP whitelist, nao generica', () => {
+    expect(translateOkxError('50110', 'IP not in whitelist')).toBe(
+      'API Key com IP whitelist: o IP de saida atual nao esta autorizado na OKX. Remova a restricao na chave ou adicione o IP do servidor.'
+    );
+  });
+
+  it('50111 -> assinatura/API Key invalida', () => {
+    expect(translateOkxError('50111', 'Invalid API Key')).toContain('assinatura ou header invalido');
+  });
+
+  it('50112 -> timestamp invalido', () => {
+    expect(translateOkxError('50112', 'Timestamp expired')).toContain('Timestamp invalido');
+  });
+
+  it('50113 -> passphrase invalida', () => {
+    expect(translateOkxError('50113', 'Invalid Sign')).toContain('Passphrase invalida');
+  });
+
+  it('codigo desconhecido -> mensagem generica com o codigo original preservado', () => {
+    expect(translateOkxError('99999', 'algo raro')).toBe('Erro da OKX (codigo 99999): algo raro');
   });
 });

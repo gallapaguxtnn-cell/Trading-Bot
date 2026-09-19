@@ -451,5 +451,64 @@ describe('PortfoliosService', () => {
       });
       expect(result).toEqual({ success: true, balance: 1000 });
     });
+
+    it('PLANO_FIX_PROXY_407_OKX FASE 2: OKX 407 (proxy) -> mensagem de PROXY, nunca "credencial invalida"', async () => {
+      const encKey = await EncryptionUtil.encrypt('okx-key');
+      const encSecret = await EncryptionUtil.encrypt('okx-secret');
+      const encPassphrase = await EncryptionUtil.encrypt('okx-pass');
+      const qb = createQueryBuilderMock(
+        { id: 'p1', exchange: Exchange.OKX, mode: PortfolioMode.DEMO, apiKey: encKey, apiSecret: encSecret, apiPassphrase: encPassphrase },
+        false,
+      );
+      portfoliosRepository.createQueryBuilder.mockReturnValue(qb);
+      const proxyError: any = new Error('Request failed with status code 407');
+      proxyError.response = { status: 407 };
+      const okxClient = { getWalletBalance: jest.fn().mockRejectedValue(proxyError) };
+      exchangeFactory.get.mockImplementation((exchange: Exchange) => (exchange === Exchange.OKX ? okxClient : bybitClient));
+
+      const result = await service.testConnection('p1');
+
+      expect(result.success).toBe(false);
+      expect(result.message).toContain('PROXY');
+      expect(result.message?.toLowerCase()).not.toContain('credencial');
+    });
+
+    it('PLANO_FIX_PROXY_407_OKX FASE 2: ECONNREFUSED -> mensagem de rede, nunca "credencial invalida"', async () => {
+      const encKey = await EncryptionUtil.encrypt('okx-key');
+      const encSecret = await EncryptionUtil.encrypt('okx-secret');
+      const encPassphrase = await EncryptionUtil.encrypt('okx-pass');
+      const qb = createQueryBuilderMock(
+        { id: 'p1', exchange: Exchange.OKX, mode: PortfolioMode.DEMO, apiKey: encKey, apiSecret: encSecret, apiPassphrase: encPassphrase },
+        false,
+      );
+      portfoliosRepository.createQueryBuilder.mockReturnValue(qb);
+      const networkError: any = new Error('connect ECONNREFUSED 1.2.3.4:443');
+      networkError.code = 'ECONNREFUSED';
+      const okxClient = { getWalletBalance: jest.fn().mockRejectedValue(networkError) };
+      exchangeFactory.get.mockImplementation((exchange: Exchange) => (exchange === Exchange.OKX ? okxClient : bybitClient));
+
+      const result = await service.testConnection('p1');
+
+      expect(result.success).toBe(false);
+      expect(result.message).toContain('rede');
+    });
+
+    it('PLANO_FIX_PROXY_407_OKX FASE 2: erro de credencial real (nao proxy/rede) mantem a mensagem original', async () => {
+      const encKey = await EncryptionUtil.encrypt('okx-key');
+      const encSecret = await EncryptionUtil.encrypt('okx-secret');
+      const encPassphrase = await EncryptionUtil.encrypt('okx-pass');
+      const qb = createQueryBuilderMock(
+        { id: 'p1', exchange: Exchange.OKX, mode: PortfolioMode.DEMO, apiKey: encKey, apiSecret: encSecret, apiPassphrase: encPassphrase },
+        false,
+      );
+      portfoliosRepository.createQueryBuilder.mockReturnValue(qb);
+      const okxClient = { getWalletBalance: jest.fn().mockRejectedValue(new Error('Passphrase invalida na OKX (codigo 50113): Invalid Sign')) };
+      exchangeFactory.get.mockImplementation((exchange: Exchange) => (exchange === Exchange.OKX ? okxClient : bybitClient));
+
+      const result = await service.testConnection('p1');
+
+      expect(result.success).toBe(false);
+      expect(result.message).toContain('Passphrase invalida');
+    });
   });
 });

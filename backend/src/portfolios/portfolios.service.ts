@@ -7,6 +7,7 @@ import { Strategy, Exchange } from '../strategies/strategy.entity';
 import { EncryptionUtil } from '../utils/encryption.util';
 import { ExchangeService } from '../exchange/exchange.service';
 import { ExchangeClientFactory } from '../exchange/exchange-client.factory';
+import { classifyConnectionError } from '../utils/connection-error.util';
 
 const PORTFOLIO_PUBLIC_COLUMNS = [
   'id',
@@ -207,8 +208,10 @@ export class PortfoliosService {
       }
       return { success: false, message: `Corretora ${portfolio.exchange} ainda não é suportada` };
     } catch (error: any) {
-      this.logger.warn(`[TEST CONNECTION] Falha ao validar portfólio ${id}: ${error.message}`);
-      return { success: false, message: error.message || 'Falha ao validar credenciais' };
+      const classified = classifyConnectionError(error);
+      const message = classified?.message ?? (error.message || 'Falha ao validar credenciais');
+      this.logger.warn(`[TEST CONNECTION] Falha ao validar portfólio ${id}: ${message}`);
+      return { success: false, message };
     }
   }
 }

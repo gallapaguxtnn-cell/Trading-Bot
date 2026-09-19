@@ -67,6 +67,10 @@ export function translateOkxError(code: string, msg: string): string {
   const reduceOnlyCodes = ['51004', '51023'];
   const wouldTriggerCodes = ['51046', '51047', '51006'];
 
+  if (code === '50110') return 'API Key com IP whitelist: o IP de saida atual nao esta autorizado na OKX. Remova a restricao na chave ou adicione o IP do servidor.';
+  if (code === '50111') return `API Key, assinatura ou header invalido na OKX (codigo ${code}): ${msg}`;
+  if (code === '50112') return `Timestamp invalido na OKX (codigo ${code}): ${msg} -- verifique o relogio do servidor`;
+  if (code === '50113') return `Passphrase invalida na OKX (codigo ${code}): ${msg}`;
   if (insufficientBalanceCodes.includes(code)) return `Saldo insuficiente na OKX (codigo ${code}): ${msg}`;
   if (precisionCodes.includes(code)) return `Erro de precisao de quantidade/preco na OKX (codigo ${code}): ${msg}`;
   if (reduceOnlyCodes.includes(code)) return `Erro de reduceOnly na OKX (codigo ${code}): ${msg} -- a posicao pode nao existir ou a ordem aumentaria a posicao`;
