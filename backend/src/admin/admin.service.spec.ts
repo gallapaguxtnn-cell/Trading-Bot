@@ -4,11 +4,17 @@ jest.mock('fs', () => ({
   writeFileSync: jest.fn(),
 }));
 
+jest.mock('axios', () => ({
+  get: jest.fn(),
+}));
+
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { BadRequestException, ConflictException } from '@nestjs/common';
 import * as fs from 'fs';
+import axios from 'axios';
 import { AdminService } from './admin.service';
+import { RateLimiterUtil } from '../utils/rate-limiter.util';
 import { Trade } from '../strategies/trade.entity';
 import { TradeExecution } from '../trades/trade-execution.entity';
 import { SignalLog } from '../webhook/signal-log.entity';
@@ -288,5 +294,79 @@ describe('AdminService.resetTrades', () => {
 
     expect(result).toMatchObject({ success: true, deletedTrades: 0, deletedExecutions: 0 });
     expect(tradeRepository.delete).not.toHaveBeenCalled();
+  });
+});
+
+describe('AdminService.getEgressIp (PLANO_FIX_PROXY_407_OKX -- FASE 3)', () => {
+  let service: AdminService;
+
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    RateLimiterUtil.getInstance().clearCache();
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        AdminService,
+        { provide: getRepositoryToken(Trade), useValue: {} },
+        { provide: getRepositoryToken(TradeExecution), useValue: {} },
+        { provide: getRepositoryToken(SignalLog), useValue: {} },
+        { provide: getRepositoryToken(Strategy), useValue: {} },
+        { provide: getRepositoryToken(AuditLog), useValue: {} },
+        { provide: CredentialsResolverService, useValue: {} },
+        { provide: ExchangeClientFactory, useValue: {} },
+      ],
+    }).compile();
+
+    service = module.get<AdminService>(AdminService);
+  });
+
+  afterEach(() => {
+    RateLimiterUtil.getInstance().clearCache();
+  });
+
+  it('devolve o IP do primeiro provedor (JSON, formato ipify) e cacheia', async () => {
+    (axios.get as jest.Mock).mockResolvedValueOnce({ data: { ip: '203.0.113.42' } });
+
+    const result = await service.getEgressIp();
+
+    expect(result).toEqual({ ip: '203.0.113.42', cached: false });
+    expect(axios.get).toHaveBeenCalledWith('https://api.ipify.org?format=json', expect.objectContaining({ timeout: 5000 }));
+  });
+
+  it('chamada seguinte dentro de 10 minutos usa o cache, sem nova requisicao HTTP', async () => {
+    (axios.get as jest.Mock).mockResolvedValueOnce({ data: { ip: '203.0.113.42' } });
+    await service.getEgressIp();
+
+    const result = await service.getEgressIp();
+
+    expect(result).toEqual({ ip: '203.0.113.42', cached: true });
+    expect(axios.get).toHaveBeenCalledTimes(1);
+  });
+
+  it('primeiro provedor falha -> cai para o segundo (texto puro, formato ifconfig.me)', async () => {
+    (axios.get as jest.Mock)
+      .mockRejectedValueOnce(new Error('timeout'))
+      .mockResolvedValueOnce({ data: '203.0.113.99\n' });
+
+    const result = await service.getEgressIp();
+
+    expect(result).toEqual({ ip: '203.0.113.99', cached: false });
+    expect(axios.get).toHaveBeenCalledTimes(2);
+  });
+
+  it('todos os provedores falham -> erro claro, nunca IP vazio', async () => {
+    (axios.get as jest.Mock).mockRejectedValue(new Error('network down'));
+
+    await expect(service.getEgressIp()).rejects.toThrow(BadRequestException);
+  });
+
+  it('nao usa proxy: chama axios.get diretamente, sem passar por ProxyUtil/BinanceRequestUtil/OkxRequestUtil', async () => {
+    (axios.get as jest.Mock).mockResolvedValueOnce({ data: { ip: '203.0.113.42' } });
+
+    await service.getEgressIp();
+
+    const callConfig = (axios.get as jest.Mock).mock.calls[0][1];
+    expect(callConfig).not.toHaveProperty('httpsAgent');
+    expect(callConfig).not.toHaveProperty('proxy');
   });
 });

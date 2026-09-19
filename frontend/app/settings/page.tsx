@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { fetchPortfolios, Portfolio, resetTrades, migrateLegacyPortfolios, backfillTradePortfolioIds } from '@/lib/api';
+import { fetchPortfolios, Portfolio, resetTrades, migrateLegacyPortfolios, backfillTradePortfolioIds, fetchEgressIp } from '@/lib/api';
 
 interface LiveOrphanOrder {
   tradeId: string;
@@ -32,9 +32,16 @@ export default function SettingsPage() {
   const [isRunningDryRun, setIsRunningDryRun] = useState(false);
   const [isResetting, setIsResetting] = useState(false);
   const [migrationBusy, setMigrationBusy] = useState(false);
+  const [egressIp, setEgressIp] = useState<string | null>(null);
+  const [egressIpError, setEgressIpError] = useState<string | null>(null);
+  const [loadingEgressIp, setLoadingEgressIp] = useState(true);
 
   useEffect(() => {
     fetchPortfolios().then(setPortfolios).catch(console.error);
+    fetchEgressIp()
+      .then((r) => setEgressIp(r.ip))
+      .catch((error: unknown) => setEgressIpError(error instanceof Error ? error.message : 'Erro desconhecido'))
+      .finally(() => setLoadingEgressIp(false));
   }, []);
 
   const handleDryRun = async () => {
@@ -164,6 +171,15 @@ export default function SettingsPage() {
               <span className="text-muted-foreground">API URL</span>
               <span className="font-mono text-foreground text-[10px] truncate max-w-[200px]">{process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000'}</span>
             </div>
+            <div className="flex items-center justify-between text-xs">
+              <span className="text-muted-foreground">IP de saída do servidor</span>
+              <span className="font-mono text-foreground">
+                {loadingEgressIp ? 'Consultando...' : egressIp ?? (egressIpError || 'Indisponível')}
+              </span>
+            </div>
+            <p className="text-[11px] text-muted-foreground">
+              É este IP que deve ser cadastrado na whitelist de IP da API Key da OKX, caso você mantenha essa restrição ativada.
+            </p>
           </div>
         </div>
 

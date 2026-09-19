@@ -3,6 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { In, Repository } from 'typeorm';
 import * as fs from 'fs';
 import * as path from 'path';
+import axios from 'axios';
 import { Trade } from '../strategies/trade.entity';
 import { TradeExecution } from '../trades/trade-execution.entity';
 import { SignalLog } from '../webhook/signal-log.entity';
@@ -12,6 +13,11 @@ import { CredentialsResolverService } from '../common/credentials-resolver.servi
 import { ExchangeClientFactory } from '../exchange/exchange-client.factory';
 import { toAccountContext } from '../common/account-context.util';
 import { EncryptionUtil } from '../utils/encryption.util';
+import { RateLimiterUtil } from '../utils/rate-limiter.util';
+
+const EGRESS_IP_CACHE_KEY = 'admin:egress-ip';
+const EGRESS_IP_CACHE_TTL_MS = 10 * 60 * 1000;
+const EGRESS_IP_PROVIDERS = ['https://api.ipify.org?format=json', 'https://ifconfig.me/ip'];
 
 export interface ResetTradesParams {
   dryRun?: boolean;
@@ -271,5 +277,40 @@ export class AdminService {
       cancelledOrphanOrders,
       backupFile: backupFilePath,
     };
+  }
+
+  async getEgressIp(): Promise<{ ip: string; cached: boolean }> {
+    const cached = RateLimiterUtil.getInstance().getCached<string>(EGRESS_IP_CACHE_KEY);
+    if (cached) {
+      return { ip: cached, cached: true };
+    }
+
+    let lastError: any = null;
+    for (const provider of EGRESS_IP_PROVIDERS) {
+      try {
+        const response = await axios.get(provider, { timeout: 5000 });
+        const ip = this.parseEgressIpResponse(response.data);
+        if (!ip) continue;
+        RateLimiterUtil.getInstance().setCached(EGRESS_IP_CACHE_KEY, ip, EGRESS_IP_CACHE_TTL_MS);
+        return { ip, cached: false };
+      } catch (error: any) {
+        lastError = error;
+      }
+    }
+
+    this.logger.error(`[EGRESS IP] Falha ao consultar o IP de saida: ${lastError?.message}`);
+    throw new BadRequestException('Nao foi possivel determinar o IP de saida do servidor. Tente novamente em instantes.');
+  }
+
+  private parseEgressIpResponse(data: unknown): string | null {
+    if (typeof data === 'string') {
+      const trimmed = data.trim();
+      return trimmed.length > 0 ? trimmed : null;
+    }
+    if (data && typeof data === 'object' && 'ip' in data) {
+      const ip = (data as { ip?: unknown }).ip;
+      return typeof ip === 'string' && ip.trim().length > 0 ? ip.trim() : null;
+    }
+    return null;
   }
 }

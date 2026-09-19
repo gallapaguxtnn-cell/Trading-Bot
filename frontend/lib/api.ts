@@ -155,6 +155,12 @@ export async function resetTrades(payload: { dryRun?: boolean; confirm?: string;
   return res.json();
 }
 
+export async function fetchEgressIp(): Promise<{ ip: string; cached: boolean }> {
+  const res = await fetch(`${API_URL}/api/admin/egress-ip`, { cache: 'no-store' });
+  if (!res.ok) throw new Error(await parseErrorMessage(res, 'Failed to fetch egress IP'));
+  return res.json();
+}
+
 export async function createStrategy(data: any) {
   const res = await fetch(`${API_URL}/api/strategies`, {
     method: 'POST',

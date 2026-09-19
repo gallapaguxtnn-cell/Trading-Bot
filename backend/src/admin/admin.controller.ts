@@ -1,4 +1,4 @@
-import { Body, Controller, Post } from '@nestjs/common';
+import { Body, Controller, Get, Post } from '@nestjs/common';
 import { AdminService } from './admin.service';
 
 interface ResetTradesDto {
@@ -16,5 +16,10 @@ export class AdminController {
   @Post('reset-trades')
   resetTrades(@Body() body: ResetTradesDto) {
     return this.adminService.resetTrades(body ?? {});
+  }
+
+  @Get('egress-ip')
+  getEgressIp() {
+    return this.adminService.getEgressIp();
   }
 }
