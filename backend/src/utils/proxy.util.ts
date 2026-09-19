@@ -36,8 +36,10 @@ export class ProxyUtil {
     }
 
     try {
-      this.proxyUrl = `http://${geonixUser}:${geonixPass}@${geonixHost}:${geonixHttpPort}`;
-      const socksUrl = `socks5://${geonixUser}:${geonixPass}@${geonixHost}:${geonixSocksPort}`;
+      const encodedUser = encodeURIComponent(geonixUser);
+      const encodedPass = encodeURIComponent(geonixPass);
+      this.proxyUrl = `http://${encodedUser}:${encodedPass}@${geonixHost}:${geonixHttpPort}`;
+      const socksUrl = `socks5://${encodedUser}:${encodedPass}@${geonixHost}:${geonixSocksPort}`;
 
       this.httpsAgent = new HttpsProxyAgent(this.proxyUrl);
       this.socksAgent = new SocksProxyAgent(socksUrl);

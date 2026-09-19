@@ -89,3 +89,52 @@ describe('ProxyUtil (PLANO_FIX_PROXY_407_OKX -- FASE 1: proxy seletivo por corre
     logSpy.mockRestore();
   });
 });
+
+describe('ProxyUtil (PLANO_FIX_PROXY_407_OKX -- FASE 5: robustez do proxy com senha contendo caracteres especiais)', () => {
+  const originalEnv = { ...process.env };
+
+  afterEach(() => {
+    process.env = { ...originalEnv };
+    ProxyUtil.initialize();
+  });
+
+  it.each([
+    ['@ : # % /', '@:#%/'],
+    ['senha com espaco', 'senha com espaco'],
+    ['p@ss:w0rd#123%off/path', 'p@ss:w0rd#123%off/path'],
+  ])('senha "%s" produz uma URL de proxy valida que decodifica de volta para a senha original', (_label, rawPass) => {
+    process.env.GEONIX_PROXY_HOST = '1.2.3.4';
+    process.env.GEONIX_PROXY_USER = 'geonix-user';
+    process.env.GEONIX_PROXY_PASS = rawPass;
+    ProxyUtil.initialize();
+
+    const proxyUrl = ProxyUtil.getProxyUrl();
+    const parsed = new URL(proxyUrl);
+
+    expect(decodeURIComponent(parsed.username)).toBe('geonix-user');
+    expect(decodeURIComponent(parsed.password)).toBe(rawPass);
+    expect(parsed.hostname).toBe('1.2.3.4');
+  });
+
+  it('usuario com caractere especial (@) tambem e codificado corretamente', () => {
+    process.env.GEONIX_PROXY_HOST = '1.2.3.4';
+    process.env.GEONIX_PROXY_USER = 'user@domain';
+    process.env.GEONIX_PROXY_PASS = 'pass';
+    ProxyUtil.initialize();
+
+    const parsed = new URL(ProxyUtil.getProxyUrl());
+
+    expect(decodeURIComponent(parsed.username)).toBe('user@domain');
+  });
+
+  it('Binance continua funcionando (getAxiosConfig devolve o httpsAgent) mesmo com senha especial', () => {
+    process.env.GEONIX_PROXY_HOST = '1.2.3.4';
+    process.env.GEONIX_PROXY_USER = 'geonix-user';
+    process.env.GEONIX_PROXY_PASS = 'p@ss:w0rd#123%off/path';
+    delete process.env.PROXY_EXCHANGES;
+    ProxyUtil.initialize();
+
+    expect(ProxyUtil.isEnabled()).toBe(true);
+    expect(ProxyUtil.getAxiosConfig('binance').httpsAgent).toBeDefined();
+  });
+});
