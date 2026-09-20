@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Post } from '@nestjs/common';
+import { Body, Controller, Get, Post, Query } from '@nestjs/common';
 import { AdminService } from './admin.service';
 
 interface ResetTradesDto {
@@ -21,5 +21,10 @@ export class AdminController {
   @Get('egress-ip')
   getEgressIp() {
     return this.adminService.getEgressIp();
+  }
+
+  @Post('reconcile-ghost-trades')
+  reconcileGhostTrades(@Query('dryRun') dryRun?: string) {
+    return this.adminService.reconcileGhostTrades(dryRun !== 'false');
   }
 }

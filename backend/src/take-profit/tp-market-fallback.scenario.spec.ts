@@ -47,6 +47,7 @@ describe('Cenario de aceite: PLANO_FIX_TP_MARKET_FALLBACK (print real SUIUSDT SH
     getSymbolRules: jest.Mock;
     getOrderInfo: jest.Mock;
     getOrderHistory: jest.Mock;
+    getPositions: jest.Mock;
   };
   let exchangeFactory: { get: jest.Mock };
   let eventEmitter: { emit: jest.Mock };
@@ -107,6 +108,9 @@ describe('Cenario de aceite: PLANO_FIX_TP_MARKET_FALLBACK (print real SUIUSDT SH
       getSymbolRules: jest.fn().mockResolvedValue({ qtyStep: '1', minQty: '1', priceTick: '0.0001', minNotional: '5' }),
       getOrderInfo: jest.fn(),
       getOrderHistory: jest.fn(),
+      getPositions: jest.fn().mockResolvedValue([
+        { symbol: 'SUIUSDT', side: 'SELL', size: '60', avgPrice: '0.7546', unrealizedPnl: '0', leverage: '1', markPrice: '0.7546' },
+      ]),
     };
     exchangeFactory = { get: jest.fn().mockReturnValue(bybitClient) };
     eventEmitter = { emit: jest.fn() };

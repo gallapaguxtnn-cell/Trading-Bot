@@ -1,6 +1,6 @@
 import { Entity, Column, PrimaryGeneratedColumn, CreateDateColumn, Index } from 'typeorm';
 
-export type CloseReason = 'STOP_LOSS' | 'STOP_LOSS_FALLBACK_MARKET' | 'TAKE_PROFIT' | 'TAKE_PROFIT_1' | 'TAKE_PROFIT_2' | 'TAKE_PROFIT_3' | 'TAKE_PROFIT_FALLBACK_MARKET' | 'MANUAL' | 'LIQUIDATION' | 'SIGNAL';
+export type CloseReason = 'STOP_LOSS' | 'STOP_LOSS_FALLBACK_MARKET' | 'TAKE_PROFIT' | 'TAKE_PROFIT_1' | 'TAKE_PROFIT_2' | 'TAKE_PROFIT_3' | 'TAKE_PROFIT_FALLBACK_MARKET' | 'POSITION_NOT_FOUND' | 'MANUAL' | 'LIQUIDATION' | 'SIGNAL';
 
 @Entity()
 export class Trade {
@@ -104,6 +104,12 @@ export class Trade {
 
   @Column("decimal", { precision: 8, scale: 4, nullable: true })
   stopLossPercentage: number | null;
+
+  @Column({ type: 'int', default: 0 })
+  positionCheckFailures: number;
+
+  @Column({ default: false })
+  needsReconciliation: boolean;
 
   @CreateDateColumn()
   timestamp: Date;

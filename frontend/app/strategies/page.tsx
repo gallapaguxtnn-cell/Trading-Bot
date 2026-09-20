@@ -253,6 +253,16 @@ export default function StrategiesPage() {
   const selectClass = inputClass;
   const labelClass = 'text-xs font-medium text-muted-foreground';
 
+  const enabledTpQuantitySum =
+    (formData.enableTakeProfit1 ? Number(formData.takeProfitQuantity1) || 0 : 0) +
+    (formData.enableTakeProfit2 ? Number(formData.takeProfitQuantity2) || 0 : 0) +
+    (formData.enableTakeProfit3 ? Number(formData.takeProfitQuantity3) || 0 : 0);
+  const tpQuantityOverflow = enabledTpQuantitySum > 100;
+  const tp1ConsumesEverything =
+    formData.enableTakeProfit1 &&
+    Number(formData.takeProfitQuantity1) >= 100 &&
+    (formData.enableTakeProfit2 || formData.enableTakeProfit3);
+
   return (
     <div className="space-y-5">
       <div>
@@ -583,6 +593,21 @@ export default function StrategiesPage() {
                   </div>
                 );
               })}
+
+              {(tpQuantityOverflow || tp1ConsumesEverything) && (
+                <div className="p-3 bg-yellow-500/10 border border-yellow-500/15 rounded-md space-y-1">
+                  {tpQuantityOverflow && (
+                    <p className="text-yellow-300 text-[11px]">
+                      A soma das quantidades dos TPs habilitados é {enabledTpQuantitySum}%, acima de 100%.
+                    </p>
+                  )}
+                  {tp1ConsumesEverything && (
+                    <p className="text-yellow-300 text-[11px]">
+                      TP1 está configurado para {formData.takeProfitQuantity1}% da posição — TP2 e TP3 nunca serão executados, pois não sobra quantidade.
+                    </p>
+                  )}
+                </div>
+              )}
 
               <div className="flex flex-col gap-2 pt-2">
                 <Checkbox name="moveSLToBreakeven" checked={formData.moveSLToBreakeven} onChange={handleChange} label="Move SL para Breakeven após TP2" color="accent-emerald-500" />

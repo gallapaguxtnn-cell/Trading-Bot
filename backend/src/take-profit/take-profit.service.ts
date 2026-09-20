@@ -11,7 +11,7 @@ import { decideTakeProfitClose } from './close-decision.util';
 import { StrategiesService } from '../strategies/strategies.service';
 import { ExchangeService } from '../exchange/exchange.service';
 import { ExchangeClientFactory } from '../exchange/exchange-client.factory';
-import type { AccountContext } from '../exchange/exchange-client.interface';
+import type { AccountContext, ExchangeClient } from '../exchange/exchange-client.interface';
 import { toAccountContext } from '../common/account-context.util';
 import { Exchange } from '../strategies/strategy.entity';
 import { EncryptionUtil } from '../utils/encryption.util';
@@ -31,6 +31,7 @@ import {
 } from './take-profit-fallback.util';
 import { floorToStep } from '../webhook/tp-planner.util';
 import { SymbolRulesService } from '../common/symbol-rules.service';
+import { POSITION_CHECK_RETRY_LIMIT, PositionCheckResult, shouldEscalateToReconciliation } from '../common/position-reconciliation.util';
 import { normalizeQuantity, roundPriceToTick } from '../common/exchange-precision.util';
 import { CredentialsResolverService } from '../common/credentials-resolver.service';
 import * as crypto from 'crypto';
@@ -151,6 +152,7 @@ export class TakeProfitService implements OnModuleInit {
 
   private async checkTakeProfit(trade: Trade) {
     if (isPendingLimitEntry(trade)) return;
+    if (trade.needsReconciliation) return;
 
     const strategy = await this.strategiesService.findOne(trade.strategyId);
     if (!strategy) return;
@@ -208,36 +210,69 @@ export class TakeProfitService implements OnModuleInit {
     const profitPercent = this.calculateProfitPercent(trade, currentPrice);
     const entryPrice = parseFloat(trade.entryPrice as any);
 
+    let triggeredLevel: 1 | 2 | 3 | null = null;
     if (lastTpLevel < 1 && tp1 && this.shouldTrigger(trade, currentPrice, tp1)) {
+      triggeredLevel = 1;
+    } else if (lastTpLevel < 2 && tp2 && this.shouldTrigger(trade, currentPrice, tp2)) {
+      if (100 - tp1Qty <= 0) {
+        this.logger.warn(
+          `[TP] ${trade.symbol} TP2 inalcancavel: TP1 esta configurado para ${tp1Qty}% da posicao, nao resta quantidade para TP2. Ignorando.`
+        );
+      } else {
+        triggeredLevel = 2;
+      }
+    } else if (lastTpLevel < 3 && tp3 && this.shouldTrigger(trade, currentPrice, tp3)) {
+      triggeredLevel = 3;
+    }
+
+    if (triggeredLevel === null) return;
+
+    const positionCheck = await this.checkLivePosition(trade, exchange, apiKey, apiSecret, resolvedStrategy);
+
+    if (positionCheck === 'NOT_FOUND') {
+      this.logger.error(
+        `[TP] ${trade.symbol}: preco cruzou o alvo TP${triggeredLevel} mas nao ha posicao aberta na corretora -- ` +
+        `trade ${trade.id} fechado localmente para reconciliacao (evita "current position is zero, cannot fix reduce-only order qty")`
+      );
+      await this.closeAsPositionNotFound(trade, currentPrice);
+      return;
+    }
+
+    if (positionCheck === 'CHECK_FAILED') {
+      await this.registerPositionCheckFailure(trade, 'Falha ao consultar a posicao na corretora antes do fallback de TP');
+      return;
+    }
+
+    if (triggeredLevel === 1) {
       this.logger.error(
         `[TP FALLBACK MARKET] ${trade.symbol} TP1 apos ${TP_MISSING_RETRY_LIMIT} tentativas sem LIMIT na corretora — ` +
-        `alvo=${tp1.toFixed(8)} executado~=${currentPrice.toFixed(8)} diff=${computeTargetVsExecutedDiffPct(tp1, currentPrice).toFixed(4)}%`
+        `alvo=${tp1!.toFixed(8)} executado~=${currentPrice.toFixed(8)} diff=${computeTargetVsExecutedDiffPct(tp1!, currentPrice).toFixed(4)}%`
       );
       this.logger.log(`├─ Entry: ${entryPrice.toFixed(2)} → Exit: ${currentPrice.toFixed(2)} (${profitPercent > 0 ? '+' : ''}${profitPercent.toFixed(2)}%)`);
       trade.lastTpLevel = 1;
       trade.tpWarnings = clearTpMissingRetry(trade.tpWarnings) as any;
-      trade.closeDetail = formatFallbackCloseDetail(tp1) as any;
+      trade.closeDetail = formatFallbackCloseDetail(tp1!) as any;
       await this.closePosition(trade, resolvedStrategy, currentPrice, 'TAKE_PROFIT_FALLBACK_MARKET', tp1Qty / 100, apiKey, apiSecret, 1);
-    } else if (lastTpLevel < 2 && tp2 && this.shouldTrigger(trade, currentPrice, tp2)) {
+    } else if (triggeredLevel === 2) {
       const closePercent = tp2Qty / (100 - tp1Qty);
       this.logger.error(
         `[TP FALLBACK MARKET] ${trade.symbol} TP2 apos ${TP_MISSING_RETRY_LIMIT} tentativas sem LIMIT na corretora — ` +
-        `alvo=${tp2.toFixed(8)} executado~=${currentPrice.toFixed(8)} diff=${computeTargetVsExecutedDiffPct(tp2, currentPrice).toFixed(4)}%`
+        `alvo=${tp2!.toFixed(8)} executado~=${currentPrice.toFixed(8)} diff=${computeTargetVsExecutedDiffPct(tp2!, currentPrice).toFixed(4)}%`
       );
       this.logger.log(`├─ Entry: ${entryPrice.toFixed(2)} → Exit: ${currentPrice.toFixed(2)} (${profitPercent > 0 ? '+' : ''}${profitPercent.toFixed(2)}%)`);
       trade.lastTpLevel = 2;
       trade.tpWarnings = clearTpMissingRetry(trade.tpWarnings) as any;
-      trade.closeDetail = formatFallbackCloseDetail(tp2) as any;
+      trade.closeDetail = formatFallbackCloseDetail(tp2!) as any;
       await this.closePosition(trade, resolvedStrategy, currentPrice, 'TAKE_PROFIT_FALLBACK_MARKET', closePercent, apiKey, apiSecret, 2);
-    } else if (lastTpLevel < 3 && tp3 && this.shouldTrigger(trade, currentPrice, tp3)) {
+    } else {
       this.logger.error(
         `[TP FALLBACK MARKET] ${trade.symbol} TP3 apos ${TP_MISSING_RETRY_LIMIT} tentativas sem LIMIT na corretora — ` +
-        `alvo=${tp3.toFixed(8)} executado~=${currentPrice.toFixed(8)} diff=${computeTargetVsExecutedDiffPct(tp3, currentPrice).toFixed(4)}%`
+        `alvo=${tp3!.toFixed(8)} executado~=${currentPrice.toFixed(8)} diff=${computeTargetVsExecutedDiffPct(tp3!, currentPrice).toFixed(4)}%`
       );
       this.logger.log(`├─ Entry: ${entryPrice.toFixed(2)} → Exit: ${currentPrice.toFixed(2)} (${profitPercent > 0 ? '+' : ''}${profitPercent.toFixed(2)}%)`);
       trade.lastTpLevel = 3;
       trade.tpWarnings = clearTpMissingRetry(trade.tpWarnings) as any;
-      trade.closeDetail = formatFallbackCloseDetail(tp3) as any;
+      trade.closeDetail = formatFallbackCloseDetail(tp3!) as any;
       await this.closePosition(trade, resolvedStrategy, currentPrice, 'TAKE_PROFIT_FALLBACK_MARKET', 1.0, apiKey, apiSecret, 3);
     }
   }
@@ -842,6 +877,66 @@ export class TakeProfitService implements OnModuleInit {
     }
   }
 
+  private async checkLivePosition(
+    trade: Trade,
+    exchange: Exchange,
+    apiKey: string,
+    apiSecret: string,
+    strategy: any,
+  ): Promise<PositionCheckResult> {
+    try {
+      const client = this.exchangeFactory.get(exchange);
+      const ctx = this.buildCtx(apiKey, apiSecret, strategy.isTestnet, strategy.siteId);
+      const positions = await client.getPositions(ctx, trade.symbol);
+      const live = positions.find(p => p.symbol === trade.symbol && p.side === trade.side && parseFloat(p.size) > 0);
+      return live ? 'LIVE' : 'NOT_FOUND';
+    } catch {
+      return 'CHECK_FAILED';
+    }
+  }
+
+  private async registerPositionCheckFailure(trade: Trade, reason: string): Promise<void> {
+    const nextFailures = (trade.positionCheckFailures || 0) + 1;
+
+    if (shouldEscalateToReconciliation(nextFailures)) {
+      await this.tradesRepository.update(trade.id, { positionCheckFailures: nextFailures, needsReconciliation: true });
+      this.logger.error(
+        `[TP] Trade ${trade.id} (${trade.symbol}) precisa de reconciliacao manual apos ${nextFailures} falha(s) consecutiva(s): ${reason}. ` +
+        `Monitoramento automatico interrompido para este trade.`
+      );
+      return;
+    }
+
+    await this.tradesRepository.update(trade.id, { positionCheckFailures: nextFailures });
+    this.logger.warn(`[TP] ${reason} (tentativa ${nextFailures}/${POSITION_CHECK_RETRY_LIMIT})`);
+  }
+
+  private async escalateImmediately(trade: Trade, reason: string): Promise<void> {
+    await this.tradesRepository.update(trade.id, { needsReconciliation: true });
+    this.logger.error(
+      `[TP] Trade ${trade.id} (${trade.symbol}) precisa de reconciliacao manual: ${reason}. ` +
+      `Monitoramento automatico interrompido para este trade.`
+    );
+  }
+
+  private async closeAsPositionNotFound(trade: Trade, lastKnownPrice: number): Promise<void> {
+    const pnl = this.calculatePnL(trade, lastKnownPrice, 1.0);
+    const totalPnl = (parseFloat(trade.pnl as any) || 0) + pnl;
+
+    trade.status = 'CLOSED';
+    trade.exitPrice = lastKnownPrice as any;
+    trade.pnl = totalPnl as any;
+    trade.closeReason = 'POSITION_NOT_FOUND';
+    trade.closedAt = new Date();
+    trade.binancePositionAmt = 0 as any;
+    trade.excludeFromStats = true;
+    trade.error = 'Posicao nao encontrada na corretora quando o TP disparou -- fechado localmente para reconciliacao';
+
+    await this.tradesRepository.save(trade);
+
+    this.logger.warn(`[TP] Trade ${trade.id} (${trade.symbol}) fechado localmente por reconciliacao (posicao fantasma)`);
+  }
+
   private async closePosition(
     trade: Trade,
     strategy: any,
@@ -1014,7 +1109,8 @@ export class TakeProfitService implements OnModuleInit {
         this.logger.log(`└─ P&L: ${pnl > 0 ? '+' : ''}${pnl.toFixed(2)} USDT`);
       }
 
-    } catch (error) {
+    } catch (error: any) {
+      await this.escalateImmediately(trade, `Falha ao fechar a posicao via TP: ${error.message}`);
       this.logger.error(`Failed to close position: ${error.message}`);
     }
   }

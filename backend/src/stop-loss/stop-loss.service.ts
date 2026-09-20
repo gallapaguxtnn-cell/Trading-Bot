@@ -20,6 +20,7 @@ import { isPendingLimitEntry } from '../utils/trade-guards.util';
 import { SymbolRulesService } from '../common/symbol-rules.service';
 import { normalizeQuantity, roundPriceToTick } from '../common/exchange-precision.util';
 import { CredentialsResolverService } from '../common/credentials-resolver.service';
+import { POSITION_CHECK_RETRY_LIMIT, PositionCheckResult, shouldEscalateToReconciliation } from '../common/position-reconciliation.util';
 import { OrderFill, mapBybitFill, mapBinanceFill, mapCcxtFill, tpPnl, sumCommission } from '../take-profit/fill.util';
 import {
   SL_MISSING_RETRY_LIMIT,
@@ -125,6 +126,7 @@ export class StopLossService implements OnModuleInit {
 
   private async checkStopLoss(trade: Trade) {
     if (isPendingLimitEntry(trade)) return;
+    if (trade.needsReconciliation) return;
 
     const strategy = await this.strategiesService.findOne(trade.strategyId);
     if (!strategy) return;
@@ -220,15 +222,19 @@ export class StopLossService implements OnModuleInit {
       const currentPriceLabel = roundPriceToTick(currentPrice, rules.priceTick);
       const stopLossPriceLabel = roundPriceToTick(stopLossPrice, rules.priceTick);
 
-      const positions = await client.getPositions(ctx, trade.symbol);
-      const livePosition = positions.find(p => p.symbol === trade.symbol && p.side === trade.side && parseFloat(p.size) > 0);
+      const positionCheck = await this.checkLivePosition(trade, client, ctx);
 
-      if (!livePosition) {
+      if (positionCheck === 'NOT_FOUND') {
         this.logger.error(
           `[SL] ${trade.symbol}: preco cruzou o alvo (Entry ${entryPriceLabel} → ${currentPriceLabel}, ${lossPercent.toFixed(2)}%) mas nao ha posicao aberta na corretora -- ` +
           `trade ${trade.id} fechado localmente para reconciliacao (evita "current position is zero, cannot fix reduce-only order qty")`
         );
-        await this.closePhantomTrade(trade, currentPrice);
+        await this.closeAsPositionNotFound(trade, currentPrice);
+        return;
+      }
+
+      if (positionCheck === 'CHECK_FAILED') {
+        await this.registerPositionCheckFailure(trade, 'Falha ao consultar a posicao na corretora antes de disparar o SL');
         return;
       }
 
@@ -251,14 +257,48 @@ export class StopLossService implements OnModuleInit {
     }
   }
 
-  private async closePhantomTrade(trade: Trade, lastKnownPrice: number): Promise<void> {
+  private async checkLivePosition(trade: Trade, client: ExchangeClient, ctx: AccountContext): Promise<PositionCheckResult> {
+    try {
+      const positions = await client.getPositions(ctx, trade.symbol);
+      const live = positions.find(p => p.symbol === trade.symbol && p.side === trade.side && parseFloat(p.size) > 0);
+      return live ? 'LIVE' : 'NOT_FOUND';
+    } catch {
+      return 'CHECK_FAILED';
+    }
+  }
+
+  private async registerPositionCheckFailure(trade: Trade, reason: string): Promise<void> {
+    const nextFailures = (trade.positionCheckFailures || 0) + 1;
+
+    if (shouldEscalateToReconciliation(nextFailures)) {
+      await this.tradesRepository.update(trade.id, { positionCheckFailures: nextFailures, needsReconciliation: true });
+      this.logger.error(
+        `[SL] Trade ${trade.id} (${trade.symbol}) precisa de reconciliacao manual apos ${nextFailures} falha(s) consecutiva(s): ${reason}. ` +
+        `Monitoramento automatico interrompido para este trade.`
+      );
+      return;
+    }
+
+    await this.tradesRepository.update(trade.id, { positionCheckFailures: nextFailures });
+    this.logger.warn(`[SL] ${reason} (tentativa ${nextFailures}/${POSITION_CHECK_RETRY_LIMIT})`);
+  }
+
+  private async escalateImmediately(trade: Trade, reason: string): Promise<void> {
+    await this.tradesRepository.update(trade.id, { needsReconciliation: true });
+    this.logger.error(
+      `[SL] Trade ${trade.id} (${trade.symbol}) precisa de reconciliacao manual: ${reason}. ` +
+      `Monitoramento automatico interrompido para este trade.`
+    );
+  }
+
+  private async closeAsPositionNotFound(trade: Trade, lastKnownPrice: number): Promise<void> {
     const pnl = this.calculatePnL(trade, lastKnownPrice);
     const totalPnl = (parseFloat(trade.pnl as any) || 0) + pnl;
 
     trade.status = 'CLOSED';
     trade.exitPrice = lastKnownPrice as any;
     trade.pnl = totalPnl as any;
-    trade.closeReason = 'MANUAL';
+    trade.closeReason = 'POSITION_NOT_FOUND';
     trade.closedAt = new Date();
     trade.binancePositionAmt = 0 as any;
     trade.excludeFromStats = true;
@@ -743,7 +783,8 @@ export class StopLossService implements OnModuleInit {
 
       this.logger.warn(`└─ Closed: ${this.formatQuantityWithUsdt(fillQty, fillPrice)} | P&L: ${totalPnl > 0 ? '+' : ''}${totalPnl.toFixed(2)} USDT`);
 
-    } catch (error) {
+    } catch (error: any) {
+      await this.escalateImmediately(trade, `Falha ao fechar a posicao via SL: ${error.message}`);
       this.logger.error(`Failed to close position: ${error.message}`);
     }
   }

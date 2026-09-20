@@ -624,7 +624,7 @@ describe('StopLossService (PLANO_FIX_BALANCE_OKX_FALLBACK_BYBIT -- FASE 4: preci
     expect(entryLine).not.toMatch(/Entry: 0\.09/);
   });
 
-  it('sem posicao aberta na corretora quando o SL dispara -> fecha localmente (MANUAL), NUNCA chama createOrder nem gera "current position is zero"', async () => {
+  it('sem posicao aberta na corretora quando o SL dispara -> fecha localmente (POSITION_NOT_FOUND), NUNCA chama createOrder nem gera "current position is zero"', async () => {
     exchangeClient.getCurrentPrice.mockResolvedValue(0.0895);
     exchangeClient.getPositions.mockResolvedValue([]);
     const errorSpy = jest.spyOn((service as any).logger, 'error');
@@ -634,9 +634,9 @@ describe('StopLossService (PLANO_FIX_BALANCE_OKX_FALLBACK_BYBIT -- FASE 4: preci
 
     expect(exchangeClient.createOrder).not.toHaveBeenCalled();
     expect(tradesRepository.save).toHaveBeenCalledWith(
-      expect.objectContaining({ status: 'CLOSED', closeReason: 'MANUAL', excludeFromStats: true }),
+      expect.objectContaining({ status: 'CLOSED', closeReason: 'POSITION_NOT_FOUND', excludeFromStats: true }),
     );
-    const savedCall = tradesRepository.save.mock.calls.find((c: any) => c[0].closeReason === 'MANUAL');
+    const savedCall = tradesRepository.save.mock.calls.find((c: any) => c[0].closeReason === 'POSITION_NOT_FOUND');
     expect(savedCall[0].error).toContain('reconciliacao');
     const errorLine = errorSpy.mock.calls.map((c) => String(c[0])).find((msg) => msg.includes('posicao fantasma') || msg.includes('nao ha posicao aberta'));
     expect(errorLine).toBeDefined();
@@ -655,5 +655,35 @@ describe('StopLossService (PLANO_FIX_BALANCE_OKX_FALLBACK_BYBIT -- FASE 4: preci
     expect(exchangeClient.createOrder).toHaveBeenCalled();
     const savedCall = tradesRepository.save.mock.calls.find((c: any) => c[0].closeReason === 'STOP_LOSS');
     expect(savedCall).toBeDefined();
+  });
+
+  it('PLANO_DEFINITIVO_CORRETORAS -- FASE 1: falha ao consultar a posicao (erro de rede) NAO fecha o trade, so incrementa o contador', async () => {
+    exchangeClient.getCurrentPrice.mockResolvedValue(0.0895);
+    exchangeClient.getPositions.mockRejectedValue(new Error('ETIMEDOUT'));
+
+    const trade = { ...baseTrade, isFromAveraging: true, positionCheckFailures: 0 } as unknown as Trade;
+    await (service as any).checkStopLoss(trade);
+
+    expect(exchangeClient.createOrder).not.toHaveBeenCalled();
+    expect(tradesRepository.save).not.toHaveBeenCalled();
+    expect(tradesRepository.update).toHaveBeenCalledWith('trade-1', { positionCheckFailures: 1 });
+  });
+
+  it('PLANO_DEFINITIVO_CORRETORAS -- FASE 1: apos 3 falhas consecutivas de consulta, marca needsReconciliation e para de tentar', async () => {
+    exchangeClient.getCurrentPrice.mockResolvedValue(0.0895);
+    exchangeClient.getPositions.mockRejectedValue(new Error('ETIMEDOUT'));
+
+    const trade = { ...baseTrade, isFromAveraging: true, positionCheckFailures: 2 } as unknown as Trade;
+    await (service as any).checkStopLoss(trade);
+
+    expect(tradesRepository.update).toHaveBeenCalledWith('trade-1', { positionCheckFailures: 3, needsReconciliation: true });
+  });
+
+  it('PLANO_DEFINITIVO_CORRETORAS -- FASE 1: trade com needsReconciliation=true e ignorado, nenhuma chamada a corretora', async () => {
+    const trade = { ...baseTrade, needsReconciliation: true } as unknown as Trade;
+    await (service as any).checkStopLoss(trade);
+
+    expect(exchangeClient.getCurrentPrice).not.toHaveBeenCalled();
+    expect(exchangeClient.getPositions).not.toHaveBeenCalled();
   });
 });

@@ -313,4 +313,67 @@ export class AdminService {
     }
     return null;
   }
+
+  async reconcileGhostTrades(dryRun: boolean): Promise<{
+    dryRun: boolean;
+    checked: number;
+    ghostTrades: Array<{ tradeId: string; symbol: string; side: string; strategyId: string; reason: string }>;
+    closed: number;
+  }> {
+    const openTrades = await this.tradeRepository.find({ where: { status: 'OPEN' } });
+    const strategyIds = Array.from(new Set(openTrades.map((t) => t.strategyId)));
+    const strategies = strategyIds.length
+      ? await this.strategyRepository.find({ where: { id: In(strategyIds) } })
+      : [];
+    const strategyById = new Map(strategies.map((s) => [s.id, s]));
+
+    const ghostTrades: Array<{ tradeId: string; symbol: string; side: string; strategyId: string; reason: string }> = [];
+
+    for (const trade of openTrades) {
+      const strategy = strategyById.get(trade.strategyId);
+      if (!strategy) continue;
+
+      try {
+        const credentials = await this.credentialsResolver.resolveCredentials(strategy);
+        if (!credentials.apiKey || !credentials.apiSecret) continue;
+
+        const apiKey = (await EncryptionUtil.decrypt(credentials.apiKey)).trim();
+        const apiSecret = (await EncryptionUtil.decrypt(credentials.apiSecret)).trim();
+        const client = this.exchangeFactory.get(credentials.exchange);
+        const ctx = toAccountContext(credentials, apiKey, apiSecret);
+
+        const positions = await client.getPositions(ctx, trade.symbol);
+        const live = positions.find((p) => p.symbol === trade.symbol && p.side === trade.side && parseFloat(p.size) > 0);
+
+        if (!live) {
+          ghostTrades.push({
+            tradeId: trade.id,
+            symbol: trade.symbol,
+            side: trade.side,
+            strategyId: trade.strategyId,
+            reason: 'Nenhuma posicao viva na corretora',
+          });
+
+          if (!dryRun) {
+            await this.tradeRepository.update(trade.id, {
+              status: 'CLOSED',
+              closeReason: 'POSITION_NOT_FOUND',
+              closedAt: new Date(),
+              excludeFromStats: true,
+              binancePositionAmt: 0 as any,
+              error: 'Reconciliado via /admin/reconcile-ghost-trades -- sem posicao correspondente na corretora',
+            });
+          }
+        }
+      } catch (error: any) {
+        this.logger.warn(`[RECONCILE] Falha ao verificar trade ${trade.id} (${trade.symbol}): ${error.message}`);
+      }
+    }
+
+    this.logger.warn(
+      `[RECONCILE] ${dryRun ? 'Dry run' : 'Execucao real'}: ${ghostTrades.length} trade(s) fantasma de ${openTrades.length} verificados.`
+    );
+
+    return { dryRun, checked: openTrades.length, ghostTrades, closed: dryRun ? 0 : ghostTrades.length };
+  }
 }

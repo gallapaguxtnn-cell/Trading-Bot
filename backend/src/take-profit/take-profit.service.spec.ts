@@ -166,6 +166,9 @@ describe('TakeProfitService (FASE 1 -- fallback nao substitui o TP LIMIT)', () =
     exchangeClient.getCurrentPrice.mockResolvedValue(0.746);
     exchangeClient.getSymbolRules.mockResolvedValue({ qtyStep: '1', minQty: '1', priceTick: '0.0001', minNotional: '5' });
     exchangeClient.createOrder.mockResolvedValue({ orderId: 'market-close-1' });
+    exchangeClient.getPositions.mockResolvedValue([
+      { symbol: 'SUIUSDT', side: 'SELL', size: '60', avgPrice: '0.7546', unrealizedPnl: '0', leverage: '1', markPrice: '0.746' },
+    ]);
 
     await (service as any).checkTakeProfit(trade);
 
@@ -192,6 +195,89 @@ describe('TakeProfitService (FASE 1 -- fallback nao substitui o TP LIMIT)', () =
 
     expect(eventEmitter.emit).not.toHaveBeenCalled();
     expect(tradesRepository.update).not.toHaveBeenCalled();
+    expect(exchangeClient.createOrder).not.toHaveBeenCalled();
+  });
+
+  it('PLANO_DEFINITIVO_CORRETORAS -- FASE 1: sem posicao na corretora no momento do fallback -> fecha localmente (POSITION_NOT_FOUND), nunca chama createOrder', async () => {
+    const trade = makeTrade({ tpWarnings: 'TP_MISSING_RETRY:3', lastTpLevel: 2 });
+    strategiesService.findOne.mockResolvedValue(makeStrategy());
+    exchangeClient.getCurrentPrice.mockResolvedValue(0.746);
+    exchangeClient.getPositions.mockResolvedValue([]);
+
+    await (service as any).checkTakeProfit(trade);
+
+    expect(exchangeClient.createOrder).not.toHaveBeenCalled();
+    const savedTrade = tradesRepository.save.mock.calls.find((c: any) => c[0].closeReason === 'POSITION_NOT_FOUND');
+    expect(savedTrade).toBeDefined();
+    expect(savedTrade[0].status).toBe('CLOSED');
+    expect(savedTrade[0].excludeFromStats).toBe(true);
+  });
+
+  it('PLANO_DEFINITIVO_CORRETORAS -- FASE 1: falha ao consultar a posicao (erro de rede) nao fecha, so incrementa o contador', async () => {
+    const trade = makeTrade({ tpWarnings: 'TP_MISSING_RETRY:3', lastTpLevel: 2, positionCheckFailures: 0 });
+    strategiesService.findOne.mockResolvedValue(makeStrategy());
+    exchangeClient.getCurrentPrice.mockResolvedValue(0.746);
+    exchangeClient.getPositions.mockRejectedValue(new Error('ETIMEDOUT'));
+
+    await (service as any).checkTakeProfit(trade);
+
+    expect(exchangeClient.createOrder).not.toHaveBeenCalled();
+    expect(tradesRepository.save).not.toHaveBeenCalled();
+    expect(tradesRepository.update).toHaveBeenCalledWith('trade-1', { positionCheckFailures: 1 });
+  });
+
+  it('PLANO_DEFINITIVO_CORRETORAS -- FASE 1: apos 3 falhas consecutivas de consulta, marca needsReconciliation e para', async () => {
+    const trade = makeTrade({ tpWarnings: 'TP_MISSING_RETRY:3', lastTpLevel: 2, positionCheckFailures: 2 });
+    strategiesService.findOne.mockResolvedValue(makeStrategy());
+    exchangeClient.getCurrentPrice.mockResolvedValue(0.746);
+    exchangeClient.getPositions.mockRejectedValue(new Error('ETIMEDOUT'));
+
+    await (service as any).checkTakeProfit(trade);
+
+    expect(tradesRepository.update).toHaveBeenCalledWith('trade-1', { positionCheckFailures: 3, needsReconciliation: true });
+  });
+
+  it('PLANO_DEFINITIVO_CORRETORAS -- FASE 1: trade com needsReconciliation=true e ignorado, nenhuma chamada a corretora', async () => {
+    const trade = makeTrade({ needsReconciliation: true });
+    strategiesService.findOne.mockResolvedValue(makeStrategy());
+
+    await (service as any).checkTakeProfit(trade);
+
+    expect(strategiesService.findOne).not.toHaveBeenCalled();
+    expect(exchangeClient.getCurrentPrice).not.toHaveBeenCalled();
+  });
+
+  it('PLANO_DEFINITIVO_CORRETORAS -- FASE 1: closePosition falha -> marca needsReconciliation imediatamente, ciclo seguinte NAO repete o mesmo nivel', async () => {
+    const trade = makeTrade({ tpWarnings: 'TP_MISSING_RETRY:3', lastTpLevel: 2 });
+    strategiesService.findOne.mockResolvedValue(makeStrategy());
+    exchangeClient.getCurrentPrice.mockResolvedValue(0.746);
+    exchangeClient.getPositions.mockResolvedValue([
+      { symbol: 'SUIUSDT', side: 'SELL', size: '60', avgPrice: '0.7546', unrealizedPnl: '0', leverage: '1', markPrice: '0.746' },
+    ]);
+    exchangeClient.getSymbolRules.mockRejectedValue(new Error('network down'));
+
+    await (service as any).checkTakeProfit(trade);
+
+    expect(exchangeClient.createOrder).not.toHaveBeenCalled();
+    expect(tradesRepository.update).toHaveBeenCalledWith('trade-1', { needsReconciliation: true });
+
+    tradesRepository.update.mockClear();
+    strategiesService.findOne.mockClear();
+    const tradeNextCycle = makeTrade({ tpWarnings: 'TP_MISSING_RETRY:3', lastTpLevel: 2, needsReconciliation: true });
+    await (service as any).checkTakeProfit(tradeNextCycle);
+
+    expect(strategiesService.findOne).not.toHaveBeenCalled();
+    expect(exchangeClient.createOrder).not.toHaveBeenCalled();
+  });
+
+  it('PLANO_DEFINITIVO_CORRETORAS -- FASE 1: TP1=100% com TP2 habilitado -> TP2 e inalcancavel, loga e NAO divide por zero nem fecha', async () => {
+    const trade = makeTrade({ tpWarnings: 'TP_MISSING_RETRY:3', lastTpLevel: 1 });
+    strategiesService.findOne.mockResolvedValue(makeStrategy({ takeProfitQuantity1: 100 }));
+    exchangeClient.getCurrentPrice.mockResolvedValue(0.74);
+
+    await (service as any).checkTakeProfit(trade);
+
+    expect(exchangeClient.getPositions).not.toHaveBeenCalled();
     expect(exchangeClient.createOrder).not.toHaveBeenCalled();
   });
 });

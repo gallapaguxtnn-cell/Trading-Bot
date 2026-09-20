@@ -370,3 +370,107 @@ describe('AdminService.getEgressIp (PLANO_FIX_PROXY_407_OKX -- FASE 3)', () => {
     expect(callConfig).not.toHaveProperty('proxy');
   });
 });
+
+describe('AdminService.reconcileGhostTrades (PLANO_DEFINITIVO_CORRETORAS -- FASE 1)', () => {
+  let service: AdminService;
+  let tradeRepository: { find: jest.Mock; update: jest.Mock };
+  let strategyRepository: { find: jest.Mock };
+  let credentialsResolver: { resolveCredentials: jest.Mock };
+  let exchangeClient: { getPositions: jest.Mock };
+  let exchangeFactory: { get: jest.Mock };
+
+  function makeOpenTrade(overrides: Record<string, unknown> = {}) {
+    return {
+      id: 'trade-1',
+      status: 'OPEN',
+      strategyId: 's1',
+      symbol: 'DOGEUSDT',
+      side: 'SELL',
+      ...overrides,
+    };
+  }
+
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    tradeRepository = { find: jest.fn().mockResolvedValue([]), update: jest.fn() };
+    strategyRepository = { find: jest.fn().mockResolvedValue([{ id: 's1', exchange: Exchange.BYBIT, isTestnet: false, apiKey: 'k', apiSecret: 's' }]) };
+    credentialsResolver = {
+      resolveCredentials: jest.fn().mockResolvedValue({
+        apiKey: 'k', apiSecret: 's', exchange: Exchange.BYBIT, isTestnet: false, isRealAccount: true, portfolioId: null, siteId: null, source: 'strategy',
+      }),
+    };
+    exchangeClient = { getPositions: jest.fn().mockResolvedValue([]) };
+    exchangeFactory = { get: jest.fn().mockReturnValue(exchangeClient) };
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        AdminService,
+        { provide: getRepositoryToken(Trade), useValue: tradeRepository },
+        { provide: getRepositoryToken(TradeExecution), useValue: {} },
+        { provide: getRepositoryToken(SignalLog), useValue: {} },
+        { provide: getRepositoryToken(Strategy), useValue: strategyRepository },
+        { provide: getRepositoryToken(AuditLog), useValue: {} },
+        { provide: CredentialsResolverService, useValue: credentialsResolver },
+        { provide: ExchangeClientFactory, useValue: exchangeFactory },
+      ],
+    }).compile();
+
+    service = module.get<AdminService>(AdminService);
+  });
+
+  it('dryRun=true (padrao): lista os trades fantasma mas NAO altera nada no banco', async () => {
+    tradeRepository.find.mockResolvedValue([makeOpenTrade()]);
+    exchangeClient.getPositions.mockResolvedValue([]);
+
+    const result = await service.reconcileGhostTrades(true);
+
+    expect(result.dryRun).toBe(true);
+    expect(result.checked).toBe(1);
+    expect(result.ghostTrades).toHaveLength(1);
+    expect(result.ghostTrades[0]).toMatchObject({ tradeId: 'trade-1', symbol: 'DOGEUSDT', side: 'SELL' });
+    expect(result.closed).toBe(0);
+    expect(tradeRepository.update).not.toHaveBeenCalled();
+  });
+
+  it('dryRun=false: fecha os trades fantasma com closeReason POSITION_NOT_FOUND e excludeFromStats', async () => {
+    tradeRepository.find.mockResolvedValue([makeOpenTrade()]);
+    exchangeClient.getPositions.mockResolvedValue([]);
+
+    const result = await service.reconcileGhostTrades(false);
+
+    expect(result.closed).toBe(1);
+    expect(tradeRepository.update).toHaveBeenCalledWith('trade-1', expect.objectContaining({
+      status: 'CLOSED',
+      closeReason: 'POSITION_NOT_FOUND',
+      excludeFromStats: true,
+    }));
+  });
+
+  it('trade com posicao viva na corretora NAO e considerado fantasma', async () => {
+    tradeRepository.find.mockResolvedValue([makeOpenTrade()]);
+    exchangeClient.getPositions.mockResolvedValue([
+      { symbol: 'DOGEUSDT', side: 'SELL', size: '390', avgPrice: '0.08', unrealizedPnl: '0', leverage: '50', markPrice: '0.08' },
+    ]);
+
+    const result = await service.reconcileGhostTrades(false);
+
+    expect(result.ghostTrades).toHaveLength(0);
+    expect(tradeRepository.update).not.toHaveBeenCalled();
+  });
+
+  it('falha ao consultar a corretora para um trade nao interrompe a verificacao dos demais', async () => {
+    tradeRepository.find.mockResolvedValue([
+      makeOpenTrade({ id: 'trade-1', strategyId: 's1' }),
+      makeOpenTrade({ id: 'trade-2', strategyId: 's1', symbol: 'BTCUSDT' }),
+    ]);
+    exchangeClient.getPositions
+      .mockRejectedValueOnce(new Error('network down'))
+      .mockResolvedValueOnce([]);
+
+    const result = await service.reconcileGhostTrades(true);
+
+    expect(result.checked).toBe(2);
+    expect(result.ghostTrades).toHaveLength(1);
+    expect(result.ghostTrades[0].tradeId).toBe('trade-2');
+  });
+});
