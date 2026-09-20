@@ -13,6 +13,7 @@ import { SignalLogService } from './signal-log.service';
 import { SymbolRulesService } from '../common/symbol-rules.service';
 import { CredentialsResolverService } from '../common/credentials-resolver.service';
 import { Exchange } from '../strategies/strategy.entity';
+import { RateLimiterUtil } from '../utils/rate-limiter.util';
 
 function passthroughCredentialsResolver() {
   return {
@@ -525,5 +526,150 @@ describe('WebhookService (FASE 3 -- nenhuma protecao antes do fill, sobrevive a 
     expect(exchangeClient.createStopLossOrder).toHaveBeenCalledTimes(1);
     const [, , , , triggerPrice] = exchangeClient.createStopLossOrder.mock.calls[0];
     expect(triggerPrice).toBe('0.8119');
+  });
+});
+
+describe('WebhookService (PLANO_FIX_BALANCE_OKX_FALLBACK_BYBIT -- FASE 1: saldo pela corretora certa, nunca fallback fixo)', () => {
+  let service: WebhookService;
+  let exchangeFactory: { get: jest.Mock };
+  let clientsByExchange: Record<string, ReturnType<typeof makeExchangeClient>>;
+
+  function makeStrategy(overrides: Record<string, unknown> = {}) {
+    return {
+      id: 'strategy-1',
+      exchange: Exchange.BYBIT,
+      isTestnet: true,
+      apiKey: 'key',
+      apiSecret: 'secret',
+      isRealAccount: false,
+      portfolioId: null,
+      ...overrides,
+    };
+  }
+
+  beforeEach(async () => {
+    RateLimiterUtil.getInstance().clearCache();
+
+    clientsByExchange = {
+      [Exchange.BYBIT]: makeExchangeClient(),
+      [Exchange.BINANCE]: makeExchangeClient(),
+      [Exchange.OKX]: makeExchangeClient(),
+    };
+    exchangeFactory = {
+      get: jest.fn((exchange: Exchange) => {
+        const client = clientsByExchange[exchange];
+        if (!client) throw new Error(`Nenhum ExchangeClient registrado para ${exchange}`);
+        return client;
+      }),
+    };
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        WebhookService,
+        { provide: ExchangeService, useValue: {} },
+        { provide: ExchangeClientFactory, useValue: exchangeFactory },
+        { provide: StrategiesService, useValue: { findOne: jest.fn() } },
+        { provide: TradesService, useValue: { findById: jest.fn(), findOpenTrades: jest.fn().mockResolvedValue([]), updateTrade: jest.fn() } },
+        { provide: BinanceWebSocketService, useValue: {} },
+        { provide: SignalLogService, useValue: {} },
+        { provide: SymbolRulesService, useValue: { getSymbolRules: jest.fn() } },
+        { provide: CredentialsResolverService, useValue: passthroughCredentialsResolver() },
+      ],
+    }).compile();
+
+    service = module.get<WebhookService>(WebhookService);
+  });
+
+  it('estrategia OKX -> busca o saldo na OKX (bug real: caia no fallback fixo para Bybit e recebia 401)', async () => {
+    clientsByExchange[Exchange.OKX].getWalletBalance.mockResolvedValue(10);
+
+    const balance = await (service as any).getAccountBalance(makeStrategy({ exchange: Exchange.OKX }));
+
+    expect(balance).toBe(10);
+    expect(exchangeFactory.get).toHaveBeenCalledWith(Exchange.OKX);
+    expect(clientsByExchange[Exchange.OKX].getWalletBalance).toHaveBeenCalledTimes(1);
+    expect(clientsByExchange[Exchange.BYBIT].getWalletBalance).not.toHaveBeenCalled();
+  });
+
+  it('estrategia OKX com passphrase (via portfolio) -> passa a passphrase decriptada no AccountContext', async () => {
+    clientsByExchange[Exchange.OKX].getWalletBalance.mockResolvedValue(10);
+    const credentialsResolver = {
+      resolveCredentials: jest.fn().mockResolvedValue({
+        apiKey: 'okx-key', apiSecret: 'okx-secret', apiPassphrase: 'okx-pass',
+        exchange: Exchange.OKX, isTestnet: false, isRealAccount: true, portfolioId: 'p1', siteId: null, source: 'portfolio',
+      }),
+    };
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        WebhookService,
+        { provide: ExchangeService, useValue: {} },
+        { provide: ExchangeClientFactory, useValue: exchangeFactory },
+        { provide: StrategiesService, useValue: { findOne: jest.fn() } },
+        { provide: TradesService, useValue: { findById: jest.fn(), findOpenTrades: jest.fn().mockResolvedValue([]), updateTrade: jest.fn() } },
+        { provide: BinanceWebSocketService, useValue: {} },
+        { provide: SignalLogService, useValue: {} },
+        { provide: SymbolRulesService, useValue: { getSymbolRules: jest.fn() } },
+        { provide: CredentialsResolverService, useValue: credentialsResolver },
+      ],
+    }).compile();
+    const okxService = module.get<WebhookService>(WebhookService);
+
+    await (okxService as any).getAccountBalance(makeStrategy({ exchange: Exchange.OKX, portfolioId: 'p1' }));
+
+    expect(clientsByExchange[Exchange.OKX].getWalletBalance).toHaveBeenCalledWith(
+      expect.objectContaining({ credentials: { apiKey: 'okx-key', apiSecret: 'okx-secret', passphrase: 'okx-pass' } }),
+    );
+  });
+
+  it('estrategia Bybit -> comportamento identico ao anterior, busca o saldo na Bybit', async () => {
+    clientsByExchange[Exchange.BYBIT].getWalletBalance.mockResolvedValue(6.59);
+
+    const balance = await (service as any).getAccountBalance(makeStrategy({ exchange: Exchange.BYBIT }));
+
+    expect(balance).toBe(6.59);
+    expect(exchangeFactory.get).toHaveBeenCalledWith(Exchange.BYBIT);
+    expect(clientsByExchange[Exchange.OKX].getWalletBalance).not.toHaveBeenCalled();
+  });
+
+  it('estrategia Binance -> migrado para client.getWalletBalance(), resultado identico ao calculo manual anterior (availableBalance com fallback para walletBalance)', async () => {
+    jest.spyOn(service as any, 'sleep').mockResolvedValue(undefined);
+    clientsByExchange[Exchange.BINANCE].getWalletBalance.mockResolvedValue(123.45);
+
+    const balance = await (service as any).getAccountBalance(makeStrategy({ exchange: Exchange.BINANCE }));
+
+    expect(balance).toBe(123.45);
+    expect(exchangeFactory.get).toHaveBeenCalledWith(Exchange.BINANCE);
+  });
+
+  it('corretora sem client registrado -> erro explicito, NUNCA cai para outra corretora', async () => {
+    jest.spyOn(service as any, 'sleep').mockResolvedValue(undefined);
+    delete clientsByExchange[Exchange.BINANCE];
+
+    await expect(
+      (service as any).getAccountBalance(makeStrategy({ exchange: Exchange.BINANCE })),
+    ).rejects.toThrow(/Nenhum ExchangeClient registrado/);
+
+    expect(clientsByExchange[Exchange.BYBIT].getWalletBalance).not.toHaveBeenCalled();
+    expect(clientsByExchange[Exchange.OKX].getWalletBalance).not.toHaveBeenCalled();
+  });
+
+  it('log [BALANCE] nomeia a corretora real (okx), nao "Bybit" fixo', async () => {
+    clientsByExchange[Exchange.OKX].getWalletBalance.mockResolvedValue(10);
+    const logSpy = jest.spyOn((service as any).logger, 'log');
+
+    await (service as any).getAccountBalance(makeStrategy({ exchange: Exchange.OKX }));
+
+    const balanceLog = logSpy.mock.calls.map((c) => String(c[0])).find((msg) => msg.startsWith('[BALANCE]'));
+    expect(balanceLog).toContain('okx');
+    expect(balanceLog).not.toContain('Bybit');
+  });
+
+  it('valor cacheado (10s) e reaproveitado sem nova chamada a corretora', async () => {
+    clientsByExchange[Exchange.OKX].getWalletBalance.mockResolvedValue(10);
+
+    await (service as any).getAccountBalance(makeStrategy({ exchange: Exchange.OKX }));
+    await (service as any).getAccountBalance(makeStrategy({ exchange: Exchange.OKX }));
+
+    expect(clientsByExchange[Exchange.OKX].getWalletBalance).toHaveBeenCalledTimes(1);
   });
 });

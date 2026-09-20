@@ -115,8 +115,8 @@ export class WebhookService {
     return new Promise(resolve => setTimeout(resolve, ms));
   }
 
-  private buildCtx(apiKey: string, apiSecret: string, isTestnet: boolean, siteId?: string | null): AccountContext {
-    return { credentials: { apiKey, apiSecret }, mode: isTestnet ? 'DEMO' : 'REAL', region: (siteId as any) ?? null };
+  private buildCtx(apiKey: string, apiSecret: string, isTestnet: boolean, siteId?: string | null, passphrase?: string | null): AccountContext {
+    return { credentials: { apiKey, apiSecret, passphrase }, mode: isTestnet ? 'DEMO' : 'REAL', region: (siteId as any) ?? null };
   }
 
   private normalizeSymbol(symbol: string, exchange: Exchange): string {
@@ -148,6 +148,9 @@ export class WebhookService {
       const resolvedStrategy = { ...strategy, ...credentials };
       const decryptedKey = (await EncryptionUtil.decrypt(resolvedStrategy.apiKey)).trim();
       const decryptedSecret = (await EncryptionUtil.decrypt(resolvedStrategy.apiSecret)).trim();
+      const decryptedPassphrase = resolvedStrategy.apiPassphrase
+        ? (await EncryptionUtil.decrypt(resolvedStrategy.apiPassphrase)).trim()
+        : null;
 
       const exchange = resolvedStrategy.exchange || Exchange.BINANCE;
       const cacheKey = `balance:${exchange}:${resolvedStrategy.id}:${resolvedStrategy.isTestnet}`;
@@ -158,90 +161,22 @@ export class WebhookService {
         return cached;
       }
 
-      if (exchange === Exchange.BYBIT) {
-        const client = this.exchangeFactory.get(Exchange.BYBIT);
-        const ctx = this.buildCtx(decryptedKey, decryptedSecret, resolvedStrategy.isTestnet, resolvedStrategy.siteId);
-        const balance = await client.getWalletBalance(ctx);
-        this.rateLimiter.setCached(cacheKey, balance, 10000);
-        this.logger.log(`[BALANCE] Bybit ${resolvedStrategy.isTestnet ? 'Testnet' : 'Mainnet'}: ${balance.toFixed(2)} USDT`);
-        return balance;
-      }
-
       if (exchange === Exchange.BINANCE) {
         await this.sleep(2000);
-
-        const baseURL = resolvedStrategy.isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
-        const timestamp = Date.now();
-        const queryString = `timestamp=${timestamp}`;
-        const signature = crypto.createHmac('sha256', decryptedSecret).update(queryString).digest('hex');
-
-        this.logger.log(`[BALANCE] Fetching from: ${baseURL}/fapi/v2/balance`);
-        this.logger.debug(`[BALANCE] API Key: ${decryptedKey.substring(0, 8)}...`);
-
-        const response = await BinanceRequestUtil.get(`${baseURL}/fapi/v2/balance?${queryString}&signature=${signature}`, {
-          headers: { 'X-MBX-APIKEY': decryptedKey }
-        });
-
-        this.logger.log(`[BALANCE] API Response received. Status: ${response.status}`);
-        this.logger.debug(`[BALANCE] Full response: ${JSON.stringify(response.data)}`);
-
-        if (!Array.isArray(response.data)) {
-          this.logger.error(`[BALANCE] ERROR: Response is not an array! Type: ${typeof response.data}, Value: ${JSON.stringify(response.data)}`);
-          throw new Error('Invalid balance response format from Binance');
-        }
-
-        this.logger.log(`[BALANCE] Found ${response.data.length} assets in balance`);
-
-        const usdtBalance = response.data.find((b: any) => b.asset === 'USDT');
-
-        if (!usdtBalance) {
-          const availableAssets = response.data.map((b: any) => `${b.asset}(${b.balance})`).join(', ');
-          this.logger.error(`[BALANCE] USDT not found! Available assets: ${availableAssets}`);
-          this.logger.error(`[BALANCE] Full asset list: ${JSON.stringify(response.data)}`);
-          throw new Error('USDT balance not found in account. Available assets: ' + availableAssets);
-        }
-
-        this.logger.debug(`[BALANCE] USDT object: ${JSON.stringify(usdtBalance)}`);
-
-        const availableBalance = parseFloat(usdtBalance.availableBalance || '0');
-        const walletBalance = parseFloat(usdtBalance.balance || '0');
-        const crossWalletBalance = parseFloat(usdtBalance.crossWalletBalance || '0');
-
-        this.logger.log(
-          `[BALANCE] Binance ${resolvedStrategy.isTestnet ? 'Testnet' : 'Mainnet'} Futures USDT: ` +
-          `Available=${availableBalance.toFixed(2)}, ` +
-          `Wallet=${walletBalance.toFixed(2)}, ` +
-          `Cross=${crossWalletBalance.toFixed(2)}`
-        );
-
-        const balance = availableBalance > 0 ? availableBalance : walletBalance;
-
-        if (balance === 0) {
-          this.logger.error(
-            `[BALANCE] CRITICAL: All USDT balances are 0! ` +
-            `This indicates either: ` +
-            `1) Account has no funds, ` +
-            `2) API key doesn't have permission to read balance, ` +
-            `3) Wrong account/environment. ` +
-            `Full USDT object: ${JSON.stringify(usdtBalance)}`
-          );
-        }
-
-        this.rateLimiter.setCached(cacheKey, balance, 10000);
-        return balance;
-      } else {
-        const client = this.exchangeFactory.get(Exchange.BYBIT);
-        const ctx = this.buildCtx(decryptedKey, decryptedSecret, resolvedStrategy.isTestnet, resolvedStrategy.siteId);
-        const balance = await client.getWalletBalance(ctx);
-        this.rateLimiter.setCached(cacheKey, balance, 10000);
-        this.logger.log(`[BALANCE] Bybit ${resolvedStrategy.isTestnet ? 'Testnet' : 'Mainnet'}: ${balance.toFixed(2)} USDT`);
-
-        if (balance === 0) {
-          this.logger.warn(`[BALANCE] WARNING: Account balance is 0 USDT. This will cause notional errors.`);
-        }
-
-        return balance;
       }
+
+      const client = this.exchangeFactory.get(exchange);
+      const ctx = this.buildCtx(decryptedKey, decryptedSecret, resolvedStrategy.isTestnet, resolvedStrategy.siteId, decryptedPassphrase);
+      const balance = await client.getWalletBalance(ctx);
+
+      this.rateLimiter.setCached(cacheKey, balance, 10000);
+      this.logger.log(`[BALANCE] ${exchange} ${resolvedStrategy.isTestnet ? 'Testnet' : 'Mainnet'}: ${balance.toFixed(2)} USDT`);
+
+      if (balance === 0) {
+        this.logger.warn(`[BALANCE] WARNING: Account balance is 0 USDT. This will cause notional errors.`);
+      }
+
+      return balance;
     } catch (error: any) {
       if (error.message && error.message.includes('Bybit API Key lacks permissions')) {
         this.logger.error(
