@@ -9,6 +9,7 @@ import { StrategiesService } from '../strategies/strategies.service';
 import { TradesService } from '../trades/trades.service';
 import { Trade } from '../strategies/trade.entity';
 import { Exchange, MarginMode, Strategy, TradingMode } from '../strategies/strategy.entity';
+import type { ResolvedStrategy } from '../common/resolved-strategy.type';
 import { ExecutionType } from '../trades/trade-execution.entity';
 import { EncryptionUtil } from '../utils/encryption.util';
 import { RateLimiterUtil } from '../utils/rate-limiter.util';
@@ -3135,7 +3136,7 @@ export class WebhookService {
 
   private async executeNeutralOrder(
     exchange: Exchange,
-    strategy: Strategy,
+    strategy: ResolvedStrategy,
     symbol: string,
     side: 'BUY' | 'SELL',
     quantity: number,
@@ -3187,7 +3188,7 @@ export class WebhookService {
   }
 
   private async executeBinanceOrder(
-    strategy: Strategy,
+    strategy: ResolvedStrategy,
     symbol: string,
     side: 'BUY' | 'SELL',
     quantity: number,
