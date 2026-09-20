@@ -56,7 +56,7 @@ export class AppController {
     try {
       const strategy = await this.strategiesRepository.findOne({
         where: { id: strategyId || '7059e1cb-20ea-450b-afb2-73871e010701' },
-        select: ['id', 'name', 'apiKey', 'apiSecret', 'isTestnet', 'isRealAccount', 'exchange', 'portfolioId']
+        select: ['id', 'name', 'legacyApiKey', 'legacyApiSecret', 'legacyIsTestnet', 'legacyIsRealAccount', 'legacyExchange', 'portfolioId']
       });
 
       if (!strategy) {
