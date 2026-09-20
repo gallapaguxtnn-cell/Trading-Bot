@@ -72,19 +72,19 @@ describe('Cenario de aceite (AUDITORIA_E_FECHAMENTO FASE 4): dois portfolios Byb
     const [braCreds, defaultCreds] = await Promise.all([
       credentialsResolver.resolveCredentials({
         portfolioId: 'portfolio-bra',
-        apiKey: 'legacy-key',
-        apiSecret: 'legacy-secret',
-        exchange: Exchange.BYBIT,
-        isTestnet: false,
-        isRealAccount: true,
+        legacyApiKey: 'legacy-key',
+        legacyApiSecret: 'legacy-secret',
+        legacyExchange: Exchange.BYBIT,
+        legacyIsTestnet: false,
+        legacyIsRealAccount: true,
       }),
       credentialsResolver.resolveCredentials({
         portfolioId: 'portfolio-default',
-        apiKey: 'legacy-key',
-        apiSecret: 'legacy-secret',
-        exchange: Exchange.BYBIT,
-        isTestnet: false,
-        isRealAccount: true,
+        legacyApiKey: 'legacy-key',
+        legacyApiSecret: 'legacy-secret',
+        legacyExchange: Exchange.BYBIT,
+        legacyIsTestnet: false,
+        legacyIsRealAccount: true,
       }),
     ]);
 
@@ -102,19 +102,19 @@ describe('Cenario de aceite (AUDITORIA_E_FECHAMENTO FASE 4): dois portfolios Byb
     const [braCreds, defaultCreds] = await Promise.all([
       credentialsResolver.resolveCredentials({
         portfolioId: 'portfolio-bra',
-        apiKey: 'legacy-key',
-        apiSecret: 'legacy-secret',
-        exchange: Exchange.BYBIT,
-        isTestnet: false,
-        isRealAccount: true,
+        legacyApiKey: 'legacy-key',
+        legacyApiSecret: 'legacy-secret',
+        legacyExchange: Exchange.BYBIT,
+        legacyIsTestnet: false,
+        legacyIsRealAccount: true,
       }),
       credentialsResolver.resolveCredentials({
         portfolioId: 'portfolio-default',
-        apiKey: 'legacy-key',
-        apiSecret: 'legacy-secret',
-        exchange: Exchange.BYBIT,
-        isTestnet: false,
-        isRealAccount: true,
+        legacyApiKey: 'legacy-key',
+        legacyApiSecret: 'legacy-secret',
+        legacyExchange: Exchange.BYBIT,
+        legacyIsTestnet: false,
+        legacyIsRealAccount: true,
       }),
     ]);
 
