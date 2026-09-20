@@ -672,4 +672,31 @@ describe('WebhookService (PLANO_FIX_BALANCE_OKX_FALLBACK_BYBIT -- FASE 1: saldo 
 
     expect(clientsByExchange[Exchange.OKX].getWalletBalance).toHaveBeenCalledTimes(1);
   });
+
+  it('getCurrentPrice(symbol, OKX, isTestnet) consulta o client da OKX -- antes caia direto no fallback fixo de preco da Binance', async () => {
+    clientsByExchange[Exchange.OKX].getCurrentPrice.mockResolvedValue(0.08745);
+
+    const price = await (service as any).getCurrentPrice('DOGEUSDT', Exchange.OKX, false);
+
+    expect(price).toBe(0.08745);
+    expect(exchangeFactory.get).toHaveBeenCalledWith(Exchange.OKX);
+    expect(clientsByExchange[Exchange.BINANCE].getCurrentPrice).not.toHaveBeenCalled();
+  });
+
+  it('getCurrentPrice continua funcionando para Bybit (comportamento preservado)', async () => {
+    clientsByExchange[Exchange.BYBIT].getCurrentPrice.mockResolvedValue(0.796);
+
+    const price = await (service as any).getCurrentPrice('SUIUSDT', Exchange.BYBIT, true);
+
+    expect(price).toBe(0.796);
+    expect(exchangeFactory.get).toHaveBeenCalledWith(Exchange.BYBIT);
+  });
+
+  it('getCurrentPrice: corretora sem client registrado devolve 0 e loga o erro, sem lancar', async () => {
+    delete clientsByExchange[Exchange.BINANCE];
+
+    const price = await (service as any).getCurrentPrice('BTCUSDT', Exchange.BINANCE, false);
+
+    expect(price).toBe(0);
+  });
 });

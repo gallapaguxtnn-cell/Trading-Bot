@@ -73,3 +73,56 @@ describe('exchange conditional guard (FASE 2 -- PLANO_INTEGRACAO_OKX)', () => {
     expect(regressions).toEqual([]);
   });
 });
+
+// Allowlist capturado ao final da FASE 2 (PLANO_FIX_BALANCE_OKX_FALLBACK_BYBIT).
+// exchangeFactory.get(Exchange.<LITERAL>) fora de src/exchange/ e um padrao
+// especificamente perigoso: se o literal nao bater com a corretora real da
+// estrategia/portfolio que chamou a funcao, as credenciais de uma corretora
+// vao para o client de outra (foi exatamente o bug do getAccountBalance --
+// ver PLANO_FIX_BALANCE_OKX_FALLBACK_BYBIT.md). Cada ocorrencia abaixo foi
+// revisada e so e segura porque esta dentro de um bloco/funcao ja gated pelo
+// mesmo literal (ex.: `if (exchange === Exchange.BYBIT) { ...
+// exchangeFactory.get(Exchange.BYBIT) ... }`) ou dentro de uma funcao nomeada
+// e exclusiva daquela corretora (ex.: createBinanceStopLossOrder), sempre
+// chamada a partir de um site tambem gated. Nunca adicione uma nova entrada
+// aqui sem confirmar o gating -- prefira usar a corretora resolvida
+// (`exchangeFactory.get(exchange)`) e so cair aqui se o comportamento for
+// genuinamente exclusivo daquela corretora.
+const FIXED_EXCHANGE_FACTORY_ALLOWLIST: Record<string, number> = {
+  'portfolios/portfolios.service.ts': 1,
+  'take-profit/take-profit.service.ts': 1,
+  'webhook/webhook.service.ts': 10,
+};
+
+describe('exchange conditional guard (PLANO_FIX_BALANCE_OKX_FALLBACK_BYBIT -- FASE 2)', () => {
+  it('exchangeFactory.get(Exchange.<LITERAL>) fora de src/exchange/ so aparece nas ocorrencias revisadas e permitidas na allowlist', () => {
+    const srcDir = path.join(__dirname, '..');
+    const exchangeDir = path.join(__dirname);
+    const pattern = /exchangeFactory\.get\(Exchange\.(BYBIT|BINANCE|OKX)\)/g;
+
+    const files = walk(srcDir).filter((file) => !file.startsWith(exchangeDir + path.sep));
+
+    const counts: Record<string, number> = {};
+    for (const file of files) {
+      const content = fs.readFileSync(file, 'utf-8');
+      const matches = content.match(pattern);
+      if (matches && matches.length > 0) {
+        counts[path.relative(srcDir, file).split(path.sep).join('/')] = matches.length;
+      }
+    }
+
+    const regressions: string[] = [];
+    for (const [file, count] of Object.entries(counts)) {
+      const allowed = FIXED_EXCHANGE_FACTORY_ALLOWLIST[file] ?? 0;
+      if (count > allowed) {
+        regressions.push(
+          `${file}: ${count} chamada(s) exchangeFactory.get(Exchange.<LITERAL>), allowlist permite ${allowed}. ` +
+          `Use exchangeFactory.get(exchange) com a corretora resolvida da estrategia/portfolio, nunca um literal fixo -- ` +
+          `foi exatamente assim que o saldo da OKX foi parar na Bybit.`,
+        );
+      }
+    }
+
+    expect(regressions).toEqual([]);
+  });
+});

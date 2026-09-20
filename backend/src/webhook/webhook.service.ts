@@ -1995,17 +1995,11 @@ export class WebhookService {
   }
 
   private async getCurrentPrice(symbol: string, exchange: Exchange, isTestnet: boolean): Promise<number> {
-    if (exchange === Exchange.BYBIT) {
-      const client = this.exchangeFactory.get(Exchange.BYBIT);
+    try {
+      const client = this.exchangeFactory.get(exchange);
       const ctx = this.buildCtx('', '', isTestnet);
       return await client.getCurrentPrice(ctx, symbol);
-    }
-
-    const baseURL = isTestnet ? this.BINANCE_TESTNET_URL : this.BINANCE_MAINNET_URL;
-    try {
-      const response = await BinanceRequestUtil.get(`${baseURL}/fapi/v1/ticker/price?symbol=${symbol}`);
-      return parseFloat(response.data.price);
-    } catch (error) {
+    } catch (error: any) {
       this.logger.error(`Failed to get current price for ${symbol}: ${error.message}`);
       return 0;
     }
