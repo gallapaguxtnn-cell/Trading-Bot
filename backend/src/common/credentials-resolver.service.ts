@@ -24,7 +24,7 @@ export interface ResolvedCredentials {
 
 export type StrategyCredentialsInput = Pick<
   Strategy,
-  'portfolioId' | 'apiKey' | 'apiSecret' | 'exchange' | 'isTestnet' | 'isRealAccount'
+  'portfolioId' | 'legacyApiKey' | 'legacyApiSecret' | 'legacyExchange' | 'legacyIsTestnet' | 'legacyIsRealAccount'
 >;
 
 @Injectable()
@@ -76,12 +76,12 @@ export class CredentialsResolverService {
     }
 
     return {
-      apiKey: strategy.apiKey,
-      apiSecret: strategy.apiSecret,
+      apiKey: strategy.legacyApiKey,
+      apiSecret: strategy.legacyApiSecret,
       apiPassphrase: null,
-      exchange: strategy.exchange,
-      isTestnet: strategy.isTestnet,
-      isRealAccount: strategy.isRealAccount,
+      exchange: strategy.legacyExchange,
+      isTestnet: strategy.legacyIsTestnet,
+      isRealAccount: strategy.legacyIsRealAccount,
       portfolioId: null,
       siteId: this.resolveSiteId(null),
       source: 'strategy',

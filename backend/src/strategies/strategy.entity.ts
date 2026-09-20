@@ -34,8 +34,8 @@ export class Strategy {
   @Column()
   asset: string;
 
-  @Column({ type: 'enum', enum: Exchange, default: Exchange.BINANCE })
-  exchange: Exchange;
+  @Column({ name: 'exchange', type: 'enum', enum: Exchange, default: Exchange.BINANCE })
+  legacyExchange: Exchange;
 
   @Column({ type: 'enum', enum: StrategyDirection, default: StrategyDirection.LONG })
   direction: StrategyDirection;
@@ -43,17 +43,17 @@ export class Strategy {
   @Column({ default: true })
   isActive: boolean;
 
-  @Column({ default: false })
-  isTestnet: boolean;
+  @Column({ name: 'isTestnet', default: false })
+  legacyIsTestnet: boolean;
 
-  @Column({ default: false })
-  isRealAccount: boolean;
+  @Column({ name: 'isRealAccount', default: false })
+  legacyIsRealAccount: boolean;
 
-  @Column({ type: 'text', nullable: true, select: false }) 
-  apiKey: string;
+  @Column({ name: 'apiKey', type: 'text', nullable: true, select: false })
+  legacyApiKey: string;
 
-  @Column({ type: 'text', nullable: true, select: false })
-  apiSecret: string;
+  @Column({ name: 'apiSecret', type: 'text', nullable: true, select: false })
+  legacyApiSecret: string;
 
   @Column({ type: 'uuid', nullable: true })
   portfolioId: string | null;

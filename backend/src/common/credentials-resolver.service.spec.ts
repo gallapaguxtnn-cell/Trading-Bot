@@ -37,11 +37,11 @@ describe('CredentialsResolverService', () => {
   it('sem portfolioId: usa as credenciais legadas da estrategia (comportamento atual preservado)', async () => {
     const result = await service.resolveCredentials({
       portfolioId: null,
-      apiKey: 'strategy-key',
-      apiSecret: 'strategy-secret',
-      exchange: Exchange.BINANCE,
-      isTestnet: true,
-      isRealAccount: false,
+      legacyApiKey: 'strategy-key',
+      legacyApiSecret: 'strategy-secret',
+      legacyExchange: Exchange.BINANCE,
+      legacyIsTestnet: true,
+      legacyIsRealAccount: false,
     });
 
     expect(portfoliosRepository.createQueryBuilder).not.toHaveBeenCalled();
@@ -72,11 +72,11 @@ describe('CredentialsResolverService', () => {
 
     const result = await service.resolveCredentials({
       portfolioId: 'portfolio-1',
-      apiKey: 'strategy-key',
-      apiSecret: 'strategy-secret',
-      exchange: Exchange.BINANCE,
-      isTestnet: false,
-      isRealAccount: true,
+      legacyApiKey: 'strategy-key',
+      legacyApiSecret: 'strategy-secret',
+      legacyExchange: Exchange.BINANCE,
+      legacyIsTestnet: false,
+      legacyIsRealAccount: true,
     });
 
     expect(result).toEqual({
@@ -107,11 +107,11 @@ describe('CredentialsResolverService', () => {
 
     const result = await service.resolveCredentials({
       portfolioId: 'portfolio-bra',
-      apiKey: 'strategy-key',
-      apiSecret: 'strategy-secret',
-      exchange: Exchange.BINANCE,
-      isTestnet: false,
-      isRealAccount: true,
+      legacyApiKey: 'strategy-key',
+      legacyApiSecret: 'strategy-secret',
+      legacyExchange: Exchange.BINANCE,
+      legacyIsTestnet: false,
+      legacyIsRealAccount: true,
     });
 
     expect(result.siteId).toBe('BRA_BTL');
@@ -134,11 +134,11 @@ describe('CredentialsResolverService', () => {
 
     const result = await service.resolveCredentials({
       portfolioId: 'portfolio-region',
-      apiKey: 'strategy-key',
-      apiSecret: 'strategy-secret',
-      exchange: Exchange.BINANCE,
-      isTestnet: false,
-      isRealAccount: true,
+      legacyApiKey: 'strategy-key',
+      legacyApiSecret: 'strategy-secret',
+      legacyExchange: Exchange.BINANCE,
+      legacyIsTestnet: false,
+      legacyIsRealAccount: true,
     });
 
     expect(result.siteId).toBe('EL_SALVADOR');
@@ -158,11 +158,11 @@ describe('CredentialsResolverService', () => {
 
     const result = await service.resolveCredentials({
       portfolioId: 'portfolio-nopass',
-      apiKey: 'strategy-key',
-      apiSecret: 'strategy-secret',
-      exchange: Exchange.BINANCE,
-      isTestnet: true,
-      isRealAccount: false,
+      legacyApiKey: 'strategy-key',
+      legacyApiSecret: 'strategy-secret',
+      legacyExchange: Exchange.BINANCE,
+      legacyIsTestnet: true,
+      legacyIsRealAccount: false,
     });
 
     expect(result.apiPassphrase).toBeNull();
@@ -183,11 +183,11 @@ describe('CredentialsResolverService', () => {
 
     const result = await service.resolveCredentials({
       portfolioId: 'portfolio-default',
-      apiKey: 'strategy-key',
-      apiSecret: 'strategy-secret',
-      exchange: Exchange.BINANCE,
-      isTestnet: false,
-      isRealAccount: true,
+      legacyApiKey: 'strategy-key',
+      legacyApiSecret: 'strategy-secret',
+      legacyExchange: Exchange.BINANCE,
+      legacyIsTestnet: false,
+      legacyIsRealAccount: true,
     });
 
     expect(result.siteId).toBe('ENV_SITE');
@@ -198,11 +198,11 @@ describe('CredentialsResolverService', () => {
 
     const result = await service.resolveCredentials({
       portfolioId: null,
-      apiKey: 'strategy-key',
-      apiSecret: 'strategy-secret',
-      exchange: Exchange.BINANCE,
-      isTestnet: true,
-      isRealAccount: false,
+      legacyApiKey: 'strategy-key',
+      legacyApiSecret: 'strategy-secret',
+      legacyExchange: Exchange.BINANCE,
+      legacyIsTestnet: true,
+      legacyIsRealAccount: false,
     });
 
     expect(result.siteId).toBeNull();
@@ -235,19 +235,19 @@ describe('CredentialsResolverService', () => {
     const [braResult, defaultResult] = await Promise.all([
       service.resolveCredentials({
         portfolioId: 'portfolio-bra',
-        apiKey: 'strategy-key',
-        apiSecret: 'strategy-secret',
-        exchange: Exchange.BINANCE,
-        isTestnet: false,
-        isRealAccount: true,
+        legacyApiKey: 'strategy-key',
+        legacyApiSecret: 'strategy-secret',
+        legacyExchange: Exchange.BINANCE,
+        legacyIsTestnet: false,
+        legacyIsRealAccount: true,
       }),
       service.resolveCredentials({
         portfolioId: 'portfolio-default',
-        apiKey: 'strategy-key',
-        apiSecret: 'strategy-secret',
-        exchange: Exchange.BINANCE,
-        isTestnet: false,
-        isRealAccount: true,
+        legacyApiKey: 'strategy-key',
+        legacyApiSecret: 'strategy-secret',
+        legacyExchange: Exchange.BINANCE,
+        legacyIsTestnet: false,
+        legacyIsRealAccount: true,
       }),
     ]);
 
@@ -268,11 +268,11 @@ describe('CredentialsResolverService', () => {
 
     const result = await service.resolveCredentials({
       portfolioId: 'portfolio-2',
-      apiKey: 'strategy-key',
-      apiSecret: 'strategy-secret',
-      exchange: Exchange.BINANCE,
-      isTestnet: true,
-      isRealAccount: false,
+      legacyApiKey: 'strategy-key',
+      legacyApiSecret: 'strategy-secret',
+      legacyExchange: Exchange.BINANCE,
+      legacyIsTestnet: true,
+      legacyIsRealAccount: false,
     });
 
     expect(result.isTestnet).toBe(false);
@@ -293,11 +293,11 @@ describe('CredentialsResolverService', () => {
 
     const result = await service.resolveCredentials({
       portfolioId: 'portfolio-3',
-      apiKey: 'strategy-key',
-      apiSecret: 'strategy-secret',
-      exchange: Exchange.BINANCE,
-      isTestnet: true,
-      isRealAccount: false,
+      legacyApiKey: 'strategy-key',
+      legacyApiSecret: 'strategy-secret',
+      legacyExchange: Exchange.BINANCE,
+      legacyIsTestnet: true,
+      legacyIsRealAccount: false,
     });
 
     expect(result.source).toBe('strategy');
@@ -310,11 +310,11 @@ describe('CredentialsResolverService', () => {
 
     const result = await service.resolveCredentials({
       portfolioId: 'portfolio-deleted',
-      apiKey: 'strategy-key',
-      apiSecret: 'strategy-secret',
-      exchange: Exchange.BINANCE,
-      isTestnet: true,
-      isRealAccount: false,
+      legacyApiKey: 'strategy-key',
+      legacyApiSecret: 'strategy-secret',
+      legacyExchange: Exchange.BINANCE,
+      legacyIsTestnet: true,
+      legacyIsRealAccount: false,
     });
 
     expect(result.source).toBe('strategy');
@@ -323,11 +323,11 @@ describe('CredentialsResolverService', () => {
   it('estrategia sem credenciais e sem portfolio: devolve campos vazios sem lancar', async () => {
     const result = await service.resolveCredentials({
       portfolioId: null,
-      apiKey: null as unknown as string,
-      apiSecret: null as unknown as string,
-      exchange: Exchange.BINANCE,
-      isTestnet: true,
-      isRealAccount: false,
+      legacyApiKey: null as unknown as string,
+      legacyApiSecret: null as unknown as string,
+      legacyExchange: Exchange.BINANCE,
+      legacyIsTestnet: true,
+      legacyIsRealAccount: false,
     });
 
     expect(result.apiKey).toBeNull();
@@ -366,11 +366,11 @@ describe('CredentialsResolverService.resolve (PLANO_DEFINITIVO_CORRETORAS -- FAS
       id: 'strategy-1',
       name: 'FF1 1H',
       portfolioId: null,
-      apiKey: 'strategy-key',
-      apiSecret: 'strategy-secret',
-      exchange: Exchange.OKX,
-      isTestnet: false,
-      isRealAccount: true,
+      legacyApiKey: 'strategy-key',
+      legacyApiSecret: 'strategy-secret',
+      legacyExchange: Exchange.OKX,
+      legacyIsTestnet: false,
+      legacyIsRealAccount: true,
       stopLossPercentage: 2,
       ...overrides,
     } as any;
