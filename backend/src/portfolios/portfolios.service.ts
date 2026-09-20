@@ -9,6 +9,7 @@ import { ExchangeService } from '../exchange/exchange.service';
 import { ExchangeClientFactory } from '../exchange/exchange-client.factory';
 import { OkxClientService } from '../exchange/okx-client.service';
 import { classifyConnectionError } from '../utils/connection-error.util';
+import { CredentialsResolverService } from '../common/credentials-resolver.service';
 
 const PORTFOLIO_PUBLIC_COLUMNS = [
   'id',
@@ -34,6 +35,7 @@ export class PortfoliosService {
     private readonly exchangeService: ExchangeService,
     private readonly exchangeFactory: ExchangeClientFactory,
     private readonly okxClientService: OkxClientService,
+    private readonly credentialsResolver: CredentialsResolverService,
   ) {}
 
   private async maskApiKey(encryptedApiKey: string | null | undefined): Promise<string> {
@@ -155,6 +157,7 @@ export class PortfoliosService {
       delete update.apiPassphrase;
     }
     await this.portfoliosRepository.update(id, update);
+    this.credentialsResolver.invalidate();
     return this.findOnePublic(id);
   }
 

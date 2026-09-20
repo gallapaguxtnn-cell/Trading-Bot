@@ -7,6 +7,7 @@ import { Strategy, Exchange } from '../strategies/strategy.entity';
 import { ExchangeService } from '../exchange/exchange.service';
 import { ExchangeClientFactory } from '../exchange/exchange-client.factory';
 import { OkxClientService } from '../exchange/okx-client.service';
+import { CredentialsResolverService } from '../common/credentials-resolver.service';
 import { EncryptionUtil } from '../utils/encryption.util';
 
 function createQueryBuilderMock(result: any, isMany: boolean) {
@@ -28,6 +29,7 @@ describe('PortfoliosService', () => {
   let bybitClient: { getWalletBalance: jest.Mock };
   let exchangeFactory: { get: jest.Mock };
   let okxClientService: { getPublicInstrumentInfo: jest.Mock; getWalletBalance: jest.Mock };
+  let credentialsResolver: { resolveCredentials: jest.Mock; resolve: jest.Mock; invalidate: jest.Mock };
 
   beforeEach(async () => {
     jest.clearAllMocks();
@@ -52,6 +54,7 @@ describe('PortfoliosService', () => {
       getPublicInstrumentInfo: jest.fn().mockResolvedValue({ ctVal: '0.01', ctMult: '1', lotSz: '1', minSz: '1', tickSz: '0.1' }),
       getWalletBalance: jest.fn(),
     };
+    credentialsResolver = { resolveCredentials: jest.fn(), resolve: jest.fn(), invalidate: jest.fn() };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -61,6 +64,7 @@ describe('PortfoliosService', () => {
         { provide: ExchangeService, useValue: exchangeService },
         { provide: ExchangeClientFactory, useValue: exchangeFactory },
         { provide: OkxClientService, useValue: okxClientService },
+        { provide: CredentialsResolverService, useValue: credentialsResolver },
       ],
     }).compile();
 
@@ -250,6 +254,15 @@ describe('PortfoliosService', () => {
 
       const updateArg = portfoliosRepository.update.mock.calls[0][1];
       expect(updateArg.apiKey).not.toBe('new-key');
+    });
+
+    it('PLANO_DEFINITIVO_CORRETORAS FASE 2: invalida TODO o cache do CredentialsResolver (portfolio pode ser compartilhado por varias estrategias)', async () => {
+      const qb = createQueryBuilderMock({ id: 'p1' }, false);
+      portfoliosRepository.createQueryBuilder.mockReturnValue(qb);
+
+      await service.update('p1', { apiKey: 'new-key' } as Partial<Portfolio>);
+
+      expect(credentialsResolver.invalidate).toHaveBeenCalledWith();
     });
 
     it('trocar para OKX sem passphrase (nem nova, nem ja existente) -> erro de validacao, nao atualiza', async () => {

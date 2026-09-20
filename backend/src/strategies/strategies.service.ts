@@ -168,6 +168,7 @@ export class StrategiesService {
         strategy.apiSecret = await EncryptionUtil.encrypt(strategy.apiSecret);
     }
     await this.strategiesRepository.update(id, strategy);
+    this.credentialsResolver.invalidate(id);
     return this.strategiesRepository.findOneBy({ id });
   }
 
@@ -226,6 +227,7 @@ export class StrategiesService {
       apiKey: encryptedKey,
       apiSecret: encryptedSecret,
     });
+    this.credentialsResolver.invalidate(id);
 
     this.logger.log(`[CREDENTIALS] Updated credentials for strategy ${strategy.name} (${id})`);
 

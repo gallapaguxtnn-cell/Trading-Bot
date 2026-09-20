@@ -15,7 +15,7 @@ function makeService(overrides: { client?: any; strategiesRepository?: any; trad
   const exchangeFactory = { get: jest.fn().mockReturnValue(client) };
   const strategiesRepository = overrides.strategiesRepository ?? { findOneBy: jest.fn(), find: jest.fn() };
   const tradesRepository = overrides.tradesRepository ?? { find: jest.fn().mockResolvedValue([]), update: jest.fn() };
-  const credentialsResolver = overrides.credentialsResolver ?? { resolveCredentials: jest.fn() };
+  const credentialsResolver = overrides.credentialsResolver ?? { resolveCredentials: jest.fn(), resolve: jest.fn(), invalidate: jest.fn() };
   const portfoliosService = { findSummariesByIds: jest.fn().mockResolvedValue(new Map()) };
 
   const service = new StrategiesService(
@@ -64,5 +64,24 @@ describe('StrategiesService (PLANO_INTEGRACAO_OKX FASE 2 -- ExchangeClientFactor
 
     const resultBinance = await serviceBinance.getOpenOrders('s2');
     expect(resultBinance.openPositions[0].side).toBe('SHORT');
+  });
+
+  it('PLANO_DEFINITIVO_CORRETORAS FASE 2: update() invalida o cache do CredentialsResolver para a estrategia alterada', async () => {
+    const strategiesRepository = { findOneBy: jest.fn().mockResolvedValue({ id: 's1' }), update: jest.fn() };
+    const { service, credentialsResolver } = makeService({ strategiesRepository });
+
+    await service.update('s1', { stopLossPercentage: 3 });
+
+    expect(strategiesRepository.update).toHaveBeenCalledWith('s1', { stopLossPercentage: 3 });
+    expect(credentialsResolver.invalidate).toHaveBeenCalledWith('s1');
+  });
+
+  it('PLANO_DEFINITIVO_CORRETORAS FASE 2: updateCredentials() invalida o cache do CredentialsResolver para a estrategia alterada', async () => {
+    const strategiesRepository = { findOneBy: jest.fn().mockResolvedValue({ id: 's1', name: 'FF1' }), update: jest.fn() };
+    const { service, credentialsResolver } = makeService({ strategiesRepository });
+
+    await service.updateCredentials('s1', 'new-key', 'new-secret');
+
+    expect(credentialsResolver.invalidate).toHaveBeenCalledWith('s1');
   });
 });

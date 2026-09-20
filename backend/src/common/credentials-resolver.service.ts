@@ -4,6 +4,11 @@ import { ConfigService } from '@nestjs/config';
 import { Repository } from 'typeorm';
 import { Portfolio, PortfolioMode } from '../portfolios/portfolio.entity';
 import { Strategy, Exchange } from '../strategies/strategy.entity';
+import { RateLimiterUtil } from '../utils/rate-limiter.util';
+import type { ResolvedStrategy } from './resolved-strategy.type';
+
+const RESOLVED_STRATEGY_CACHE_PREFIX = 'resolved-strategy:';
+const RESOLVED_STRATEGY_CACHE_TTL_MS = 45 * 1000;
 
 export interface ResolvedCredentials {
   apiKey: string;
@@ -81,5 +86,25 @@ export class CredentialsResolverService {
       siteId: this.resolveSiteId(null),
       source: 'strategy',
     };
+  }
+
+  async resolve(strategy: Strategy): Promise<ResolvedStrategy> {
+    const cacheKey = `${RESOLVED_STRATEGY_CACHE_PREFIX}${strategy.id}`;
+    const cached = RateLimiterUtil.getInstance().getCached<ResolvedStrategy>(cacheKey);
+    if (cached) return cached;
+
+    const credentials = await this.resolveCredentials(strategy);
+    const resolved: ResolvedStrategy = { ...strategy, ...credentials };
+
+    RateLimiterUtil.getInstance().setCached(cacheKey, resolved, RESOLVED_STRATEGY_CACHE_TTL_MS);
+    return resolved;
+  }
+
+  invalidate(strategyId?: string): void {
+    if (strategyId) {
+      RateLimiterUtil.getInstance().clearCache(`${RESOLVED_STRATEGY_CACHE_PREFIX}${strategyId}`);
+      return;
+    }
+    RateLimiterUtil.getInstance().clearCache(RESOLVED_STRATEGY_CACHE_PREFIX);
   }
 }
