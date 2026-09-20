@@ -15,6 +15,7 @@ import { Strategy } from '../strategies/strategy.entity';
 import { ExchangeService } from '../exchange/exchange.service';
 import { EncryptionUtil } from '../utils/encryption.util';
 import { CredentialsResolverService } from '../common/credentials-resolver.service';
+import type { ResolvedStrategy } from '../common/resolved-strategy.type';
 import Decimal from 'decimal.js';
 import type { Exchange } from 'ccxt';
 
@@ -93,7 +94,7 @@ export class AuditorService {
 
     const strategy = await this.strategyRepo
       .createQueryBuilder('strategy')
-      .addSelect(['strategy.apiKey', 'strategy.apiSecret'])
+      .addSelect(['strategy.legacyApiKey', 'strategy.legacyApiSecret'])
       .where('strategy.id = :id', { id: trade.strategyId })
       .getOne();
     if (!strategy) throw new Error(`Strategy ${trade.strategyId} not found`);
@@ -477,7 +478,7 @@ export class AuditorService {
   async detectMissingTpOrders(strategyId: string): Promise<AuditLog[]> {
     const strategy = await this.strategyRepo
       .createQueryBuilder('strategy')
-      .addSelect(['strategy.apiKey', 'strategy.apiSecret'])
+      .addSelect(['strategy.legacyApiKey', 'strategy.legacyApiSecret'])
       .where('strategy.id = :id', { id: strategyId })
       .getOne();
     if (!strategy) return [];
@@ -1011,7 +1012,7 @@ ${tradesSummary}`;
 
     const strategy = await this.strategyRepo
       .createQueryBuilder('strategy')
-      .addSelect(['strategy.apiKey', 'strategy.apiSecret'])
+      .addSelect(['strategy.legacyApiKey', 'strategy.legacyApiSecret'])
       .where('strategy.id = :id', { id: trade.strategyId })
       .getOne();
     if (!strategy) throw new Error(`Strategy ${trade.strategyId} not found`);
@@ -1101,7 +1102,7 @@ ${tradesSummary}`;
   }
 
   private async safelyFetchOrder(
-    strategy: Strategy,
+    strategy: ResolvedStrategy,
     symbol: string,
     orderId: string | null,
   ): Promise<ExchangeOrder | null> {
@@ -1114,7 +1115,7 @@ ${tradesSummary}`;
     }
   }
 
-  private async getExchangeForStrategy(strategy: Strategy): Promise<Exchange> {
+  private async getExchangeForStrategy(strategy: ResolvedStrategy): Promise<Exchange> {
     const apiKey = await EncryptionUtil.decrypt(strategy.apiKey);
     const apiSecret = await EncryptionUtil.decrypt(strategy.apiSecret);
     const exchangeId = strategy.exchange as 'binance' | 'bybit';
@@ -1122,7 +1123,7 @@ ${tradesSummary}`;
   }
 
   private async fetchExchangeOrder(
-    strategy: Strategy,
+    strategy: ResolvedStrategy,
     symbol: string,
     orderId: string,
   ): Promise<ExchangeOrder | null> {
@@ -1168,7 +1169,7 @@ ${tradesSummary}`;
     }
   }
 
-  private async safelyFetchFunding(strategy: Strategy, trade: Trade): Promise<number> {
+  private async safelyFetchFunding(strategy: ResolvedStrategy, trade: Trade): Promise<number> {
     if (!strategy.apiKey || !strategy.apiSecret) return 0;
     try {
       const exchange = await this.getExchangeForStrategy(strategy);
