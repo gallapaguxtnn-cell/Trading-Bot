@@ -76,14 +76,14 @@ describe('BinanceWebSocketInitService (FASE 2 -- CredentialsResolver)', () => {
 
   it('sem portfolio: usa exchange/credenciais legadas da estrategia (comportamento atual preservado)', async () => {
     const strategy = {
-      id: 's3', name: 'Legada', exchange: Exchange.BINANCE, isTestnet: true,
-      apiKey: await EncryptionUtil.encrypt('legacy-key'),
-      apiSecret: await EncryptionUtil.encrypt('legacy-secret'),
+      id: 's3', name: 'Legada', legacyExchange: Exchange.BINANCE, legacyIsTestnet: true,
+      legacyApiKey: await EncryptionUtil.encrypt('legacy-key'),
+      legacyApiSecret: await EncryptionUtil.encrypt('legacy-secret'),
       portfolioId: null,
     } as unknown as Strategy;
     strategiesRepository.createQueryBuilder.mockReturnValue(makeQueryBuilder([strategy]));
     credentialsResolver.resolveCredentials.mockResolvedValue({
-      apiKey: strategy.apiKey, apiSecret: strategy.apiSecret, exchange: Exchange.BINANCE,
+      apiKey: strategy.legacyApiKey, apiSecret: strategy.legacyApiSecret, exchange: Exchange.BINANCE,
       isTestnet: true, isRealAccount: false, portfolioId: null, source: 'strategy',
     });
 

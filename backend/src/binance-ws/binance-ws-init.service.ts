@@ -29,7 +29,7 @@ export class BinanceWebSocketInitService implements OnModuleInit {
       const strategies = await this.strategiesRepository
         .createQueryBuilder('strategy')
         .andWhere('strategy.isActive = :isActive', { isActive: true })
-        .addSelect(['strategy.apiKey', 'strategy.apiSecret'])
+        .addSelect(['strategy.legacyApiKey', 'strategy.legacyApiSecret'])
         .getMany();
 
       this.logger.log(`[WS-INIT] Found ${strategies.length} active strategies (checking resolved exchange for each)`);
