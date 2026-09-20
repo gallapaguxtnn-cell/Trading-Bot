@@ -41,7 +41,7 @@ export class PortfolioMigrationService {
 
       const candidates = await strategyRepo
         .createQueryBuilder('strategy')
-        .addSelect(['strategy.apiKey', 'strategy.apiSecret'])
+        .addSelect(['strategy.legacyApiKey', 'strategy.legacyApiSecret'])
         .where('strategy.portfolioId IS NULL')
         .andWhere('strategy.apiKey IS NOT NULL')
         .andWhere('strategy.apiSecret IS NOT NULL')
@@ -49,7 +49,7 @@ export class PortfolioMigrationService {
 
       const groups = new Map<string, Strategy[]>();
       for (const strategy of candidates) {
-        const key = [strategy.exchange, strategy.isTestnet, strategy.isRealAccount, strategy.apiKey].join('|');
+        const key = [strategy.legacyExchange, strategy.legacyIsTestnet, strategy.legacyIsRealAccount, strategy.legacyApiKey].join('|');
         const group = groups.get(key) ?? [];
         group.push(strategy);
         groups.set(key, group);
@@ -63,17 +63,17 @@ export class PortfolioMigrationService {
 
       for (const group of groups.values()) {
         const sample = group[0];
-        const mode = sample.isTestnet ? PortfolioMode.DEMO : PortfolioMode.REAL;
-        const exchangeLabel = sample.exchange.charAt(0).toUpperCase() + sample.exchange.slice(1);
+        const mode = sample.legacyIsTestnet ? PortfolioMode.DEMO : PortfolioMode.REAL;
+        const exchangeLabel = sample.legacyExchange.charAt(0).toUpperCase() + sample.legacyExchange.slice(1);
         const modeLabel = mode === PortfolioMode.DEMO ? 'Demo' : 'Real';
         const name = this.buildPortfolioName(`${exchangeLabel} ${modeLabel}`, usedNames);
 
         const portfolio = portfolioRepo.create({
           name,
-          exchange: sample.exchange,
+          exchange: sample.legacyExchange,
           mode,
-          apiKey: sample.apiKey,
-          apiSecret: sample.apiSecret,
+          apiKey: sample.legacyApiKey,
+          apiSecret: sample.legacyApiSecret,
           isActive: true,
         });
         const saved = await portfolioRepo.save(portfolio);

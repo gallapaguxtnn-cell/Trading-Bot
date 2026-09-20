@@ -54,8 +54,8 @@ describe('PortfolioMigrationService', () => {
 
   it('agrupa estrategias com exchange+isTestnet+isRealAccount+apiKey identicos em um unico portfolio', async () => {
     const strategies = [
-      { id: 's1', exchange: Exchange.BYBIT, isTestnet: true, isRealAccount: false, apiKey: 'enc-key-1', apiSecret: 'enc-secret-1', portfolioId: null },
-      { id: 's2', exchange: Exchange.BYBIT, isTestnet: true, isRealAccount: false, apiKey: 'enc-key-1', apiSecret: 'enc-secret-1', portfolioId: null },
+      { id: 's1', legacyExchange: Exchange.BYBIT, legacyIsTestnet: true, legacyIsRealAccount: false, legacyApiKey: 'enc-key-1', legacyApiSecret: 'enc-secret-1', portfolioId: null },
+      { id: 's2', legacyExchange: Exchange.BYBIT, legacyIsTestnet: true, legacyIsRealAccount: false, legacyApiKey: 'enc-key-1', legacyApiSecret: 'enc-secret-1', portfolioId: null },
     ];
     setCandidates(strategies);
 
@@ -74,8 +74,8 @@ describe('PortfolioMigrationService', () => {
 
   it('estrategias com ciphertext diferente (mesmo que a chave em texto puro seja igual) viram portfolios separados -- nunca descriptografa', async () => {
     const strategies = [
-      { id: 's1', exchange: Exchange.BYBIT, isTestnet: false, isRealAccount: true, apiKey: 'enc-key-A', apiSecret: 'enc-secret-A', portfolioId: null },
-      { id: 's2', exchange: Exchange.BYBIT, isTestnet: false, isRealAccount: true, apiKey: 'enc-key-B', apiSecret: 'enc-secret-B', portfolioId: null },
+      { id: 's1', legacyExchange: Exchange.BYBIT, legacyIsTestnet: false, legacyIsRealAccount: true, legacyApiKey: 'enc-key-A', legacyApiSecret: 'enc-secret-A', portfolioId: null },
+      { id: 's2', legacyExchange: Exchange.BYBIT, legacyIsTestnet: false, legacyIsRealAccount: true, legacyApiKey: 'enc-key-B', legacyApiSecret: 'enc-secret-B', portfolioId: null },
     ];
     setCandidates(strategies);
 
@@ -86,7 +86,7 @@ describe('PortfolioMigrationService', () => {
 
   it('mapeia isTestnet=false para modo REAL e nomeia "<Exchange> Real"', async () => {
     setCandidates([
-      { id: 's1', exchange: Exchange.BINANCE, isTestnet: false, isRealAccount: true, apiKey: 'k', apiSecret: 's', portfolioId: null },
+      { id: 's1', legacyExchange: Exchange.BINANCE, legacyIsTestnet: false, legacyIsRealAccount: true, legacyApiKey: 'k', legacyApiSecret: 's', portfolioId: null },
     ]);
 
     await service.migrateLegacyStrategies();
@@ -99,8 +99,8 @@ describe('PortfolioMigrationService', () => {
   it('nomes colidentes recebem sufixo numerico para permanecerem unicos', async () => {
     setCandidates(
       [
-        { id: 's1', exchange: Exchange.BYBIT, isTestnet: true, isRealAccount: false, apiKey: 'k1', apiSecret: 's1', portfolioId: null },
-        { id: 's2', exchange: Exchange.BYBIT, isTestnet: true, isRealAccount: false, apiKey: 'k2', apiSecret: 's2', portfolioId: null },
+        { id: 's1', legacyExchange: Exchange.BYBIT, legacyIsTestnet: true, legacyIsRealAccount: false, legacyApiKey: 'k1', legacyApiSecret: 's1', portfolioId: null },
+        { id: 's2', legacyExchange: Exchange.BYBIT, legacyIsTestnet: true, legacyIsRealAccount: false, legacyApiKey: 'k2', legacyApiSecret: 's2', portfolioId: null },
       ],
       ['Bybit Demo'],
     );
@@ -135,7 +135,7 @@ describe('PortfolioMigrationService', () => {
 
   it('rodar a migracao duas vezes seguidas nao cria portfolios/duplicatas na segunda vez', async () => {
     const strategies = [
-      { id: 's1', exchange: Exchange.BYBIT, isTestnet: true, isRealAccount: false, apiKey: 'k1', apiSecret: 's1', portfolioId: null },
+      { id: 's1', legacyExchange: Exchange.BYBIT, legacyIsTestnet: true, legacyIsRealAccount: false, legacyApiKey: 'k1', legacyApiSecret: 's1', portfolioId: null },
     ];
     setCandidates(strategies);
 
