@@ -1,10 +1,14 @@
 import { Controller, Get, Post, Body, Put, Param, Delete, Query } from '@nestjs/common';
 import { StrategiesService } from './strategies.service';
 import { Strategy, StrategyDirection } from './strategy.entity';
+import { CredentialsResolverService } from '../common/credentials-resolver.service';
 
 @Controller('strategies')
 export class StrategiesController {
-  constructor(private readonly strategiesService: StrategiesService) {}
+  constructor(
+    private readonly strategiesService: StrategiesService,
+    private readonly credentialsResolver: CredentialsResolverService,
+  ) {}
 
   @Get()
   findAll() {
@@ -14,15 +18,18 @@ export class StrategiesController {
   @Get('debug/credentials')
   async debugCredentials() {
     const strategies = await this.strategiesService.findAllWithCredentials();
-    return strategies.map(s => ({
-      id: s.id,
-      name: s.name,
-      exchange: s.exchange,
-      isActive: s.isActive,
-      hasApiKey: !!s.apiKey && s.apiKey.length > 0,
-      hasApiSecret: !!s.apiSecret && s.apiSecret.length > 0,
-      apiKeyLength: s.apiKey?.length || 0,
-      apiSecretLength: s.apiSecret?.length || 0,
+    return Promise.all(strategies.map(async (s) => {
+      const credentials = await this.credentialsResolver.resolveCredentials(s);
+      return {
+        id: s.id,
+        name: s.name,
+        exchange: credentials.exchange,
+        isActive: s.isActive,
+        hasApiKey: !!credentials.apiKey && credentials.apiKey.length > 0,
+        hasApiSecret: !!credentials.apiSecret && credentials.apiSecret.length > 0,
+        apiKeyLength: credentials.apiKey?.length || 0,
+        apiSecretLength: credentials.apiSecret?.length || 0,
+      };
     }));
   }
 

@@ -5,6 +5,7 @@ jest.mock('../utils/binance-request.util', () => ({
 import { Test, TestingModule } from '@nestjs/testing';
 import { StrategiesController } from './strategies.controller';
 import { StrategiesService } from './strategies.service';
+import { CredentialsResolverService } from '../common/credentials-resolver.service';
 
 describe('StrategiesController', () => {
   let controller: StrategiesController;
@@ -14,6 +15,7 @@ describe('StrategiesController', () => {
       controllers: [StrategiesController],
       providers: [
         { provide: StrategiesService, useValue: {} },
+        { provide: CredentialsResolverService, useValue: { resolveCredentials: jest.fn() } },
       ],
     }).compile();
 
