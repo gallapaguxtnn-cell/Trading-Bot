@@ -215,6 +215,23 @@ export class StopLossService implements OnModuleInit {
         ? ((currentPrice - entryPrice) / entryPrice) * 100
         : ((entryPrice - currentPrice) / entryPrice) * 100;
 
+      const rules = await this.symbolRulesService.getSymbolRules(trade.symbol, resolvedStrategy.isTestnet, exchange);
+      const entryPriceLabel = roundPriceToTick(entryPrice, rules.priceTick);
+      const currentPriceLabel = roundPriceToTick(currentPrice, rules.priceTick);
+      const stopLossPriceLabel = roundPriceToTick(stopLossPrice, rules.priceTick);
+
+      const positions = await client.getPositions(ctx, trade.symbol);
+      const livePosition = positions.find(p => p.symbol === trade.symbol && p.side === trade.side && parseFloat(p.size) > 0);
+
+      if (!livePosition) {
+        this.logger.error(
+          `[SL] ${trade.symbol}: preco cruzou o alvo (Entry ${entryPriceLabel} → ${currentPriceLabel}, ${lossPercent.toFixed(2)}%) mas nao ha posicao aberta na corretora -- ` +
+          `trade ${trade.id} fechado localmente para reconciliacao (evita "current position is zero, cannot fix reduce-only order qty")`
+        );
+        await this.closePhantomTrade(trade, currentPrice);
+        return;
+      }
+
       const isFallback = missingOrder && !trade.isFromAveraging;
       const reason: CloseReason = isFallback ? 'STOP_LOSS_FALLBACK_MARKET' : 'STOP_LOSS';
 
@@ -228,10 +245,28 @@ export class StopLossService implements OnModuleInit {
       } else {
         this.logger.warn(`[STOP-LOSS TRIGGERED] ${trade.symbol}`);
       }
-      this.logger.warn(`├─ Entry: ${entryPrice.toFixed(2)} → Exit: ${currentPrice.toFixed(2)} (${lossPercent.toFixed(2)}%)`);
-      this.logger.warn(`└─ SL Price: ${stopLossPrice.toFixed(2)}`);
+      this.logger.warn(`├─ Entry: ${entryPriceLabel} → Exit: ${currentPriceLabel} (${lossPercent.toFixed(2)}%)`);
+      this.logger.warn(`└─ SL Price: ${stopLossPriceLabel}`);
       await this.closePosition(trade, resolvedStrategy, currentPrice, reason, apiKey, apiSecret);
     }
+  }
+
+  private async closePhantomTrade(trade: Trade, lastKnownPrice: number): Promise<void> {
+    const pnl = this.calculatePnL(trade, lastKnownPrice);
+    const totalPnl = (parseFloat(trade.pnl as any) || 0) + pnl;
+
+    trade.status = 'CLOSED';
+    trade.exitPrice = lastKnownPrice as any;
+    trade.pnl = totalPnl as any;
+    trade.closeReason = 'MANUAL';
+    trade.closedAt = new Date();
+    trade.binancePositionAmt = 0 as any;
+    trade.excludeFromStats = true;
+    trade.error = 'Posicao nao encontrada na corretora quando o SL disparou -- fechado localmente para reconciliacao';
+
+    await this.tradesRepository.save(trade);
+
+    this.logger.warn(`[SL] Trade ${trade.id} (${trade.symbol}) fechado localmente por reconciliacao (posicao fantasma)`);
   }
 
   private async recreateStopLoss(
