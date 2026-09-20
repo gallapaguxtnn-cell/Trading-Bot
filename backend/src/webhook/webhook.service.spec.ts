@@ -700,3 +700,113 @@ describe('WebhookService (PLANO_FIX_BALANCE_OKX_FALLBACK_BYBIT -- FASE 1: saldo 
     expect(price).toBe(0);
   });
 });
+
+describe('WebhookService (PLANO_FIX_BALANCE_OKX_FALLBACK_BYBIT -- FASE 3: 200 em vez de 500, idempotencia por sinal)', () => {
+  let service: WebhookService;
+  let strategiesService: { findOne: jest.Mock };
+  let signalLog: { record: jest.Mock; decide: jest.Mock; decideFromResult: jest.Mock };
+  let exchangeFactory: { get: jest.Mock };
+
+  function makeSignal(overrides: Record<string, unknown> = {}) {
+    return {
+      strategyId: 'strategy-1',
+      symbol: 'DOGEUSDT',
+      action: 'buy',
+      price: 0.08745,
+      ...overrides,
+    } as any;
+  }
+
+  beforeEach(async () => {
+    strategiesService = { findOne: jest.fn() };
+    signalLog = {
+      record: jest.fn().mockReturnValue('signal-log-1'),
+      decide: jest.fn(),
+      decideFromResult: jest.fn(),
+    };
+    exchangeFactory = { get: jest.fn() };
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        WebhookService,
+        { provide: ExchangeService, useValue: {} },
+        { provide: ExchangeClientFactory, useValue: exchangeFactory },
+        { provide: StrategiesService, useValue: strategiesService },
+        { provide: TradesService, useValue: { findById: jest.fn(), findOpenTrades: jest.fn().mockResolvedValue([]), updateTrade: jest.fn(), countClosedTrades: jest.fn().mockResolvedValue(0) } },
+        { provide: BinanceWebSocketService, useValue: {} },
+        { provide: SignalLogService, useValue: signalLog },
+        { provide: SymbolRulesService, useValue: { getSymbolRules: jest.fn() } },
+        { provide: CredentialsResolverService, useValue: passthroughCredentialsResolver() },
+      ],
+    }).compile();
+
+    service = module.get<WebhookService>(WebhookService);
+  });
+
+  it('falha de pre-processamento (erro ao buscar a estrategia) nunca lanca excecao -- devolve accepted:false com o motivo', async () => {
+    strategiesService.findOne.mockRejectedValue(new Error('DB connection lost'));
+
+    const result = await service.processSignal(makeSignal());
+
+    expect(result).toEqual(expect.objectContaining({ status: 'error', accepted: false, reason: 'DB connection lost' }));
+    expect(signalLog.decide).toHaveBeenCalledWith('signal-log-1', 'error', 'DB connection lost');
+  });
+
+  it('qualquer falha dentro do processamento do sinal (ex.: saldo indisponivel, bug real do plano) vira accepted:false, nunca lanca', async () => {
+    jest.spyOn(service as any, '_processSignalInternal').mockRejectedValue(
+      new Error('Nenhum ExchangeClient registrado para okx'),
+    );
+
+    await expect(service.processSignal(makeSignal())).resolves.toEqual(
+      expect.objectContaining({ status: 'error', accepted: false, reason: 'Nenhum ExchangeClient registrado para okx' }),
+    );
+  });
+
+  it('3 sinais identicos em sequencia (retry do TradingView) -> UMA execucao, duas ignoradas por idempotencia', async () => {
+    strategiesService.findOne.mockResolvedValue({
+      id: 'strategy-1', name: 'FF1 TEST', exchange: Exchange.BYBIT, isActive: false, isTestnet: true,
+      apiKey: 'key', apiSecret: 'secret',
+    });
+
+    const signal = makeSignal();
+    const r1 = await service.processSignal(signal);
+    const r2 = await service.processSignal(signal);
+    const r3 = await service.processSignal(signal);
+
+    expect(strategiesService.findOne).toHaveBeenCalledTimes(1);
+    expect(r1).toEqual(expect.objectContaining({ status: 'skipped', message: 'Strategy is paused' }));
+    expect(r2).toEqual(expect.objectContaining({ status: 'ignored', accepted: false }));
+    expect(r3).toEqual(expect.objectContaining({ status: 'ignored', accepted: false }));
+    expect(signalLog.decide).toHaveBeenCalledWith(
+      'signal-log-1', 'skipped_duplicate_signal', expect.stringContaining('Duplicate signal'),
+    );
+  });
+
+  it('sinais com barTime diferente NAO sao tratados como duplicata (candles diferentes)', async () => {
+    strategiesService.findOne.mockResolvedValue({
+      id: 'strategy-1', name: 'FF1 TEST', exchange: Exchange.BYBIT, isActive: false, isTestnet: true,
+      apiKey: 'key', apiSecret: 'secret',
+    });
+
+    await service.processSignal(makeSignal({ barTime: '2026-09-19T19:43:00Z' }));
+    await service.processSignal(makeSignal({ barTime: '2026-09-19T19:44:00Z' }));
+
+    expect(strategiesService.findOne).toHaveBeenCalledTimes(2);
+  });
+
+  it('apos a janela de idempotencia (60s), o mesmo sinal e processado de novo', async () => {
+    jest.useFakeTimers();
+    strategiesService.findOne.mockResolvedValue({
+      id: 'strategy-1', name: 'FF1 TEST', exchange: Exchange.BYBIT, isActive: false, isTestnet: true,
+      apiKey: 'key', apiSecret: 'secret',
+    });
+
+    const signal = makeSignal();
+    await service.processSignal(signal);
+    jest.advanceTimersByTime(61_000);
+    await service.processSignal(signal);
+
+    expect(strategiesService.findOne).toHaveBeenCalledTimes(2);
+    jest.useRealTimers();
+  });
+});

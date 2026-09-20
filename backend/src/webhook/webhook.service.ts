@@ -23,6 +23,7 @@ import { shouldRepriceProtection } from './protection-reprice.util';
 import { planTakeProfits, buildEnabledTpConfigs, buildTpWarnings } from './tp-planner.util';
 import { withOneRetry } from './retry.util';
 import { buildSlFailurePolicy, isCloseOnSlFailureEnabled } from './sl-failure-policy.util';
+import { buildSignalIdempotencyKey, isWithinIdempotencyWindow } from './signal-idempotency.util';
 import { parseTrackedTpOrders, countLiveTrackedOrders } from '../auditor/missing-tp-orders.util';
 import axios from 'axios';
 import * as crypto from 'crypto';
@@ -97,7 +98,9 @@ export class WebhookService {
   private readonly activeSignals = new Set<string>();
   private readonly activeSignalsTimestamps = new Map<string, number>();
   private readonly resumingProtection = new Set<string>();
+  private readonly recentlyProcessedSignals = new Map<string, number>();
   private readonly SIGNAL_TIMEOUT_MS = 5 * 60 * 1000;
+  private readonly SIGNAL_IDEMPOTENCY_WINDOW_MS = 60 * 1000;
   private readonly rateLimiter = RateLimiterUtil.getInstance(); // 5 minutes
 
   constructor(
@@ -2028,6 +2031,12 @@ export class WebhookService {
         this.logger.warn(`[MUTEX CLEANUP] Removed stale signal: ${signalKey}`);
       }
     }
+
+    for (const [key, processedAt] of this.recentlyProcessedSignals.entries()) {
+      if (now - processedAt > this.SIGNAL_IDEMPOTENCY_WINDOW_MS) {
+        this.recentlyProcessedSignals.delete(key);
+      }
+    }
   }
 
   async processSignal(signal: TradingviewSignalDto) {
@@ -2042,9 +2051,27 @@ export class WebhookService {
 
     this.logger.log(`[WEBHOOK] Request ID: ${requestId} | Signal Key: ${signalKey}`);
 
+    const idempotencyKey = buildSignalIdempotencyKey({
+      strategyId: signal.strategyId,
+      symbol: signal.symbol,
+      action: signal.action,
+      barTime: signal.barTime,
+    });
+    const now = Date.now();
+    const lastProcessedAt = this.recentlyProcessedSignals.get(idempotencyKey);
+
+    if (isWithinIdempotencyWindow(lastProcessedAt, now, this.SIGNAL_IDEMPOTENCY_WINDOW_MS)) {
+      const reason = `Duplicate signal within ${this.SIGNAL_IDEMPOTENCY_WINDOW_MS / 1000}s idempotency window`;
+      this.logger.warn(`[IDEMPOTENCY] Request ${requestId} | ${idempotencyKey} | ${reason} (TradingView retry) -- ignorado, nenhuma execucao`);
+      const signalLogId = this.signalLog.record(signal as unknown as Record<string, unknown>);
+      this.signalLog.decide(signalLogId, 'skipped_duplicate_signal', reason);
+      return { status: 'ignored', accepted: false, reason };
+    }
+    this.recentlyProcessedSignals.set(idempotencyKey, now);
+
     if (this.activeSignals.has(signalKey)) {
       this.logger.warn(`[MUTEX] Request ${requestId} | Signal ${signalKey} already in progress, ignoring duplicate (TradingView retry or concurrent request)`);
-      return { status: 'skipped', message: 'Signal already being processed' };
+      return { status: 'skipped', accepted: false, message: 'Signal already being processed' };
     }
     this.activeSignals.add(signalKey);
     this.activeSignalsTimestamps.set(signalKey, Date.now());
@@ -2057,9 +2084,11 @@ export class WebhookService {
       this.signalLog.decideFromResult(signalLogId, result as unknown as { status?: string; message?: string; trade?: { id?: string } });
       this.logger.log(`[MUTEX] Request ${requestId} | Releasing lock for ${signalKey}`);
       return result;
-    } catch (error) {
-      this.signalLog.decide(signalLogId, 'error', (error as Error)?.message ?? null);
-      throw error;
+    } catch (error: any) {
+      const reason = error?.message ?? 'Unknown error during signal processing';
+      this.signalLog.decide(signalLogId, 'error', reason);
+      this.logger.error(`[WEBHOOK] Request ${requestId} | Signal processing failed, responding accepted:false instead of throwing: ${reason}`);
+      return { status: 'error', accepted: false, reason };
     } finally {
       this.activeSignals.delete(signalKey);
       this.activeSignalsTimestamps.delete(signalKey);

@@ -5,7 +5,9 @@ import {
   UnauthorizedException,
   Logger,
   Get,
-  BadRequestException
+  BadRequestException,
+  HttpCode,
+  HttpStatus
 } from '@nestjs/common';
 import { SkipThrottle } from '@nestjs/throttler';
 import { WebhookService } from './webhook.service';
@@ -23,6 +25,7 @@ interface WebhookPayload {
   orderType?: 'market' | 'limit';
   stopLoss?: number | string;
   takeProfit?: number | string;
+  barTime?: string;
 }
 
 @SkipThrottle()
@@ -62,6 +65,7 @@ export class WebhookController {
   }
 
   @Post()
+  @HttpCode(HttpStatus.OK)
   async handleSignal(@Body() payload: WebhookPayload) {
     // Validate payload exists
     if (!payload || typeof payload !== 'object') {
