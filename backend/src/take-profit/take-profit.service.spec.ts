@@ -375,6 +375,31 @@ describe('TakeProfitService (FASE 4 -- closePosition)', () => {
     const execution = tradesService.createExecution.mock.calls[0][0];
     expect(execution.price).toBe(0.7535);
   });
+
+  it('PLANO_DEFINITIVO_CORRETORAS FASE 4/5: OKX fecha via exchangeFactory (antes caia no fallback CCXT que so suportava binance/bybit)', async () => {
+    const trade = makeTrade({ quantity: 100 });
+    exchangeClient.getSymbolRules.mockResolvedValue({ qtyStep: '1', minQty: '1', priceTick: '0.0001', minNotional: '5' });
+    exchangeClient.createOrder.mockResolvedValue({ orderId: 'okx-order-1', avgPrice: '0.751', executedQty: '100', status: 'FILLED' });
+
+    await (service as any).closePosition(
+      trade,
+      makeStrategy({ exchange: Exchange.OKX }),
+      0.75,
+      'TAKE_PROFIT_FALLBACK_MARKET',
+      1.0,
+      'k',
+      's',
+      3,
+    );
+
+    expect(exchangeFactory.get).toHaveBeenCalledWith(Exchange.OKX);
+    expect(exchangeClient.createOrder).toHaveBeenCalledWith(
+      expect.objectContaining({ credentials: { apiKey: 'k', apiSecret: 's' } }),
+      expect.objectContaining({ qty: '100', orderType: 'MARKET', reduceOnly: true }),
+    );
+    const saved = tradesRepository.save.mock.calls[0][0];
+    expect(Number(saved.exitPrice)).toBe(0.751);
+  });
 });
 
 describe('TakeProfitService (FASE 3 do PLANO_FIX_ARREDONDAMENTO_GLOBAL -- createBinanceStopLossOrder)', () => {

@@ -34,6 +34,7 @@ import { SymbolRulesService } from '../common/symbol-rules.service';
 import { POSITION_CHECK_RETRY_LIMIT, PositionCheckResult, shouldEscalateToReconciliation } from '../common/position-reconciliation.util';
 import { normalizeQuantity, roundPriceToTick } from '../common/exchange-precision.util';
 import { CredentialsResolverService } from '../common/credentials-resolver.service';
+import type { ResolvedStrategy } from '../common/resolved-strategy.type';
 import * as crypto from 'crypto';
 import Decimal from 'decimal.js';
 
@@ -277,7 +278,7 @@ export class TakeProfitService implements OnModuleInit {
     }
   }
 
-  private async checkExchangeTakeProfit(trade: Trade, strategy: any, exchange: Exchange, apiKey: string, apiSecret: string) {
+  private async checkExchangeTakeProfit(trade: Trade, strategy: ResolvedStrategy, exchange: Exchange, apiKey: string, apiSecret: string) {
     const entries = trade.takeProfitOrderId!.split('|');
     const tp1Qty = strategy.takeProfitQuantity1 || 33;
     const tp2Qty = strategy.takeProfitQuantity2 || 33;
@@ -545,7 +546,7 @@ export class TakeProfitService implements OnModuleInit {
 
   private async adjustStopLossForRemainingQty(
     trade: Trade,
-    strategy: any,
+    strategy: ResolvedStrategy,
     exchange: Exchange,
     apiKey: string,
     apiSecret: string,
@@ -772,7 +773,7 @@ export class TakeProfitService implements OnModuleInit {
     }
 
     const lastPrice = await this.getLastTradePrice(trade.symbol, exchange, apiKey, apiSecret, isTestnet, siteId);
-    const marketPrice = lastPrice || await this.getCurrentPrice(trade, { exchange, isTestnet } as any);
+    const marketPrice = lastPrice || await this.getCurrentPrice(trade, { exchange, isTestnet, siteId: siteId ?? null });
 
     const exitPrice = fill?.avgPrice ?? marketPrice;
     const closeQty = fill?.executedQty ?? parseFloat(trade.quantity as any);
@@ -806,7 +807,7 @@ export class TakeProfitService implements OnModuleInit {
     return client.getLastTradePrice(ctx, symbol);
   }
 
-  private calculateTakeProfit(trade: Trade, strategy: any, level: number): number | null {
+  private calculateTakeProfit(trade: Trade, strategy: ResolvedStrategy, level: number): number | null {
     let tpPercent: number | null = null;
 
     if (level === 1) tpPercent = strategy.takeProfitPercentage1;
@@ -843,34 +844,12 @@ export class TakeProfitService implements OnModuleInit {
     }
   }
 
-  private async getCurrentPrice(trade: Trade, strategy: any): Promise<number> {
+  private async getCurrentPrice(trade: Trade, strategy: Pick<ResolvedStrategy, 'exchange' | 'isTestnet' | 'siteId'>): Promise<number> {
     try {
       const exchange = strategy.exchange || Exchange.BINANCE;
-
-      if (exchange === Exchange.BYBIT) {
-        const client = this.exchangeFactory.get(exchange);
-        const ctx = this.buildCtx('', '', strategy.isTestnet);
-        return await client.getCurrentPrice(ctx, trade.symbol);
-      }
-
-      if (strategy.isTestnet && exchange === Exchange.BINANCE) {
-        const client = this.exchangeFactory.get(exchange);
-        const ctx = this.buildCtx('', '', true);
-        return await client.getCurrentPrice(ctx, trade.symbol);
-      } else {
-        const apiKey = (await EncryptionUtil.decrypt(strategy.apiKey)).trim();
-        const apiSecret = (await EncryptionUtil.decrypt(strategy.apiSecret)).trim();
-
-        const exchangeInstance = await this.exchangeService.getExchange(
-          exchange,
-          apiKey,
-          apiSecret,
-          strategy.isTestnet
-        );
-
-        const ticker = await exchangeInstance.fetchTicker(trade.symbol);
-        return ticker.last;
-      }
+      const client = this.exchangeFactory.get(exchange);
+      const ctx = this.buildCtx('', '', strategy.isTestnet, strategy.siteId);
+      return await client.getCurrentPrice(ctx, trade.symbol);
     } catch (error) {
       this.logger.error(`Failed to get current price for ${trade.symbol}: ${error.message}`);
       return 0;
@@ -882,7 +861,7 @@ export class TakeProfitService implements OnModuleInit {
     exchange: Exchange,
     apiKey: string,
     apiSecret: string,
-    strategy: any,
+    strategy: ResolvedStrategy,
   ): Promise<PositionCheckResult> {
     try {
       const client = this.exchangeFactory.get(exchange);
@@ -939,7 +918,7 @@ export class TakeProfitService implements OnModuleInit {
 
   private async closePosition(
     trade: Trade,
-    strategy: any,
+    strategy: ResolvedStrategy,
     exitPrice: number,
     reason: CloseReason,
     closePercent: number,
@@ -1036,9 +1015,9 @@ export class TakeProfitService implements OnModuleInit {
 
         ccxtFill = mapBinanceFill(order as unknown as Record<string, unknown>);
         this.logger.log(`[BINANCE] Closed ${(closePercent * 100).toFixed(0)}% of ${trade.symbol} via ${reason}`);
-      } else {
+      } else if (exchange === Exchange.BINANCE) {
         const exchangeInstance = await this.exchangeService.getExchange(
-          exchange,
+          'binance',
           apiKey,
           apiSecret,
           strategy.isTestnet
@@ -1053,6 +1032,27 @@ export class TakeProfitService implements OnModuleInit {
         const closeOrder = await exchangeInstance.createMarketOrder(trade.symbol, closeSide.toLowerCase(), closeQuantity, ccxtParams);
         ccxtFill = mapCcxtFill(closeOrder as unknown as Record<string, unknown>);
         this.logger.log(`[CLOSED ${(closePercent * 100).toFixed(0)}%] ${trade.symbol} via ${reason}`);
+      } else {
+        const client = this.exchangeFactory.get(exchange);
+        const ctx = this.buildCtx(apiKey, apiSecret, strategy.isTestnet, strategy.siteId);
+
+        const rules = await client.getSymbolRules(ctx, trade.symbol);
+        const stepSize = new Decimal(rules.qtyStep);
+        const normalizedQty = floorToStep(new Decimal(closeQuantity), stepSize);
+        closeQuantity = normalizedQty.toNumber();
+
+        const order = await client.createOrder(ctx, {
+          symbol: trade.symbol,
+          side: closeSide as any,
+          orderType: 'MARKET',
+          qty: normalizedQty.toFixed(),
+          reduceOnly: true,
+          hedgeMode: strategy.hedgeMode,
+          positionSide: trade.side as any,
+        });
+
+        ccxtFill = mapBinanceFill(order as unknown as Record<string, unknown>);
+        this.logger.log(`[${exchange.toUpperCase()}] Closed ${(closePercent * 100).toFixed(0)}% of ${trade.symbol} via ${reason}`);
       }
 
       const fillPrice = ccxtFill?.avgPrice ?? exitPrice;
