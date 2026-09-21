@@ -14,6 +14,7 @@ import { SymbolRulesService } from '../common/symbol-rules.service';
 import { CredentialsResolverService } from '../common/credentials-resolver.service';
 import { Exchange } from '../strategies/strategy.entity';
 import { RateLimiterUtil } from '../utils/rate-limiter.util';
+import { BinanceRequestUtil } from '../utils/binance-request.util';
 
 function passthroughCredentialsResolver() {
   return {
@@ -808,5 +809,157 @@ describe('WebhookService (PLANO_FIX_BALANCE_OKX_FALLBACK_BYBIT -- FASE 3: 200 em
 
     expect(strategiesService.findOne).toHaveBeenCalledTimes(2);
     jest.useRealTimers();
+  });
+});
+
+describe('WebhookService (PLANO_FIX_ORDEM_OKX_NA_BINANCE -- FASE 1: a ordem vai para a corretora certa)', () => {
+  let service: WebhookService;
+  let strategiesService: { findOne: jest.Mock };
+  let tradesService: {
+    findOpenTrades: jest.Mock;
+    findOpenTradeBySymbolAndSide: jest.Mock;
+    findLastTradeWithInitialQuantity: jest.Mock;
+    countClosedTrades: jest.Mock;
+    create: jest.Mock;
+    createExecution: jest.Mock;
+    updateTrade: jest.Mock;
+  };
+  let signalLog: { record: jest.Mock; decide: jest.Mock; decideFromResult: jest.Mock };
+  let exchangeClient: ReturnType<typeof makeExchangeClient>;
+  let exchangeFactory: { get: jest.Mock; assertSupported: jest.Mock };
+
+  function makeSignal(overrides: Record<string, unknown> = {}) {
+    return {
+      strategyId: 'strategy-1',
+      symbol: 'BTCUSDT',
+      action: 'buy',
+      price: 60000,
+      quantity: 1,
+      ...overrides,
+    } as any;
+  }
+
+  function makeStrategy(overrides: Record<string, unknown> = {}) {
+    return {
+      id: 'strategy-1',
+      name: 'FF1 TEST',
+      exchange: Exchange.OKX,
+      isActive: true,
+      isTestnet: false,
+      isRealAccount: true,
+      apiKey: 'key',
+      apiSecret: 'secret',
+      leverage: 1,
+      hedgeMode: false,
+      ...overrides,
+    };
+  }
+
+  beforeEach(async () => {
+    strategiesService = { findOne: jest.fn() };
+    tradesService = {
+      findOpenTrades: jest.fn().mockResolvedValue([]),
+      findOpenTradeBySymbolAndSide: jest.fn().mockResolvedValue(null),
+      findLastTradeWithInitialQuantity: jest.fn().mockResolvedValue(null),
+      countClosedTrades: jest.fn().mockResolvedValue(0),
+      create: jest.fn().mockResolvedValue({ id: 'trade-1' }),
+      createExecution: jest.fn(),
+      updateTrade: jest.fn(),
+    };
+    signalLog = {
+      record: jest.fn().mockReturnValue('log-1'),
+      decide: jest.fn(),
+      decideFromResult: jest.fn(),
+    };
+    exchangeClient = makeExchangeClient();
+    exchangeClient.getSymbolRules.mockResolvedValue({ qtyStep: '1', priceTick: '0.0001', minQty: '1', minNotional: '5' });
+    exchangeClient.createOrder.mockResolvedValue({ orderId: 'order-1', avgPrice: '60000', executedQty: '1', status: 'FILLED' });
+    exchangeFactory = { get: jest.fn().mockReturnValue(exchangeClient), assertSupported: jest.fn() };
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        WebhookService,
+        { provide: ExchangeService, useValue: {} },
+        { provide: ExchangeClientFactory, useValue: exchangeFactory },
+        { provide: StrategiesService, useValue: strategiesService },
+        { provide: TradesService, useValue: tradesService },
+        { provide: BinanceWebSocketService, useValue: { isEnabled: () => false } },
+        { provide: SignalLogService, useValue: signalLog },
+        {
+          provide: SymbolRulesService,
+          useValue: { getSymbolRules: jest.fn().mockResolvedValue({ qtyStep: '1', priceTick: '0.0001', minQty: '1', minNotional: '5' }) },
+        },
+        { provide: CredentialsResolverService, useValue: passthroughCredentialsResolver() },
+      ],
+    }).compile();
+
+    service = module.get<WebhookService>(WebhookService);
+  });
+
+  it('estrategia OKX: a ordem vai para exchangeFactory.get(Exchange.OKX), nunca para executeBinanceOrder/fapi.binance.com', async () => {
+    strategiesService.findOne.mockResolvedValue(makeStrategy({ exchange: Exchange.OKX }));
+
+    const result = await service.processSignal(makeSignal());
+
+    expect(exchangeFactory.assertSupported).toHaveBeenCalledWith(Exchange.OKX);
+    expect(exchangeFactory.get).toHaveBeenCalledWith(Exchange.OKX);
+    expect(exchangeClient.createOrder).toHaveBeenCalledTimes(1);
+    expect(result).toEqual(expect.objectContaining({ status: 'success' }));
+  });
+
+  it('estrategia OKX com SL/TP configurados: SL e TP vao via exchangeFactory (createStopLossOrder/createOrder), NUNCA via createBinanceStopLossOrder/createBinanceTakeProfitOrder (BinanceRequestUtil jamais chamado)', async () => {
+    strategiesService.findOne.mockResolvedValue(makeStrategy({
+      exchange: Exchange.OKX,
+      stopLossPercentage: 2,
+      takeProfitPercentage1: 3,
+      takeProfitQuantity1: 100,
+      enableTakeProfit1: true,
+    }));
+    exchangeClient.createStopLossOrder.mockResolvedValue({ orderId: 'okx-sl-1' });
+
+    const result = await service.processSignal(makeSignal());
+
+    expect(exchangeClient.createStopLossOrder).toHaveBeenCalledTimes(1);
+    expect(exchangeClient.createStopLossOrder).toHaveBeenCalledWith(
+      expect.objectContaining({ credentials: { apiKey: 'key', apiSecret: 'secret' } }),
+      'BTCUSDT', 'BUY', expect.any(String), expect.any(String), false,
+    );
+    expect(exchangeClient.createOrder).toHaveBeenCalledTimes(2);
+    expect(BinanceRequestUtil.post).not.toHaveBeenCalled();
+    expect(BinanceRequestUtil.get).not.toHaveBeenCalled();
+    expect(result).toEqual(expect.objectContaining({ status: 'success' }));
+  });
+
+  it('estrategia Bybit: continua indo para exchangeFactory.get(Exchange.BYBIT) (comportamento preservado)', async () => {
+    strategiesService.findOne.mockResolvedValue(makeStrategy({ exchange: Exchange.BYBIT }));
+
+    await service.processSignal(makeSignal());
+
+    expect(exchangeFactory.assertSupported).toHaveBeenCalledWith(Exchange.BYBIT);
+    expect(exchangeFactory.get).toHaveBeenCalledWith(Exchange.BYBIT);
+    expect(exchangeClient.createOrder).toHaveBeenCalledTimes(1);
+  });
+
+  it('estrategia Binance: continua no caminho especifico (configureBinancePositionSettings + executeBinanceOrder), nunca chama assertSupported', async () => {
+    strategiesService.findOne.mockResolvedValue(makeStrategy({ exchange: Exchange.BINANCE }));
+    exchangeClient.getOpenOrders.mockResolvedValue([]);
+
+    await service.processSignal(makeSignal());
+
+    expect(exchangeFactory.assertSupported).not.toHaveBeenCalled();
+  });
+
+  it('CENARIO NEGATIVO -- corretora sem client registrado (ex.: BingX): aborta com erro explicito, jamais executa na Binance', async () => {
+    strategiesService.findOne.mockResolvedValue(makeStrategy({ exchange: Exchange.BINGX }));
+    exchangeFactory.assertSupported.mockImplementation((exchange: Exchange) => {
+      throw new Error(`Corretora ${exchange} nao possui ExchangeClient registrado. A ordem foi abortada para evitar execucao na corretora errada.`);
+    });
+
+    const result = await service.processSignal(makeSignal());
+
+    expect(exchangeClient.createOrder).not.toHaveBeenCalled();
+    expect(result).toEqual(expect.objectContaining({ status: 'error' }));
+    const failureText = (result as any).reason ?? (result as any).message;
+    expect(failureText).toContain('nao possui ExchangeClient registrado');
   });
 });

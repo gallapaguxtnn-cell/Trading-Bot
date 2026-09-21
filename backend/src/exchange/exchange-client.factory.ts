@@ -31,4 +31,12 @@ export class ExchangeClientFactory {
   has(exchange: Exchange): boolean {
     return this.clients.has(exchange);
   }
+
+  assertSupported(exchange: Exchange): void {
+    if (!this.clients.has(exchange)) {
+      throw new Error(
+        `Corretora ${exchange} nao possui ExchangeClient registrado. A ordem foi abortada para evitar execucao na corretora errada.`,
+      );
+    }
+  }
 }

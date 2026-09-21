@@ -2534,20 +2534,7 @@ export class WebhookService {
       let slWarnings: string | null = null;
       let unprotectedSince: Date | null = null;
 
-      if (exchange === Exchange.BYBIT) {
-        tradeDetails = await this.executeNeutralOrder(
-          exchange,
-          resolvedStrategy,
-          normalizedSymbol,
-          side,
-          quantity,
-          isLimitOrder,
-          signal,
-          decryptedKey,
-          decryptedSecret,
-          resolvedStrategy.siteId
-        );
-      } else {
+      if (exchange === Exchange.BINANCE) {
         await this.configureBinancePositionSettings(
           normalizedSymbol,
           resolvedStrategy.leverage || 1,
@@ -2567,6 +2554,21 @@ export class WebhookService {
           signal,
           decryptedKey,
           decryptedSecret
+        );
+      } else {
+        this.exchangeFactory.assertSupported(exchange);
+
+        tradeDetails = await this.executeNeutralOrder(
+          exchange,
+          resolvedStrategy,
+          normalizedSymbol,
+          side,
+          quantity,
+          isLimitOrder,
+          signal,
+          decryptedKey,
+          decryptedSecret,
+          resolvedStrategy.siteId
         );
       }
 
@@ -2811,7 +2813,7 @@ export class WebhookService {
               `This entry (SL=${stopLossPrice} based on entry ${priceForProtectionOrders}) will be monitored by software. ` +
               `Each trade has independent SL based on its own entry price.`
             );
-          } else {
+          } else if (exchange === Exchange.BINANCE) {
             try {
               stopLossOrderId = await withOneRetry(() => this.createBinanceStopLossOrder(
                 normalizedSymbol, side, quantity, stopLossPrice, decryptedKey, decryptedSecret, resolvedStrategy.isTestnet, resolvedStrategy.hedgeMode, detectedPositionSide
@@ -2821,6 +2823,25 @@ export class WebhookService {
               ({ slWarnings, unprotectedSince } = buildSlFailurePolicy(slError.message));
               this.logger.error(
                 `[PROTECTION ALERT] Failed to create Binance SL order after retry: ${slError.message}. ` +
+                `Trade ${savedTrade.id} (${normalizedSymbol}) is UNPROTECTED (no stop loss on the exchange).`
+              );
+            }
+          } else {
+            this.exchangeFactory.assertSupported(exchange);
+            const neutralSide = (side === 'BUY' ? 'BUY' : 'SELL') as NeutralSide;
+            try {
+              const neutralClient = this.exchangeFactory.get(exchange);
+              const neutralCtx = this.buildCtx(decryptedKey, decryptedSecret, resolvedStrategy.isTestnet, resolvedStrategy.siteId);
+              const slOrder = await withOneRetry(() => neutralClient.createStopLossOrder(
+                neutralCtx, normalizedSymbol, neutralSide, normalizeQuantity(quantity, rules.qtyStep, rules.minQty),
+                roundPriceToTick(stopLossPrice, rules.priceTick), resolvedStrategy.hedgeMode
+              ), (ms) => this.sleep(ms));
+              stopLossOrderId = slOrder.orderId;
+              this.logger.log(`[SL] [${exchange.toUpperCase()}] Stop Loss order created: ${stopLossOrderId} at ${roundPriceToTick(stopLossPrice, rules.priceTick)}`);
+            } catch (slError: any) {
+              ({ slWarnings, unprotectedSince } = buildSlFailurePolicy(slError.message));
+              this.logger.error(
+                `[PROTECTION ALERT] Failed to create ${exchange.toUpperCase()} SL order after retry: ${slError.message}. ` +
                 `Trade ${savedTrade.id} (${normalizedSymbol}) is UNPROTECTED (no stop loss on the exchange).`
               );
             }
@@ -2947,12 +2968,30 @@ export class WebhookService {
               if (bybitOrder?.orderId) {
                 tpOrderIds.push(`${tp.id}:${bybitOrder.orderId}`);
               }
-            } else {
+            } else if (exchange === Exchange.BINANCE) {
               const tpOrderId = await withOneRetry(() => this.createBinanceTakeProfitOrder(
                 normalizedSymbol, side, tpQty, tpPriceRaw, decryptedKey, decryptedSecret, resolvedStrategy.isTestnet, resolvedStrategy.hedgeMode, detectedPositionSide
               ), (ms) => this.sleep(ms));
               tpOrderIds.push(`${tp.id}:${tpOrderId}`);
               this.logger.log(`[TP${tp.id}] Successfully created Take Profit order: ${tpOrderId}`);
+            } else {
+              this.exchangeFactory.assertSupported(exchange);
+              const neutralClient = this.exchangeFactory.get(exchange);
+              const neutralCtx = this.buildCtx(decryptedKey, decryptedSecret, resolvedStrategy.isTestnet, resolvedStrategy.siteId);
+              const neutralOrder = await withOneRetry(() => neutralClient.createOrder(neutralCtx, {
+                symbol: normalizedSymbol,
+                side: (side === 'BUY' ? 'SELL' : 'BUY') as NeutralSide,
+                orderType: 'LIMIT',
+                qty: tp.quantity,
+                price: roundPriceToTick(tpPriceRaw, rules.priceTick),
+                reduceOnly: true,
+                hedgeMode: resolvedStrategy.hedgeMode,
+                positionSide: bybitSideForTps,
+              }), (ms) => this.sleep(ms));
+              if (neutralOrder?.orderId) {
+                tpOrderIds.push(`${tp.id}:${neutralOrder.orderId}`);
+              }
+              this.logger.log(`[TP${tp.id}] [${exchange.toUpperCase()}] Successfully created Take Profit order: ${neutralOrder?.orderId}`);
             }
           } catch (tpError: any) {
             this.logger.error(`[TP${tp.id}] Failed to create after retry: ${tpError.message}`);
