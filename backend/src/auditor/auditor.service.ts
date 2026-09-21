@@ -1149,7 +1149,7 @@ ${tradesSummary}`;
   ): Promise<{ qty: number; avgPrice: number; fee: number; feeAsset: string } | null> {
     try {
       const myTrades = await exchange.fetchMyTrades(symbol, undefined, undefined, { orderId });
-      const fills = myTrades.filter(t => String(t.order) === orderId);
+      const fills = myTrades.filter((t: any) => String(t.order) === orderId);
       if (!fills.length) return null;
       let qty = 0;
       let notional = 0;
@@ -1178,8 +1178,8 @@ ${tradesSummary}`;
       const end = trade.closedAt ? new Date(trade.closedAt).getTime() : Date.now();
       const entries = await exchange.fetchFundingHistory(trade.symbol, since, 100);
       return entries
-        .filter(e => (e.timestamp ?? 0) >= since && (e.timestamp ?? 0) <= end)
-        .reduce((sum, e) => sum + (Number(e.amount) || 0), 0);
+        .filter((e: any) => (e.timestamp ?? 0) >= since && (e.timestamp ?? 0) <= end)
+        .reduce((sum: number, e: any) => sum + (Number(e.amount) || 0), 0);
     } catch (err) {
       this.logger.warn(`Could not fetch funding for trade ${trade.id}: ${err}`);
       return 0;

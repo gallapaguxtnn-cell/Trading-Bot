@@ -34,7 +34,7 @@ export class ExchangeService implements OnModuleInit {
     const key = this.getCacheKey(exchangeId, apiKey);
 
     if (this.exchanges.has(key)) {
-      return this.exchanges.get(key);
+      return this.exchanges.get(key)!;
     }
 
     this.logger.log(`Creating new ${exchangeId} instance (Testnet: ${isTestnet})`);

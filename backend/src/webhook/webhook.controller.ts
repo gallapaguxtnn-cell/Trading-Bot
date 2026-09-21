@@ -110,7 +110,7 @@ export class WebhookController {
   }
 
   private validatePayload(payload: WebhookPayload): void {
-    const required = ['secret', 'strategyId', 'symbol', 'action'];
+    const required: Array<keyof WebhookPayload> = ['secret', 'strategyId', 'symbol', 'action'];
     const missing = required.filter(field => !payload[field]);
 
     if (missing.length > 0) {
