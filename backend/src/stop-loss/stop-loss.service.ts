@@ -20,6 +20,7 @@ import { isPendingLimitEntry } from '../utils/trade-guards.util';
 import { SymbolRulesService } from '../common/symbol-rules.service';
 import { normalizeQuantity, roundPriceToTick } from '../common/exchange-precision.util';
 import { CredentialsResolverService } from '../common/credentials-resolver.service';
+import type { ResolvedStrategy } from '../common/resolved-strategy.type';
 import { POSITION_CHECK_RETRY_LIMIT, PositionCheckResult, shouldEscalateToReconciliation } from '../common/position-reconciliation.util';
 import { OrderFill, mapBybitFill, mapBinanceFill, mapCcxtFill, tpPnl, sumCommission } from '../take-profit/fill.util';
 import {
@@ -311,7 +312,7 @@ export class StopLossService implements OnModuleInit {
 
   private async recreateStopLoss(
     trade: Trade,
-    strategy: any,
+    strategy: ResolvedStrategy,
     exchange: Exchange,
     apiKey: string,
     apiSecret: string
@@ -320,7 +321,7 @@ export class StopLossService implements OnModuleInit {
       if (!strategy.stopLossPercentage || strategy.stopLossPercentage <= 0) return false;
 
       const client = this.exchangeFactory.get(exchange);
-      const ctx: AccountContext = { credentials: { apiKey, apiSecret }, mode: strategy.isTestnet ? 'DEMO' : 'REAL', region: strategy.siteId ?? null };
+      const ctx: AccountContext = { credentials: { apiKey, apiSecret }, mode: strategy.isTestnet ? 'DEMO' : 'REAL', region: (strategy.siteId as any) ?? null };
 
       const positionSide = strategy.hedgeMode
         ? (trade.side === 'BUY' ? 'LONG' : 'SHORT')
@@ -482,7 +483,7 @@ export class StopLossService implements OnModuleInit {
         `[SL PNL] ${trade.symbol}: nao foi possivel ler o resultado real da ordem de stop na corretora (orderId=${orderId ?? 'indisponivel'}) -- usando ultimo preco negociado e calculo local sem taxas como fallback.`
       );
       const lastPrice = await this.getLastTradePrice(trade.symbol, exchange, apiKey, apiSecret, isTestnet, siteId);
-      exitPrice = lastPrice || await this.getCurrentPrice(trade, { exchange, isTestnet } as any);
+      exitPrice = lastPrice || await this.getCurrentPrice(trade, { exchange, isTestnet, siteId: siteId ?? null });
       closedQty = parseFloat(trade.quantity as any);
       pnl = this.calculatePnL(trade, exitPrice);
     }
@@ -588,7 +589,7 @@ export class StopLossService implements OnModuleInit {
     return client.getLastTradePrice(ctx, symbol);
   }
 
-  private calculateStopLoss(trade: Trade, strategy: any): number {
+  private calculateStopLoss(trade: Trade, strategy: ResolvedStrategy): number {
     // If Break Even/Break Again has moved the SL, use that instead of recalculating
     if (trade.currentStopLoss) {
       return parseFloat(trade.currentStopLoss as any);
@@ -604,15 +605,9 @@ export class StopLossService implements OnModuleInit {
     }
   }
 
-  private async getCurrentPrice(trade: Trade, strategy: any): Promise<number> {
+  private async getCurrentPrice(trade: Trade, strategy: Pick<ResolvedStrategy, 'exchange' | 'isTestnet' | 'siteId'>): Promise<number> {
     try {
       const exchange = strategy.exchange || Exchange.BINANCE;
-
-      if (exchange === Exchange.BYBIT) {
-        const client = this.exchangeFactory.get(exchange);
-        const ctx: AccountContext = { credentials: { apiKey: '', apiSecret: '' }, mode: strategy.isTestnet ? 'DEMO' : 'REAL', region: null };
-        return await client.getCurrentPrice(ctx, trade.symbol);
-      }
 
       if (exchange === Exchange.BINANCE && this.binanceWs.isEnabled()) {
         const cachedPrice = this.binanceWs.getCachedPrice(trade.symbol);
@@ -621,24 +616,9 @@ export class StopLossService implements OnModuleInit {
         }
       }
 
-      if (strategy.isTestnet && exchange === Exchange.BINANCE) {
-        const client = this.exchangeFactory.get(exchange);
-        const ctx: AccountContext = { credentials: { apiKey: '', apiSecret: '' }, mode: 'DEMO', region: null };
-        return await client.getCurrentPrice(ctx, trade.symbol);
-      } else {
-        const apiKey = (await EncryptionUtil.decrypt(strategy.apiKey)).trim();
-        const apiSecret = (await EncryptionUtil.decrypt(strategy.apiSecret)).trim();
-
-        const exchangeInstance = await this.exchangeService.getExchange(
-          exchange,
-          apiKey,
-          apiSecret,
-          strategy.isTestnet
-        );
-
-        const ticker = await exchangeInstance.fetchTicker(trade.symbol);
-        return ticker.last;
-      }
+      const client = this.exchangeFactory.get(exchange);
+      const ctx: AccountContext = { credentials: { apiKey: '', apiSecret: '' }, mode: strategy.isTestnet ? 'DEMO' : 'REAL', region: (strategy.siteId as any) ?? null };
+      return await client.getCurrentPrice(ctx, trade.symbol);
     } catch (error) {
       this.logger.error(`Failed to get current price for ${trade.symbol}: ${error.message}`);
       return 0;
@@ -647,7 +627,7 @@ export class StopLossService implements OnModuleInit {
 
   private async closePosition(
     trade: Trade,
-    strategy: any,
+    strategy: ResolvedStrategy,
     exitPrice: number,
     reason: CloseReason,
     apiKey: string,
@@ -671,7 +651,7 @@ export class StopLossService implements OnModuleInit {
         }
 
         const client = this.exchangeFactory.get(exchange);
-        const ctx: AccountContext = { credentials: { apiKey, apiSecret }, mode: strategy.isTestnet ? 'DEMO' : 'REAL', region: strategy.siteId ?? null };
+        const ctx: AccountContext = { credentials: { apiKey, apiSecret }, mode: strategy.isTestnet ? 'DEMO' : 'REAL', region: (strategy.siteId as any) ?? null };
 
         const order = await client.createOrder(ctx, {
           symbol: trade.symbol,
@@ -718,9 +698,9 @@ export class StopLossService implements OnModuleInit {
         }
 
         this.logger.warn(`[BINANCE] Closed ${trade.symbol} via ${reason}`);
-      } else {
+      } else if (exchange === Exchange.BINANCE) {
         const exchangeInstance = await this.exchangeService.getExchange(
-          exchange,
+          'binance',
           apiKey,
           apiSecret,
           strategy.isTestnet
@@ -735,6 +715,32 @@ export class StopLossService implements OnModuleInit {
         const closeOrder = await exchangeInstance.createMarketOrder(trade.symbol, closeSide.toLowerCase(), quantity, ccxtParams);
         fill = mapCcxtFill(closeOrder as unknown as Record<string, unknown>);
         this.logger.warn(`[CLOSED] ${trade.symbol} via ${reason}`);
+      } else {
+        const rules = await this.symbolRulesService.getSymbolRules(trade.symbol, strategy.isTestnet, exchange);
+        const closeQty = normalizeQuantity(quantity, rules.qtyStep, rules.minQty);
+
+        if (closeQty === '0') {
+          this.logger.error(
+            `[${exchange.toUpperCase()}] Normalized quantity for ${trade.symbol} rounded to 0 (raw=${quantity}, step=${rules.qtyStep}, minQty=${rules.minQty}). Aborting close.`
+          );
+          return;
+        }
+
+        const client = this.exchangeFactory.get(exchange);
+        const ctx: AccountContext = { credentials: { apiKey, apiSecret }, mode: strategy.isTestnet ? 'DEMO' : 'REAL', region: (strategy.siteId as any) ?? null };
+
+        const order = await client.createOrder(ctx, {
+          symbol: trade.symbol,
+          side: closeSide as any,
+          orderType: 'MARKET',
+          qty: closeQty,
+          reduceOnly: true,
+          hedgeMode: strategy.hedgeMode,
+          positionSide: trade.side as any,
+        });
+
+        fill = mapBinanceFill(order as unknown as Record<string, unknown>);
+        this.logger.warn(`[${exchange.toUpperCase()}] Closed ${trade.symbol} via ${reason}`);
       }
 
       await this.cancelTradeSpecificTpOrders(trade, exchange, apiKey, apiSecret, strategy.isTestnet, strategy.siteId);

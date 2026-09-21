@@ -194,6 +194,24 @@ describe('StopLossService (FASE 3 -- arredondamento via SymbolRulesService, nunc
         expect.objectContaining({ qty: '250', orderType: 'MARKET' }),
       );
     });
+
+    it('PLANO_DEFINITIVO_CORRETORAS FASE 4/5: OKX fecha via exchangeFactory (antes caia no fallback CCXT que so suportava binance/bybit)', async () => {
+      symbolRulesService.getSymbolRules.mockResolvedValue({ qtyStep: '1', priceTick: '0.0001', minQty: '1', minNotional: '5' });
+      exchangeClient.createOrder.mockResolvedValue({ orderId: 'okx-close-1', avgPrice: '58750', executedQty: '253', status: 'FILLED' });
+
+      const trade = {
+        id: 'trade-1', symbol: 'BTCUSDT', side: 'BUY', quantity: 253, entryPrice: 60000, pnl: null,
+      } as unknown as Trade;
+      const strategy = { exchange: Exchange.OKX, isTestnet: false, hedgeMode: false };
+
+      await (service as any).closePosition(trade, strategy, 58800, 'STOP_LOSS', 'key', 'secret');
+
+      expect(exchangeFactory.get).toHaveBeenCalledWith(Exchange.OKX);
+      expect(exchangeClient.createOrder).toHaveBeenCalledWith(
+        expect.objectContaining({ credentials: { apiKey: 'key', apiSecret: 'secret' } }),
+        expect.objectContaining({ qty: '253', orderType: 'MARKET', reduceOnly: true }),
+      );
+    });
   });
 });
 
