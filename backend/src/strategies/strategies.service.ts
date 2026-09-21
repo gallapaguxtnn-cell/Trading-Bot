@@ -10,6 +10,23 @@ import { PortfolioSummary } from '../portfolios/portfolio-public.interface';
 import { ExchangeClientFactory } from '../exchange/exchange-client.factory';
 import { toAccountContext } from '../common/account-context.util';
 
+type StrategyWireInput = Omit<
+  Partial<Strategy>,
+  'legacyExchange' | 'legacyApiKey' | 'legacyApiSecret' | 'legacyIsTestnet' | 'legacyIsRealAccount'
+> & {
+  exchange?: Exchange;
+  apiKey?: string;
+  apiSecret?: string;
+  isTestnet?: boolean;
+  isRealAccount?: boolean;
+};
+
+type StrategyWireShape<T> = Omit<T, 'legacyExchange' | 'legacyIsTestnet' | 'legacyIsRealAccount'> & {
+  exchange: Exchange;
+  isTestnet: boolean;
+  isRealAccount: boolean;
+};
+
 @Injectable()
 export class StrategiesService {
   private readonly logger = new Logger(StrategiesService.name);
@@ -24,7 +41,7 @@ export class StrategiesService {
     private readonly portfoliosService: PortfoliosService,
   ) {}
 
-  private async attachPortfolioSummaries<T extends Strategy>(
+  private async attachPortfolioSummaries<T extends { portfolioId: string | null }>(
     strategies: T[],
   ): Promise<Array<T & { portfolio: PortfolioSummary | null }>> {
     const portfolioIds = [...new Set(strategies.map((s) => s.portfolioId).filter((id): id is string => !!id))];
@@ -32,15 +49,23 @@ export class StrategiesService {
     return strategies.map((s) => ({ ...s, portfolio: s.portfolioId ? summaries.get(s.portfolioId) ?? null : null }));
   }
 
-  async findAll(): Promise<Array<Strategy & { portfolio: PortfolioSummary | null }>> {
+  private toLegacyWireShape<T extends Pick<Strategy, 'legacyExchange' | 'legacyIsTestnet' | 'legacyIsRealAccount'>>(
+    strategy: T,
+  ): StrategyWireShape<T> {
+    const { legacyExchange, legacyIsTestnet, legacyIsRealAccount, ...rest } = strategy;
+    return { ...rest, exchange: legacyExchange, isTestnet: legacyIsTestnet, isRealAccount: legacyIsRealAccount } as StrategyWireShape<T>;
+  }
+
+  async findAll(): Promise<Array<StrategyWireShape<Strategy & { portfolio: PortfolioSummary | null }>>> {
     const strategies = await this.strategiesRepository.find();
-    return this.attachPortfolioSummaries(strategies);
+    const withPortfolio = await this.attachPortfolioSummaries(strategies);
+    return withPortfolio.map((s) => this.toLegacyWireShape(s));
   }
 
   findAllWithCredentials(): Promise<Strategy[]> {
     return this.strategiesRepository
       .createQueryBuilder('strategy')
-      .addSelect(['strategy.apiKey', 'strategy.apiSecret'])
+      .addSelect(['strategy.legacyApiKey', 'strategy.legacyApiSecret'])
       .getMany();
   }
 
@@ -51,11 +76,11 @@ export class StrategiesService {
         'id',
         'name',
         'asset',
-        'exchange',
+        'legacyExchange',
         'direction',
         'isActive',
-        'isTestnet',
-        'isRealAccount',
+        'legacyIsTestnet',
+        'legacyIsRealAccount',
         'leverage',
         'marginMode',
         'defaultQuantity',
@@ -82,25 +107,25 @@ export class StrategiesService {
         'allowAveraging',
         'hedgeMode',
         'pauseNewOrders',
-        'apiKey',
-        'apiSecret',
+        'legacyApiKey',
+        'legacyApiSecret',
         'portfolioId'
       ]
     });
   }
 
-  async findOnePublic(id: string): Promise<(Strategy & { portfolio: PortfolioSummary | null }) | null> {
+  async findOnePublic(id: string): Promise<StrategyWireShape<Strategy & { portfolio: PortfolioSummary | null }> | null> {
     const strategy = await this.strategiesRepository.findOne({
       where: { id },
       select: [
         'id',
         'name',
         'asset',
-        'exchange',
+        'legacyExchange',
         'direction',
         'isActive',
-        'isTestnet',
-        'isRealAccount',
+        'legacyIsTestnet',
+        'legacyIsRealAccount',
         'leverage',
         'marginMode',
         'defaultQuantity',
@@ -132,44 +157,43 @@ export class StrategiesService {
     });
     if (!strategy) return null;
     const [withPortfolio] = await this.attachPortfolioSummaries([strategy]);
-    return withPortfolio;
+    return this.toLegacyWireShape(withPortfolio);
   }
 
-  async create(strategy: Partial<Strategy>): Promise<Strategy> {
+  async create(input: StrategyWireInput): Promise<Strategy> {
     this.logger.log(
       `[STRATEGY CREATE] Risk values received:\n` +
-      `  SL%: ${strategy.stopLossPercentage} (type: ${typeof strategy.stopLossPercentage})\n` +
-      `  TP1%: ${strategy.takeProfitPercentage1} (type: ${typeof strategy.takeProfitPercentage1})\n` +
-      `  TP2%: ${strategy.takeProfitPercentage2} (type: ${typeof strategy.takeProfitPercentage2})\n` +
-      `  TP3%: ${strategy.takeProfitPercentage3} (type: ${typeof strategy.takeProfitPercentage3})`
+      `  SL%: ${input.stopLossPercentage} (type: ${typeof input.stopLossPercentage})\n` +
+      `  TP1%: ${input.takeProfitPercentage1} (type: ${typeof input.takeProfitPercentage1})\n` +
+      `  TP2%: ${input.takeProfitPercentage2} (type: ${typeof input.takeProfitPercentage2})\n` +
+      `  TP3%: ${input.takeProfitPercentage3} (type: ${typeof input.takeProfitPercentage3})`
     );
-    if (strategy.apiKey) {
-        strategy.apiKey = await EncryptionUtil.encrypt(strategy.apiKey);
-    }
-    if (strategy.apiSecret) {
-        strategy.apiSecret = await EncryptionUtil.encrypt(strategy.apiSecret);
-    }
-    const newStrategy = this.strategiesRepository.create(strategy);
+    const newStrategy = this.strategiesRepository.create(await this.toLegacyEntityShape(input));
     return this.strategiesRepository.save(newStrategy);
   }
 
-  async update(id: string, strategy: Partial<Strategy>): Promise<Strategy | null> {
+  async update(id: string, input: StrategyWireInput): Promise<Strategy | null> {
     this.logger.log(
       `[STRATEGY UPDATE] Risk values received:\n` +
-      `  SL%: ${strategy.stopLossPercentage} (type: ${typeof strategy.stopLossPercentage})\n` +
-      `  TP1%: ${strategy.takeProfitPercentage1} (type: ${typeof strategy.takeProfitPercentage1})\n` +
-      `  TP2%: ${strategy.takeProfitPercentage2} (type: ${typeof strategy.takeProfitPercentage2})\n` +
-      `  TP3%: ${strategy.takeProfitPercentage3} (type: ${typeof strategy.takeProfitPercentage3})`
+      `  SL%: ${input.stopLossPercentage} (type: ${typeof input.stopLossPercentage})\n` +
+      `  TP1%: ${input.takeProfitPercentage1} (type: ${typeof input.takeProfitPercentage1})\n` +
+      `  TP2%: ${input.takeProfitPercentage2} (type: ${typeof input.takeProfitPercentage2})\n` +
+      `  TP3%: ${input.takeProfitPercentage3} (type: ${typeof input.takeProfitPercentage3})`
     );
-    if (strategy.apiKey) {
-        strategy.apiKey = await EncryptionUtil.encrypt(strategy.apiKey);
-    }
-    if (strategy.apiSecret) {
-        strategy.apiSecret = await EncryptionUtil.encrypt(strategy.apiSecret);
-    }
-    await this.strategiesRepository.update(id, strategy);
+    await this.strategiesRepository.update(id, await this.toLegacyEntityShape(input));
     this.credentialsResolver.invalidate(id);
     return this.strategiesRepository.findOneBy({ id });
+  }
+
+  private async toLegacyEntityShape(input: StrategyWireInput): Promise<Partial<Strategy>> {
+    const { exchange, apiKey, apiSecret, isTestnet, isRealAccount, ...rest } = input;
+    const entity: Partial<Strategy> = { ...rest };
+    if (exchange !== undefined) entity.legacyExchange = exchange;
+    if (isTestnet !== undefined) entity.legacyIsTestnet = isTestnet;
+    if (isRealAccount !== undefined) entity.legacyIsRealAccount = isRealAccount;
+    if (apiKey) entity.legacyApiKey = await EncryptionUtil.encrypt(apiKey);
+    if (apiSecret) entity.legacyApiSecret = await EncryptionUtil.encrypt(apiSecret);
+    return entity;
   }
 
   async remove(id: string): Promise<void> {
@@ -224,8 +248,8 @@ export class StrategiesService {
     const encryptedSecret = await EncryptionUtil.encrypt(apiSecret);
 
     await this.strategiesRepository.update(id, {
-      apiKey: encryptedKey,
-      apiSecret: encryptedSecret,
+      legacyApiKey: encryptedKey,
+      legacyApiSecret: encryptedSecret,
     });
     this.credentialsResolver.invalidate(id);
 

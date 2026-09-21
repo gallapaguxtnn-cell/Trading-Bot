@@ -142,7 +142,7 @@ export class StrategiesController {
     }
   }
 
-  private generatePineScriptTemplate(strategy: Strategy, useLimit: boolean): string {
+  private generatePineScriptTemplate(strategy: Pick<Strategy, 'asset' | 'direction' | 'id' | 'name'>, useLimit: boolean): string {
     const symbol = `${strategy.asset}USDT`;
     const webhookSecret = process.env.WEBHOOK_SECRET || 'default_secret_123';
     const direction = strategy.direction || StrategyDirection.BOTH;
