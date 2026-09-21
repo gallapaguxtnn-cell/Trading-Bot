@@ -4,7 +4,7 @@ import { Repository } from 'typeorm';
 import { Strategy, Exchange } from '../strategies/strategy.entity';
 import { BinanceWebSocketService } from './binance-ws.service';
 import { EncryptionUtil } from '../utils/encryption.util';
-import { CredentialsResolverService } from '../common/credentials-resolver.service';
+import { CredentialsResolverService, STRATEGY_CREDENTIAL_ADD_SELECT } from '../common/credentials-resolver.service';
 
 @Injectable()
 export class BinanceWebSocketInitService implements OnModuleInit {
@@ -29,7 +29,7 @@ export class BinanceWebSocketInitService implements OnModuleInit {
       const strategies = await this.strategiesRepository
         .createQueryBuilder('strategy')
         .andWhere('strategy.isActive = :isActive', { isActive: true })
-        .addSelect(['strategy.legacyApiKey', 'strategy.legacyApiSecret'])
+        .addSelect([...STRATEGY_CREDENTIAL_ADD_SELECT])
         .getMany();
 
       this.logger.log(`[WS-INIT] Found ${strategies.length} active strategies (checking resolved exchange for each)`);
