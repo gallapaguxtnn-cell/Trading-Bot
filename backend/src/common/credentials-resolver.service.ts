@@ -29,15 +29,23 @@ export type StrategyCredentialsInput = Pick<
 
 const LEGACY_DISPLAY_COLUMNS = ['legacyExchange', 'legacyIsTestnet', 'legacyIsRealAccount'] as const;
 
+export const STRATEGY_DISPLAY_SELECT_COLUMNS = LEGACY_DISPLAY_COLUMNS;
+
 export const STRATEGY_CREDENTIAL_SELECT_COLUMNS = [...LEGACY_DISPLAY_COLUMNS, 'legacyApiKey', 'legacyApiSecret'] as const;
 
 export const STRATEGY_CREDENTIAL_ADD_SELECT = ['strategy.legacyApiKey', 'strategy.legacyApiSecret'] as const;
 
+export type StrategyWireShape<T> = Omit<T, (typeof LEGACY_DISPLAY_COLUMNS)[number]> & {
+  exchange: Exchange;
+  isTestnet: boolean;
+  isRealAccount: boolean;
+};
+
 export function fromLegacyStrategyFields<T extends Pick<Strategy, (typeof LEGACY_DISPLAY_COLUMNS)[number]>>(
   strategy: T,
-): Omit<T, (typeof LEGACY_DISPLAY_COLUMNS)[number]> & { exchange: Exchange; isTestnet: boolean; isRealAccount: boolean } {
+): StrategyWireShape<T> {
   const { legacyExchange, legacyIsTestnet, legacyIsRealAccount, ...rest } = strategy;
-  return { ...rest, exchange: legacyExchange, isTestnet: legacyIsTestnet, isRealAccount: legacyIsRealAccount };
+  return { ...rest, exchange: legacyExchange, isTestnet: legacyIsTestnet, isRealAccount: legacyIsRealAccount } as StrategyWireShape<T>;
 }
 
 export interface StrategyWireCredentialFields {
@@ -48,10 +56,14 @@ export interface StrategyWireCredentialFields {
   isRealAccount?: boolean;
 }
 
-export function toLegacyStrategyFields(
-  input: StrategyWireCredentialFields,
-): Partial<Pick<Strategy, 'legacyExchange' | 'legacyApiKey' | 'legacyApiSecret' | 'legacyIsTestnet' | 'legacyIsRealAccount'>> {
-  const fields: Partial<Pick<Strategy, 'legacyExchange' | 'legacyApiKey' | 'legacyApiSecret' | 'legacyIsTestnet' | 'legacyIsRealAccount'>> = {};
+type StrategyLegacyCredentialFields = Partial<
+  Pick<Strategy, 'legacyExchange' | 'legacyApiKey' | 'legacyApiSecret' | 'legacyIsTestnet' | 'legacyIsRealAccount'>
+>;
+
+export type WithWireCredentialFields<T> = Omit<T, (typeof STRATEGY_CREDENTIAL_SELECT_COLUMNS)[number]> & StrategyWireCredentialFields;
+
+export function toLegacyStrategyFields(input: StrategyWireCredentialFields): StrategyLegacyCredentialFields {
+  const fields: StrategyLegacyCredentialFields = {};
   if (input.exchange !== undefined) fields.legacyExchange = input.exchange;
   if (input.apiKey !== undefined) fields.legacyApiKey = input.apiKey;
   if (input.apiSecret !== undefined) fields.legacyApiSecret = input.apiSecret;

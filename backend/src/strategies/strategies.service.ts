@@ -4,28 +4,22 @@ import { Repository } from 'typeorm';
 import { Strategy, Exchange } from './strategy.entity';
 import { Trade } from './trade.entity';
 import { EncryptionUtil } from '../utils/encryption.util';
-import { CredentialsResolverService } from '../common/credentials-resolver.service';
+import {
+  CredentialsResolverService,
+  STRATEGY_CREDENTIAL_SELECT_COLUMNS,
+  STRATEGY_CREDENTIAL_ADD_SELECT,
+  STRATEGY_DISPLAY_SELECT_COLUMNS,
+  StrategyWireShape,
+  WithWireCredentialFields,
+  fromLegacyStrategyFields,
+  toLegacyStrategyFields,
+} from '../common/credentials-resolver.service';
 import { PortfoliosService } from '../portfolios/portfolios.service';
 import { PortfolioSummary } from '../portfolios/portfolio-public.interface';
 import { ExchangeClientFactory } from '../exchange/exchange-client.factory';
 import { toAccountContext } from '../common/account-context.util';
 
-type StrategyWireInput = Omit<
-  Partial<Strategy>,
-  'legacyExchange' | 'legacyApiKey' | 'legacyApiSecret' | 'legacyIsTestnet' | 'legacyIsRealAccount'
-> & {
-  exchange?: Exchange;
-  apiKey?: string;
-  apiSecret?: string;
-  isTestnet?: boolean;
-  isRealAccount?: boolean;
-};
-
-type StrategyWireShape<T> = Omit<T, 'legacyExchange' | 'legacyIsTestnet' | 'legacyIsRealAccount'> & {
-  exchange: Exchange;
-  isTestnet: boolean;
-  isRealAccount: boolean;
-};
+type StrategyWireInput = WithWireCredentialFields<Partial<Strategy>>;
 
 @Injectable()
 export class StrategiesService {
@@ -49,23 +43,16 @@ export class StrategiesService {
     return strategies.map((s) => ({ ...s, portfolio: s.portfolioId ? summaries.get(s.portfolioId) ?? null : null }));
   }
 
-  private toLegacyWireShape<T extends Pick<Strategy, 'legacyExchange' | 'legacyIsTestnet' | 'legacyIsRealAccount'>>(
-    strategy: T,
-  ): StrategyWireShape<T> {
-    const { legacyExchange, legacyIsTestnet, legacyIsRealAccount, ...rest } = strategy;
-    return { ...rest, exchange: legacyExchange, isTestnet: legacyIsTestnet, isRealAccount: legacyIsRealAccount } as StrategyWireShape<T>;
-  }
-
   async findAll(): Promise<Array<StrategyWireShape<Strategy & { portfolio: PortfolioSummary | null }>>> {
     const strategies = await this.strategiesRepository.find();
     const withPortfolio = await this.attachPortfolioSummaries(strategies);
-    return withPortfolio.map((s) => this.toLegacyWireShape(s));
+    return withPortfolio.map((s) => fromLegacyStrategyFields(s));
   }
 
   findAllWithCredentials(): Promise<Strategy[]> {
     return this.strategiesRepository
       .createQueryBuilder('strategy')
-      .addSelect(['strategy.legacyApiKey', 'strategy.legacyApiSecret'])
+      .addSelect([...STRATEGY_CREDENTIAL_ADD_SELECT])
       .getMany();
   }
 
@@ -76,11 +63,9 @@ export class StrategiesService {
         'id',
         'name',
         'asset',
-        'legacyExchange',
+        ...STRATEGY_CREDENTIAL_SELECT_COLUMNS,
         'direction',
         'isActive',
-        'legacyIsTestnet',
-        'legacyIsRealAccount',
         'leverage',
         'marginMode',
         'defaultQuantity',
@@ -107,8 +92,6 @@ export class StrategiesService {
         'allowAveraging',
         'hedgeMode',
         'pauseNewOrders',
-        'legacyApiKey',
-        'legacyApiSecret',
         'portfolioId'
       ]
     });
@@ -121,11 +104,9 @@ export class StrategiesService {
         'id',
         'name',
         'asset',
-        'legacyExchange',
+        ...STRATEGY_DISPLAY_SELECT_COLUMNS,
         'direction',
         'isActive',
-        'legacyIsTestnet',
-        'legacyIsRealAccount',
         'leverage',
         'marginMode',
         'defaultQuantity',
@@ -157,7 +138,7 @@ export class StrategiesService {
     });
     if (!strategy) return null;
     const [withPortfolio] = await this.attachPortfolioSummaries([strategy]);
-    return this.toLegacyWireShape(withPortfolio);
+    return fromLegacyStrategyFields(withPortfolio);
   }
 
   async create(input: StrategyWireInput): Promise<Strategy> {
@@ -187,13 +168,12 @@ export class StrategiesService {
 
   private async toLegacyEntityShape(input: StrategyWireInput): Promise<Partial<Strategy>> {
     const { exchange, apiKey, apiSecret, isTestnet, isRealAccount, ...rest } = input;
-    const entity: Partial<Strategy> = { ...rest };
-    if (exchange !== undefined) entity.legacyExchange = exchange;
-    if (isTestnet !== undefined) entity.legacyIsTestnet = isTestnet;
-    if (isRealAccount !== undefined) entity.legacyIsRealAccount = isRealAccount;
-    if (apiKey) entity.legacyApiKey = await EncryptionUtil.encrypt(apiKey);
-    if (apiSecret) entity.legacyApiSecret = await EncryptionUtil.encrypt(apiSecret);
-    return entity;
+    const encryptedKey = apiKey ? await EncryptionUtil.encrypt(apiKey) : undefined;
+    const encryptedSecret = apiSecret ? await EncryptionUtil.encrypt(apiSecret) : undefined;
+    return {
+      ...rest,
+      ...toLegacyStrategyFields({ exchange, isTestnet, isRealAccount, apiKey: encryptedKey, apiSecret: encryptedSecret }),
+    };
   }
 
   async remove(id: string): Promise<void> {
@@ -247,10 +227,7 @@ export class StrategiesService {
     const encryptedKey = await EncryptionUtil.encrypt(apiKey);
     const encryptedSecret = await EncryptionUtil.encrypt(apiSecret);
 
-    await this.strategiesRepository.update(id, {
-      legacyApiKey: encryptedKey,
-      legacyApiSecret: encryptedSecret,
-    });
+    await this.strategiesRepository.update(id, toLegacyStrategyFields({ apiKey: encryptedKey, apiSecret: encryptedSecret }));
     this.credentialsResolver.invalidate(id);
 
     this.logger.log(`[CREDENTIALS] Updated credentials for strategy ${strategy.name} (${id})`);
