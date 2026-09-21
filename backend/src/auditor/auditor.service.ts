@@ -14,7 +14,7 @@ import { TradeExecution, ExecutionType } from '../trades/trade-execution.entity'
 import { Strategy } from '../strategies/strategy.entity';
 import { ExchangeService } from '../exchange/exchange.service';
 import { EncryptionUtil } from '../utils/encryption.util';
-import { CredentialsResolverService } from '../common/credentials-resolver.service';
+import { CredentialsResolverService, STRATEGY_CREDENTIAL_ADD_SELECT } from '../common/credentials-resolver.service';
 import type { ResolvedStrategy } from '../common/resolved-strategy.type';
 import Decimal from 'decimal.js';
 import type { Exchange } from 'ccxt';
@@ -94,7 +94,7 @@ export class AuditorService {
 
     const strategy = await this.strategyRepo
       .createQueryBuilder('strategy')
-      .addSelect(['strategy.legacyApiKey', 'strategy.legacyApiSecret'])
+      .addSelect([...STRATEGY_CREDENTIAL_ADD_SELECT])
       .where('strategy.id = :id', { id: trade.strategyId })
       .getOne();
     if (!strategy) throw new Error(`Strategy ${trade.strategyId} not found`);
@@ -478,7 +478,7 @@ export class AuditorService {
   async detectMissingTpOrders(strategyId: string): Promise<AuditLog[]> {
     const strategy = await this.strategyRepo
       .createQueryBuilder('strategy')
-      .addSelect(['strategy.legacyApiKey', 'strategy.legacyApiSecret'])
+      .addSelect([...STRATEGY_CREDENTIAL_ADD_SELECT])
       .where('strategy.id = :id', { id: strategyId })
       .getOne();
     if (!strategy) return [];
@@ -1012,7 +1012,7 @@ ${tradesSummary}`;
 
     const strategy = await this.strategyRepo
       .createQueryBuilder('strategy')
-      .addSelect(['strategy.legacyApiKey', 'strategy.legacyApiSecret'])
+      .addSelect([...STRATEGY_CREDENTIAL_ADD_SELECT])
       .where('strategy.id = :id', { id: trade.strategyId })
       .getOne();
     if (!strategy) throw new Error(`Strategy ${trade.strategyId} not found`);
