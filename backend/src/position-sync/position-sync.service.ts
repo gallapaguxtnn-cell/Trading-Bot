@@ -351,7 +351,7 @@ export class PositionSyncService implements OnModuleInit {
           continue;
         }
 
-        this.logger.warn(`[SYNC] Orphan position detected: ${position.symbol} (${position.side}) - importing...`);
+        this.logger.warn(`[SYNC] [${exchange.toUpperCase()}] Orphan position detected: ${position.symbol} (${position.side}) - importing...`);
         await this.importOrphanPosition(resolvedStrategy, position);
         imported++;
       } else if (existingTrades.length === 1) {
@@ -369,7 +369,7 @@ export class PositionSyncService implements OnModuleInit {
         await this.consolidateTrades(existingTrades, position, client, ctx);
         consolidated += existingTrades.length - 1;
         synced++;
-        this.logger.log(`[SYNC] Consolidated ${existingTrades.length} trades into 1 for ${position.symbol}`);
+        this.logger.log(`[SYNC] [${exchange.toUpperCase()}] Consolidated ${existingTrades.length} trades into 1 for ${position.symbol}`);
       }
     }
 
@@ -385,10 +385,10 @@ export class PositionSyncService implements OnModuleInit {
       });
 
       if (duplicateCheck.length > 1) {
-        this.logger.warn(`[SYNC] Found ${duplicateCheck.length} duplicate trades for ${position.symbol} (${position.side}), consolidating...`);
+        this.logger.warn(`[SYNC] [${exchange.toUpperCase()}] Found ${duplicateCheck.length} duplicate trades for ${position.symbol} (${position.side}), consolidating...`);
         await this.consolidateTrades(duplicateCheck, position, client, ctx);
         consolidated += duplicateCheck.length - 1;
-        this.logger.log(`[SYNC] Consolidated ${duplicateCheck.length} trades into 1 for ${position.symbol}`);
+        this.logger.log(`[SYNC] [${exchange.toUpperCase()}] Consolidated ${duplicateCheck.length} trades into 1 for ${position.symbol}`);
       }
     }
 
