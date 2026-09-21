@@ -27,6 +27,39 @@ export type StrategyCredentialsInput = Pick<
   'portfolioId' | 'legacyApiKey' | 'legacyApiSecret' | 'legacyExchange' | 'legacyIsTestnet' | 'legacyIsRealAccount'
 >;
 
+const LEGACY_DISPLAY_COLUMNS = ['legacyExchange', 'legacyIsTestnet', 'legacyIsRealAccount'] as const;
+
+export const STRATEGY_CREDENTIAL_SELECT_COLUMNS = [...LEGACY_DISPLAY_COLUMNS, 'legacyApiKey', 'legacyApiSecret'] as const;
+
+export const STRATEGY_CREDENTIAL_ADD_SELECT = ['strategy.legacyApiKey', 'strategy.legacyApiSecret'] as const;
+
+export function fromLegacyStrategyFields<T extends Pick<Strategy, (typeof LEGACY_DISPLAY_COLUMNS)[number]>>(
+  strategy: T,
+): Omit<T, (typeof LEGACY_DISPLAY_COLUMNS)[number]> & { exchange: Exchange; isTestnet: boolean; isRealAccount: boolean } {
+  const { legacyExchange, legacyIsTestnet, legacyIsRealAccount, ...rest } = strategy;
+  return { ...rest, exchange: legacyExchange, isTestnet: legacyIsTestnet, isRealAccount: legacyIsRealAccount };
+}
+
+export interface StrategyWireCredentialFields {
+  exchange?: Exchange;
+  apiKey?: string;
+  apiSecret?: string;
+  isTestnet?: boolean;
+  isRealAccount?: boolean;
+}
+
+export function toLegacyStrategyFields(
+  input: StrategyWireCredentialFields,
+): Partial<Pick<Strategy, 'legacyExchange' | 'legacyApiKey' | 'legacyApiSecret' | 'legacyIsTestnet' | 'legacyIsRealAccount'>> {
+  const fields: Partial<Pick<Strategy, 'legacyExchange' | 'legacyApiKey' | 'legacyApiSecret' | 'legacyIsTestnet' | 'legacyIsRealAccount'>> = {};
+  if (input.exchange !== undefined) fields.legacyExchange = input.exchange;
+  if (input.apiKey !== undefined) fields.legacyApiKey = input.apiKey;
+  if (input.apiSecret !== undefined) fields.legacyApiSecret = input.apiSecret;
+  if (input.isTestnet !== undefined) fields.legacyIsTestnet = input.isTestnet;
+  if (input.isRealAccount !== undefined) fields.legacyIsRealAccount = input.isRealAccount;
+  return fields;
+}
+
 @Injectable()
 export class CredentialsResolverService {
   private readonly logger = new Logger(CredentialsResolverService.name);

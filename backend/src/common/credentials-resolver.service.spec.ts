@@ -1,7 +1,13 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { ConfigService } from '@nestjs/config';
-import { CredentialsResolverService } from './credentials-resolver.service';
+import {
+  CredentialsResolverService,
+  STRATEGY_CREDENTIAL_SELECT_COLUMNS,
+  STRATEGY_CREDENTIAL_ADD_SELECT,
+  fromLegacyStrategyFields,
+  toLegacyStrategyFields,
+} from './credentials-resolver.service';
 import { Portfolio, PortfolioMode } from '../portfolios/portfolio.entity';
 import { Exchange } from '../strategies/strategy.entity';
 import { RateLimiterUtil } from '../utils/rate-limiter.util';
@@ -440,5 +446,43 @@ describe('CredentialsResolverService.resolve (PLANO_DEFINITIVO_CORRETORAS -- FAS
     const resolvedXAgain = await service.resolve(strategyX);
     expect(resolvedXAgain.apiKey).toBe('k1-novo');
     expect(portfoliosRepository.createQueryBuilder).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe('PLANO_DEFINITIVO_CORRETORAS FASE 3: helpers legado<->wire centralizados no resolver', () => {
+  it('STRATEGY_CREDENTIAL_SELECT_COLUMNS expoe os 5 campos legados de credenciais', () => {
+    expect(STRATEGY_CREDENTIAL_SELECT_COLUMNS).toEqual(
+      expect.arrayContaining(['legacyExchange', 'legacyIsTestnet', 'legacyIsRealAccount', 'legacyApiKey', 'legacyApiSecret']),
+    );
+    expect(STRATEGY_CREDENTIAL_SELECT_COLUMNS).toHaveLength(5);
+  });
+
+  it('STRATEGY_CREDENTIAL_ADD_SELECT referencia os campos renomeados para o addSelect do query builder', () => {
+    expect(STRATEGY_CREDENTIAL_ADD_SELECT).toEqual(['strategy.legacyApiKey', 'strategy.legacyApiSecret']);
+  });
+
+  it('fromLegacyStrategyFields: mapeia legacyExchange/legacyIsTestnet/legacyIsRealAccount para exchange/isTestnet/isRealAccount', () => {
+    const result = fromLegacyStrategyFields({
+      id: 's1',
+      legacyExchange: Exchange.OKX,
+      legacyIsTestnet: true,
+      legacyIsRealAccount: false,
+    } as any);
+
+    expect(result).toEqual({ id: 's1', exchange: Exchange.OKX, isTestnet: true, isRealAccount: false });
+    expect((result as any).legacyExchange).toBeUndefined();
+  });
+
+  it('toLegacyStrategyFields: mapeia exchange/apiKey/apiSecret/isTestnet/isRealAccount para os campos legados, omitindo indefinidos', () => {
+    expect(toLegacyStrategyFields({ exchange: Exchange.BYBIT, isTestnet: true })).toEqual({
+      legacyExchange: Exchange.BYBIT,
+      legacyIsTestnet: true,
+    });
+    expect(toLegacyStrategyFields({ apiKey: 'k', apiSecret: 's', isRealAccount: false })).toEqual({
+      legacyApiKey: 'k',
+      legacyApiSecret: 's',
+      legacyIsRealAccount: false,
+    });
+    expect(toLegacyStrategyFields({})).toEqual({});
   });
 });
