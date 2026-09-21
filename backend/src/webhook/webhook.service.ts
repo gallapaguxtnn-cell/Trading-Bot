@@ -2511,15 +2511,6 @@ export class WebhookService {
         }
       }
 
-      this.logger.log(`[DB] Creating trade in database: Strategy=${resolvedStrategy.id}, Symbol=${tradeData.symbol}, Side=${tradeData.side}, Qty=${tradeData.quantity}`);
-      savedTrade = await this.tradesService.create(tradeData);
-
-      if (!savedTrade) {
-        throw new Error('Failed to create trade in database');
-      }
-
-      this.logger.log(`[DB] Trade created successfully: ID=${savedTrade.id}, Status=${savedTrade.status}`);
-
       if (exchange === Exchange.BINANCE && this.binanceWs.isEnabled()) {
         await this.binanceWs.subscribeMarketData(normalizedSymbol, resolvedStrategy.isTestnet).catch(err => {
           this.logger.warn(`[WS] Failed to subscribe to market data: ${err.message}`);
@@ -2576,15 +2567,38 @@ export class WebhookService {
       tradeData.entryPrice = entryPrice;
       tradeData.exchangeOrderId = tradeDetails.id;
 
+      this.logger.log(`[DB] Order confirmed on ${exchange} (orderId=${tradeDetails.id}). Creating trade in database: Strategy=${resolvedStrategy.id}, Symbol=${tradeData.symbol}, Side=${tradeData.side}, Qty=${tradeData.quantity}`);
+
+      try {
+        savedTrade = await this.tradesService.create(tradeData);
+      } catch (createError: any) {
+        this.logger.error(
+          `[CRITICAL] [MANUAL RECONCILIATION REQUIRED] Ordem executada na corretora mas falha ao gravar o trade no banco. ` +
+          `Exchange=${exchange} Symbol=${normalizedSymbol} Side=${side} Qty=${quantity} EntryPrice=${entryPrice} ` +
+          `ExchangeOrderId=${tradeDetails.id} Strategy=${resolvedStrategy.id} Error=${createError.message}`
+        );
+        return {
+          status: 'error',
+          message: `Order executed on ${exchange} (orderId=${tradeDetails.id}) but failed to save trade record: ${createError.message}. MANUAL RECONCILIATION REQUIRED.`,
+        };
+      }
+
+      if (!savedTrade) {
+        this.logger.error(
+          `[CRITICAL] [MANUAL RECONCILIATION REQUIRED] Ordem executada na corretora mas o registro do trade voltou vazio. ` +
+          `Exchange=${exchange} Symbol=${normalizedSymbol} Side=${side} Qty=${quantity} EntryPrice=${entryPrice} ExchangeOrderId=${tradeDetails.id}`
+        );
+        return {
+          status: 'error',
+          message: `Order executed on ${exchange} (orderId=${tradeDetails.id}) but trade record came back empty. MANUAL RECONCILIATION REQUIRED.`,
+        };
+      }
+
+      this.logger.log(`[DB] Trade created successfully: ID=${savedTrade.id}, Status=${savedTrade.status}`);
+
       // For LIMIT orders: position won't exist until the order fills.
       // Schedule SL/TP creation in background and return immediately.
       if (isLimitOrder) {
-        await this.tradesService.updateTrade(savedTrade.id, {
-          entryPrice: tradeData.entryPrice,
-          exchangeOrderId: tradeData.exchangeOrderId,
-          pendingExpiresAt: null,
-        });
-
         if (exchange === Exchange.BINANCE) {
           this.scheduleProtectionOrders(savedTrade.id, normalizedSymbol, side, resolvedStrategy, decryptedKey, decryptedSecret);
         } else if (exchange === Exchange.BYBIT) {
@@ -3157,16 +3171,17 @@ export class WebhookService {
       const errorCode = error.response?.data?.code || error.response?.data?.retCode;
       
       this.logger.error(`Error executing real trade: [${errorCode}] ${errorMsg}`);
-      
+
       if (savedTrade && savedTrade.id) {
         await this.tradesService.updateTrade(savedTrade.id, {
           status: 'ERROR',
           error: `${errorCode ? `[${errorCode}] ` : ''}${errorMsg}`,
         });
       } else {
-        tradeData.status = 'ERROR';
-        tradeData.error = error.response?.data?.msg || error.response?.data?.retMsg || error.message;
-        await this.tradesService.create(tradeData);
+        this.logger.warn(
+          `[NO TRADE RECORD] Order execution failed before any trade was saved -- zero records created for this signal. ` +
+          `Strategy=${resolvedStrategy.id} Symbol=${normalizedSymbol} Side=${side} Exchange=${exchange}`
+        );
       }
 
       return { status: 'error', message: error.message };

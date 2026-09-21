@@ -949,7 +949,7 @@ describe('WebhookService (PLANO_FIX_ORDEM_OKX_NA_BINANCE -- FASE 1: a ordem vai 
     expect(exchangeFactory.assertSupported).not.toHaveBeenCalled();
   });
 
-  it('CENARIO NEGATIVO -- corretora sem client registrado (ex.: BingX): aborta com erro explicito, jamais executa na Binance', async () => {
+  it('CENARIO NEGATIVO -- corretora sem client registrado (ex.: BingX): aborta com erro explicito, jamais executa na Binance, ZERO trades gravados', async () => {
     strategiesService.findOne.mockResolvedValue(makeStrategy({ exchange: Exchange.BINGX }));
     exchangeFactory.assertSupported.mockImplementation((exchange: Exchange) => {
       throw new Error(`Corretora ${exchange} nao possui ExchangeClient registrado. A ordem foi abortada para evitar execucao na corretora errada.`);
@@ -958,8 +958,34 @@ describe('WebhookService (PLANO_FIX_ORDEM_OKX_NA_BINANCE -- FASE 1: a ordem vai 
     const result = await service.processSignal(makeSignal());
 
     expect(exchangeClient.createOrder).not.toHaveBeenCalled();
+    expect(tradesService.create).not.toHaveBeenCalled();
     expect(result).toEqual(expect.objectContaining({ status: 'error' }));
     const failureText = (result as any).reason ?? (result as any).message;
     expect(failureText).toContain('nao possui ExchangeClient registrado');
+  });
+
+  it('PLANO_FIX_ORDEM_OKX_NA_BINANCE FASE 2: ordem rejeitada pela corretora -> ZERO trades gravados no banco (nao sobra trade fantasma)', async () => {
+    strategiesService.findOne.mockResolvedValue(makeStrategy({ exchange: Exchange.OKX }));
+    exchangeClient.createOrder.mockRejectedValue(new Error('insufficient balance'));
+
+    const result = await service.processSignal(makeSignal());
+
+    expect(tradesService.create).not.toHaveBeenCalled();
+    expect(result).toEqual(expect.objectContaining({ status: 'error', message: 'insufficient balance' }));
+  });
+
+  it('PLANO_FIX_ORDEM_OKX_NA_BINANCE FASE 2: o trade so e gravado DEPOIS da ordem confirmada, com o exchangeOrderId real', async () => {
+    strategiesService.findOne.mockResolvedValue(makeStrategy({ exchange: Exchange.OKX }));
+    exchangeClient.createOrder.mockResolvedValue({ orderId: 'okx-confirmed-1', avgPrice: '61000', executedQty: '1', status: 'FILLED' });
+
+    await service.processSignal(makeSignal());
+
+    expect(tradesService.create).toHaveBeenCalledTimes(1);
+    const createCallOrder = exchangeClient.createOrder.mock.invocationCallOrder[0];
+    const createTradeCallOrder = tradesService.create.mock.invocationCallOrder[0];
+    expect(createTradeCallOrder).toBeGreaterThan(createCallOrder);
+    expect(tradesService.create).toHaveBeenCalledWith(
+      expect.objectContaining({ exchangeOrderId: 'okx-confirmed-1' }),
+    );
   });
 });

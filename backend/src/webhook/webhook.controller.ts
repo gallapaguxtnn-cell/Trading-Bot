@@ -84,7 +84,11 @@ export class WebhookController {
 
     try {
       const result = await this.webhookService.processSignal(normalizedPayload);
-      this.logger.log(`[SUCCESS] ${result.status}`);
+      if (result.status === 'success') {
+        this.logger.log(`[SUCCESS] ${result.status}`);
+      } else {
+        this.logger.warn(`[RESULT] ${result.status}${'message' in result && result.message ? `: ${result.message}` : ''}`);
+      }
       return result;
     } catch (error) {
       this.logger.error(`[ERROR] ${error.message}`);
