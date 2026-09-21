@@ -48,11 +48,13 @@ export class ExchangeService implements OnModuleInit {
     const isDebugMode = this.configService.get<string>('NODE_ENV') === 'development' ||
                         this.configService.get<boolean>('CCXT_VERBOSE') === true;
 
-    // Get proxy agent if proxy is enabled
-    const httpsAgent = ProxyUtil.getHttpsAgent();
-    const proxyEnabled = ProxyUtil.isEnabled();
+    // Only apply the proxy agent for exchanges listed in PROXY_EXCHANGES --
+    // using it unconditionally sent Bybit CCXT traffic through Geonix even
+    // though api.bybit.com was never whitelisted there, producing 407s.
+    const usesProxy = ProxyUtil.usesProxy(exchangeId);
+    const httpsAgent = usesProxy ? ProxyUtil.getHttpsAgent() : undefined;
 
-    if (proxyEnabled) {
+    if (usesProxy) {
       this.logger.log(`[PROXY] Using proxy for ${exchangeId} CCXT instance`);
     }
 
@@ -61,7 +63,7 @@ export class ExchangeService implements OnModuleInit {
       secret: apiSecret,
       enableRateLimit: true,
       verbose: isDebugMode,
-      agent: httpsAgent, // Use proxy agent if available
+      agent: httpsAgent, // Use proxy agent only when this exchange is in PROXY_EXCHANGES
       options: {
         defaultType: 'future', // Default to futures
       },
