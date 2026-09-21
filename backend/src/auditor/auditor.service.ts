@@ -11,7 +11,7 @@ import { parseFallbackCloseDetailTarget, computeTargetVsExecutedDiffPct } from '
 import { isProtectionFallbackClose, isConsecutiveProtectionFallback, extractLastExchangeErrorMessage } from './protection-fallback.util';
 import { Trade } from '../strategies/trade.entity';
 import { TradeExecution, ExecutionType } from '../trades/trade-execution.entity';
-import { Strategy } from '../strategies/strategy.entity';
+import { Strategy, Exchange as BotExchange } from '../strategies/strategy.entity';
 import { ExchangeService } from '../exchange/exchange.service';
 import { EncryptionUtil } from '../utils/encryption.util';
 import { CredentialsResolverService, STRATEGY_CREDENTIAL_ADD_SELECT } from '../common/credentials-resolver.service';
@@ -1116,10 +1116,16 @@ ${tradesSummary}`;
   }
 
   private async getExchangeForStrategy(strategy: ResolvedStrategy): Promise<Exchange> {
+    if (strategy.exchange !== BotExchange.BINANCE && strategy.exchange !== BotExchange.BYBIT) {
+      throw new Error(
+        `Auditoria/reconciliacao via CCXT ainda nao suporta a corretora ${strategy.exchange} -- ` +
+        `apenas Binance e Bybit. Nenhuma tentativa de fallback foi feita para evitar credenciais ` +
+        `de uma corretora sendo usadas para consultar outra.`,
+      );
+    }
     const apiKey = await EncryptionUtil.decrypt(strategy.apiKey);
     const apiSecret = await EncryptionUtil.decrypt(strategy.apiSecret);
-    const exchangeId = strategy.exchange as 'binance' | 'bybit';
-    return this.exchangeService.getExchange(exchangeId, apiKey, apiSecret, !!strategy.isTestnet);
+    return this.exchangeService.getExchange(strategy.exchange, apiKey, apiSecret, !!strategy.isTestnet);
   }
 
   private async fetchExchangeOrder(

@@ -27,8 +27,13 @@ function walk(dir: string, files: string[] = []): string[] {
 // codigo, prefira estender a interface ExchangeClient (src/exchange/
 // exchange-client.interface.ts) em vez de adicionar mais um
 // `if (exchange === Exchange.BYBIT)` disperso pelo resto do backend.
+// 'auditor/auditor.service.ts': 2 (PLANO_DEFINITIVO_CORRETORAS FASE 5) --
+// getExchangeForStrategy() so suporta Binance/Bybit via CCXT; o guard e um
+// capability-check que lanca erro explicito para qualquer outra corretora
+// (nunca tenta usar o client errado), nao uma decisao de negocio duplicada.
 const BASELINE: Record<string, number> = {
   'admin/admin.service.ts': 2,
+  'auditor/auditor.service.ts': 2,
   'binance-ws/binance-ws-init.service.ts': 1,
   'common/symbol-rules.service.ts': 3,
   'portfolios/portfolio.entity.ts': 1,

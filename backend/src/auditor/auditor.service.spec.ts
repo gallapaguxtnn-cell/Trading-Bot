@@ -350,6 +350,39 @@ describe('AuditorService (FASE 2 -- CredentialsResolver)', () => {
 
     expect(exchangeService.getExchange).toHaveBeenCalledWith('bybit', 'portfolio-key', 'portfolio-secret', false);
   });
+
+  it('PLANO_DEFINITIVO_CORRETORAS FASE 5: estrategia OKX -- falha explicita (sem fallback para outra corretora), reconciliacao segue sem travar', async () => {
+    const trade = {
+      id: 'trade-1',
+      strategyId: 'strategy-1',
+      symbol: 'BTCUSDT',
+      side: 'BUY',
+      status: 'OPEN',
+      entryPrice: 60000,
+      exitPrice: null,
+      closeReason: null,
+      closeDetail: null,
+      quantity: 1,
+      pnl: null,
+      exchangeOrderId: 'order-1',
+      stopLossOrderId: null,
+      takeProfitOrderId: null,
+      timestamp: new Date(),
+    } as unknown as Trade;
+
+    tradeRepo.findOne.mockResolvedValue(trade);
+    strategyRepo.createQueryBuilder.mockReturnValue(
+      makeQueryBuilder({ id: 'strategy-1', exchange: 'okx', isTestnet: false, apiKey: 'k', apiSecret: 's', portfolioId: null }),
+    );
+    credentialsResolver.resolveCredentials.mockResolvedValue({
+      apiKey: 'k', apiSecret: 's', exchange: 'okx', isTestnet: false, isRealAccount: true, portfolioId: null, source: 'strategy',
+    });
+
+    const result = await service.reconcileTrade('trade-1');
+
+    expect(exchangeService.getExchange).not.toHaveBeenCalled();
+    expect(result.exchangeData).toBeNull();
+  });
 });
 
 describe('AuditorService.getAlerts (FASE 9 -- pagina Avisos)', () => {
