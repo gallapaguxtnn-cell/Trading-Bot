@@ -18,6 +18,7 @@ import { AccountUpdateEvent } from '../binance-ws/dto/binance-ws-events.dto';
 import { SymbolRulesService } from '../common/symbol-rules.service';
 import { normalizeQuantity } from '../common/exchange-precision.util';
 import { CredentialsResolverService } from '../common/credentials-resolver.service';
+import type { ResolvedStrategy } from '../common/resolved-strategy.type';
 import { toAccountContext } from '../common/account-context.util';
 import { ExchangeClientFactory } from '../exchange/exchange-client.factory';
 import { AccountContext, ExchangeClient, NeutralSide, PositionInfo } from '../exchange/exchange-client.interface';
@@ -127,12 +128,13 @@ export class PositionSyncService implements OnModuleInit {
     try {
       const activeStrategies = await this.strategiesRepository.find({
         where: { isActive: true },
-        select: ['id', 'name', 'asset', 'exchange', 'isTestnet', 'isRealAccount', 'apiKey', 'apiSecret', 'portfolioId']
+        select: ['id', 'name', 'asset', 'legacyExchange', 'legacyIsTestnet', 'legacyIsRealAccount', 'legacyApiKey', 'legacyApiSecret', 'portfolioId']
       });
 
       for (const strategy of activeStrategies) {
         try {
-          if (strategy.exchange === Exchange.BINANCE) {
+          const resolvedForRouting = await this.credentialsResolver.resolve(strategy);
+          if (resolvedForRouting.exchange === Exchange.BINANCE) {
             const wsHealth = this.binanceWs.getHealth();
             const isConnected = wsHealth.userDataStreams.some(
               (stream: any) => stream.strategyId === strategy.id && stream.connected
@@ -185,7 +187,7 @@ export class PositionSyncService implements OnModuleInit {
     const strategyIds = [...new Set(staleTrades.map(t => t.strategyId))];
     const strategies = await this.strategiesRepository.find({
       where: { id: In(strategyIds) },
-      select: ['id', 'name', 'exchange', 'isTestnet', 'isRealAccount', 'apiKey', 'apiSecret', 'portfolioId'],
+      select: ['id', 'name', 'legacyExchange', 'legacyIsTestnet', 'legacyIsRealAccount', 'legacyApiKey', 'legacyApiSecret', 'portfolioId'],
     });
     const strategyById = new Map(strategies.map(s => [s.id, s]));
 
@@ -246,7 +248,7 @@ export class PositionSyncService implements OnModuleInit {
 
     const activeStrategies = await this.strategiesRepository.find({
       where: { isActive: true },
-      select: ['id', 'name', 'asset', 'exchange', 'isTestnet', 'isRealAccount', 'apiKey', 'apiSecret', 'portfolioId']
+      select: ['id', 'name', 'asset', 'legacyExchange', 'legacyIsTestnet', 'legacyIsRealAccount', 'legacyApiKey', 'legacyApiSecret', 'portfolioId']
     });
 
     for (const strategy of activeStrategies) {
@@ -508,7 +510,7 @@ export class PositionSyncService implements OnModuleInit {
       } else {
         strategy = await this.strategiesRepository.findOne({
           where: { id: trade.strategyId },
-          select: ['id', 'name', 'exchange', 'isTestnet', 'isActive', 'pauseNewOrders', 'apiKey', 'apiSecret', 'portfolioId'],
+          select: ['id', 'name', 'legacyExchange', 'legacyIsTestnet', 'isActive', 'pauseNewOrders', 'legacyApiKey', 'legacyApiSecret', 'portfolioId'],
         });
         strategyCache.set(trade.strategyId, strategy);
       }
@@ -730,7 +732,7 @@ export class PositionSyncService implements OnModuleInit {
     await this.tradesRepository.save(trade);
   }
 
-  private async decryptCredentials(strategy: Strategy) {
+  private async decryptCredentials(strategy: ResolvedStrategy) {
     const [apiKey, apiSecret] = await Promise.all([
       EncryptionUtil.decrypt(strategy.apiKey),
       EncryptionUtil.decrypt(strategy.apiSecret)
@@ -775,7 +777,7 @@ export class PositionSyncService implements OnModuleInit {
   public async checkBreakAgain(
     trade: Trade,
     position: NormalizedPosition | undefined,
-    strategy: Strategy,
+    strategy: ResolvedStrategy,
     apiKey: string,
     apiSecret: string,
     siteId?: string | null

@@ -12,6 +12,7 @@ import { BinanceWebSocketService } from '../binance-ws/binance-ws.service';
 import { SymbolRulesService } from '../common/symbol-rules.service';
 import { CredentialsResolverService } from '../common/credentials-resolver.service';
 import { EncryptionUtil } from '../utils/encryption.util';
+import type { ResolvedStrategy } from '../common/resolved-strategy.type';
 
 function makeExchangeClient() {
   return {
@@ -96,7 +97,7 @@ describe('PositionSyncService (FASE 3 -- arredondamento via SymbolRulesService)'
       takeProfitPercentage1: null,
       takeProfitPercentage2: null,
       takeProfitPercentage3: null,
-    } as unknown as Strategy;
+    } as unknown as ResolvedStrategy;
 
     await service.checkBreakAgain(trade, undefined, strategy, 'key', 'secret');
 
@@ -130,7 +131,7 @@ describe('PositionSyncService (FASE 3 -- arredondamento via SymbolRulesService)'
       takeProfitPercentage1: null,
       takeProfitPercentage2: null,
       takeProfitPercentage3: null,
-    } as unknown as Strategy;
+    } as unknown as ResolvedStrategy;
 
     await service.checkBreakAgain(trade, undefined, strategy, 'key', 'secret');
 
@@ -159,7 +160,7 @@ describe('PositionSyncService (FASE 3 -- arredondamento via SymbolRulesService)'
       takeProfitPercentage1: null,
       takeProfitPercentage2: null,
       takeProfitPercentage3: null,
-    } as unknown as Strategy;
+    } as unknown as ResolvedStrategy;
 
     await service.checkBreakAgain(trade, undefined, strategy, 'key', 'secret', 'BRA_BTL');
 
@@ -634,6 +635,62 @@ describe('PositionSyncService (PLANO_FIX_PROTECAO_NAO_CRIADA -- limpeza de trade
     const result = await (service as any).closeZombieTradesFromInactiveStrategies();
 
     expect(result.closed).toBe(0);
+    expect(exchangeFactory.get).not.toHaveBeenCalled();
+  });
+});
+
+describe('PositionSyncService.syncPositions (PLANO_DEFINITIVO_CORRETORAS FASE 3: rota de skip do WS usa exchange resolvida, nao o campo legado)', () => {
+  let service: PositionSyncService;
+  let strategiesRepository: { find: jest.Mock };
+  let tradesRepository: { find: jest.Mock };
+  let credentialsResolver: { resolve: jest.Mock; resolveCredentials: jest.Mock };
+  let binanceWs: { getHealth: jest.Mock; isEnabled: jest.Mock };
+  let exchangeFactory: { get: jest.Mock };
+
+  const strategyRow = { id: 's1', name: 'X', legacyExchange: Exchange.BINANCE, portfolioId: 'portfolio-1' };
+
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    strategiesRepository = { find: jest.fn().mockResolvedValue([strategyRow]) };
+    tradesRepository = { find: jest.fn().mockResolvedValue([]) };
+    credentialsResolver = { resolve: jest.fn(), resolveCredentials: jest.fn().mockResolvedValue({ apiKey: null, apiSecret: null }) };
+    binanceWs = { getHealth: jest.fn().mockReturnValue({ userDataStreams: [] }), isEnabled: jest.fn().mockReturnValue(false) };
+    exchangeFactory = { get: jest.fn().mockReturnValue(makeExchangeClient()) };
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        PositionSyncService,
+        { provide: getRepositoryToken(Trade), useValue: tradesRepository },
+        { provide: getRepositoryToken(Strategy), useValue: strategiesRepository },
+        { provide: StrategiesService, useValue: {} },
+        { provide: ExchangeService, useValue: {} },
+        { provide: ExchangeClientFactory, useValue: exchangeFactory },
+        { provide: TradesService, useValue: {} },
+        { provide: BinanceWebSocketService, useValue: binanceWs },
+        { provide: EventEmitter2, useValue: { emit: jest.fn() } },
+        { provide: SymbolRulesService, useValue: { getSymbolRules: jest.fn() } },
+        { provide: CredentialsResolverService, useValue: credentialsResolver },
+      ],
+    }).compile();
+
+    service = module.get<PositionSyncService>(PositionSyncService);
+  });
+
+  it('estrategia com campo legado=BINANCE mas portfolio resolve para OKX -> nao aplica a logica de skip do WS da Binance', async () => {
+    credentialsResolver.resolve.mockResolvedValue({ ...strategyRow, exchange: Exchange.OKX, apiKey: 'k', apiSecret: 's' });
+
+    await service.syncPositions();
+
+    expect(binanceWs.getHealth).not.toHaveBeenCalled();
+  });
+
+  it('estrategia com campo legado != BINANCE mas portfolio resolve para BINANCE -> aplica a logica de skip do WS (evita IP ban)', async () => {
+    credentialsResolver.resolve.mockResolvedValue({ ...strategyRow, legacyExchange: Exchange.BYBIT, exchange: Exchange.BINANCE, apiKey: 'k', apiSecret: 's' });
+    binanceWs.isEnabled.mockReturnValue(true);
+
+    await service.syncPositions();
+
+    expect(binanceWs.getHealth).toHaveBeenCalled();
     expect(exchangeFactory.get).not.toHaveBeenCalled();
   });
 });
