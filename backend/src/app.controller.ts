@@ -5,7 +5,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Strategy } from './strategies/strategy.entity';
 import { EncryptionUtil } from './utils/encryption.util';
-import { CredentialsResolverService } from './common/credentials-resolver.service';
+import { CredentialsResolverService, STRATEGY_CREDENTIAL_SELECT_COLUMNS } from './common/credentials-resolver.service';
 import axios from 'axios';
 import * as crypto from 'crypto';
 
@@ -56,7 +56,7 @@ export class AppController {
     try {
       const strategy = await this.strategiesRepository.findOne({
         where: { id: strategyId || '7059e1cb-20ea-450b-afb2-73871e010701' },
-        select: ['id', 'name', 'legacyApiKey', 'legacyApiSecret', 'legacyIsTestnet', 'legacyIsRealAccount', 'legacyExchange', 'portfolioId']
+        select: ['id', 'name', ...STRATEGY_CREDENTIAL_SELECT_COLUMNS, 'portfolioId']
       });
 
       if (!strategy) {
