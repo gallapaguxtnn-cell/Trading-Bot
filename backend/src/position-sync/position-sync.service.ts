@@ -211,9 +211,9 @@ export class PositionSyncService implements OnModuleInit {
         if (!resolvedStrategy.apiKey || !resolvedStrategy.apiSecret) continue;
 
         const exchange = resolvedStrategy.exchange || Exchange.BINANCE;
-        const { apiKey, apiSecret } = await this.decryptCredentials(resolvedStrategy);
+        const { apiKey, apiSecret, apiPassphrase } = await this.decryptCredentials(resolvedStrategy);
         const client = this.exchangeFactory.get(exchange);
-        const ctx = toAccountContext(resolvedStrategy, apiKey, apiSecret);
+        const ctx = toAccountContext(resolvedStrategy, apiKey, apiSecret, apiPassphrase);
         const openPositions = (await this.fetchPositions(client, ctx, exchange)).filter(p => p.size !== 0);
 
         for (const trade of trades) {
@@ -282,9 +282,9 @@ export class PositionSyncService implements OnModuleInit {
     }
 
     const exchange = resolvedStrategy.exchange || Exchange.BINANCE;
-    const { apiKey, apiSecret } = await this.decryptCredentials(resolvedStrategy);
+    const { apiKey, apiSecret, apiPassphrase } = await this.decryptCredentials(resolvedStrategy);
     const client = this.exchangeFactory.get(exchange);
-    const ctx = toAccountContext(resolvedStrategy, apiKey, apiSecret);
+    const ctx = toAccountContext(resolvedStrategy, apiKey, apiSecret, apiPassphrase);
 
     const positions = await this.fetchPositions(client, ctx, exchange);
     const openPositions = positions.filter(p => p.size !== 0);
@@ -356,14 +356,14 @@ export class PositionSyncService implements OnModuleInit {
         imported++;
       } else if (existingTrades.length === 1) {
         if (existingTrades[0].strategyId === resolvedStrategy.id && (resolvedStrategy.breakAgain || resolvedStrategy.moveSLToBreakeven)) {
-             await this.checkBreakAgain(existingTrades[0], position, resolvedStrategy, apiKey, apiSecret, resolvedStrategy.siteId);
+             await this.checkBreakAgain(existingTrades[0], position, resolvedStrategy, apiKey, apiSecret, resolvedStrategy.siteId, apiPassphrase);
         }
 
         await this.updateTradeFromPosition(existingTrades[0], position);
         synced++;
       } else {
         if (existingTrades[0].strategyId === resolvedStrategy.id && (resolvedStrategy.breakAgain || resolvedStrategy.moveSLToBreakeven)) {
-          await this.checkBreakAgain(existingTrades[0], position, resolvedStrategy, apiKey, apiSecret, resolvedStrategy.siteId);
+          await this.checkBreakAgain(existingTrades[0], position, resolvedStrategy, apiKey, apiSecret, resolvedStrategy.siteId, apiPassphrase);
         }
 
         await this.consolidateTrades(existingTrades, position, client, ctx);
@@ -477,11 +477,19 @@ export class PositionSyncService implements OnModuleInit {
     } catch (error: any) {
       const statusCode = error.response?.status;
       if (statusCode === 401) {
+        const missingPassphrase = exchange === Exchange.OKX && !ctx.credentials.passphrase;
         this.logger.error(
-          `[${exchange.toUpperCase()} AUTH ERROR] API Key is invalid or expired. ` +
-          `Please update your ${exchange} API credentials. Status: 401 Unauthorized`
+          missingPassphrase
+            ? `[${exchange.toUpperCase()} AUTH ERROR] Requisicao 401 sem passphrase (OK-ACCESS-PASSPHRASE vazio). ` +
+              `A API Key pode estar correta -- confirme se o portfolio/estrategia tem a passphrase da OKX cadastrada.`
+            : `[${exchange.toUpperCase()} AUTH ERROR] API Key is invalid or expired. ` +
+              `Please update your ${exchange} API credentials. Status: 401 Unauthorized`
         );
-        throw new Error(`${exchange} API Key invalid or expired. Please update credentials.`);
+        throw new Error(
+          missingPassphrase
+            ? `${exchange} 401: passphrase ausente na requisicao. Verifique a passphrase cadastrada no portfolio/estrategia.`
+            : `${exchange} API Key invalid or expired. Please update credentials.`
+        );
       } else if (statusCode === 403) {
         this.logger.error(
           `[${exchange.toUpperCase()} AUTH ERROR] API Key lacks required permissions or IP is not whitelisted. ` +
@@ -523,9 +531,9 @@ export class PositionSyncService implements OnModuleInit {
 
       try {
         const exchange = resolvedStrategy.exchange || Exchange.BINANCE;
-        const { apiKey, apiSecret } = await this.decryptCredentials(resolvedStrategy);
+        const { apiKey, apiSecret, apiPassphrase } = await this.decryptCredentials(resolvedStrategy);
         const client = this.exchangeFactory.get(exchange);
-        const ctx = toAccountContext(resolvedStrategy, apiKey, apiSecret);
+        const ctx = toAccountContext(resolvedStrategy, apiKey, apiSecret, apiPassphrase);
         const orderStatus = await this.checkOrderStatus(trade.exchangeOrderId, trade.symbol, client, ctx);
         const s = (orderStatus || '').toLowerCase();
         const isPending = s === 'new' || s === 'partiallyfilled' || s === 'partially_filled';
@@ -733,14 +741,16 @@ export class PositionSyncService implements OnModuleInit {
   }
 
   private async decryptCredentials(strategy: ResolvedStrategy) {
-    const [apiKey, apiSecret] = await Promise.all([
+    const [apiKey, apiSecret, apiPassphrase] = await Promise.all([
       EncryptionUtil.decrypt(strategy.apiKey),
-      EncryptionUtil.decrypt(strategy.apiSecret)
+      EncryptionUtil.decrypt(strategy.apiSecret),
+      strategy.apiPassphrase ? EncryptionUtil.decrypt(strategy.apiPassphrase) : Promise.resolve(null),
     ]);
 
     return {
       apiKey: apiKey.trim(),
-      apiSecret: apiSecret.trim()
+      apiSecret: apiSecret.trim(),
+      apiPassphrase: apiPassphrase ? apiPassphrase.trim() : null,
     };
   }
 
@@ -780,7 +790,8 @@ export class PositionSyncService implements OnModuleInit {
     strategy: ResolvedStrategy,
     apiKey: string,
     apiSecret: string,
-    siteId?: string | null
+    siteId?: string | null,
+    apiPassphrase?: string | null
   ): Promise<void> {
     try {
         const entryPrice = safeParseFloat(trade.entryPrice as any);
@@ -875,7 +886,7 @@ export class PositionSyncService implements OnModuleInit {
 
             const formattedStopLoss = this.formatPrice(newStopLoss);
             const client = this.exchangeFactory.get(strategy.exchange);
-            const ctx: AccountContext = { credentials: { apiKey, apiSecret }, mode: strategy.isTestnet ? 'DEMO' : 'REAL', region: (siteId as any) ?? null };
+            const ctx: AccountContext = { credentials: { apiKey, apiSecret, passphrase: apiPassphrase ?? null }, mode: strategy.isTestnet ? 'DEMO' : 'REAL', region: (siteId as any) ?? null };
             const neutralSide = (side === 'BUY' ? 'BUY' : 'SELL') as NeutralSide;
 
             if (strategy.exchange === Exchange.BYBIT && !trade.isFromAveraging) {

@@ -102,7 +102,7 @@ describe('PositionSyncService (FASE 3 -- arredondamento via SymbolRulesService)'
     await service.checkBreakAgain(trade, undefined, strategy, 'key', 'secret');
 
     expect(client.createStopLossOrder).toHaveBeenCalledWith(
-      expect.objectContaining({ credentials: { apiKey: 'key', apiSecret: 'secret' }, mode: 'REAL' }),
+      expect.objectContaining({ credentials: { apiKey: 'key', apiSecret: 'secret', passphrase: null }, mode: 'REAL' }),
       'BTCUSDT', 'BUY', '250', expect.any(String), false,
     );
   });
@@ -290,6 +290,39 @@ describe('PositionSyncService (FASE 2 -- CredentialsResolver)', () => {
 
     expect(exchangeFactory.get).not.toHaveBeenCalled();
     expect(result).toEqual({ synced: 0, closed: 0, imported: 0, consolidated: 0 });
+  });
+
+  it('PLANO_FIX_ORDEM_OKX_NA_BINANCE FASE 3: estrategia OKX com passphrase no portfolio -- a passphrase decriptada chega ate o AccountContext (401 do sync era passphrase vazia, nao chave invalida)', async () => {
+    const strategy = {
+      id: 's4',
+      name: 'FF1 OKX',
+      exchange: Exchange.OKX,
+      isTestnet: false,
+      apiKey: 'legacy-key',
+      apiSecret: 'legacy-secret',
+      portfolioId: 'portfolio-okx',
+    } as unknown as Strategy;
+
+    credentialsResolver.resolveCredentials.mockResolvedValue({
+      apiKey: await EncryptionUtil.encrypt('okx-key'),
+      apiSecret: await EncryptionUtil.encrypt('okx-secret'),
+      apiPassphrase: await EncryptionUtil.encrypt('okx-passphrase'),
+      exchange: Exchange.OKX,
+      isTestnet: false,
+      isRealAccount: true,
+      portfolioId: 'portfolio-okx',
+      siteId: null,
+      source: 'portfolio',
+    });
+
+    await (service as any).syncStrategyPositions(strategy);
+
+    expect(client.getPositions).toHaveBeenCalledWith(
+      expect.objectContaining({
+        credentials: { apiKey: 'okx-key', apiSecret: 'okx-secret', passphrase: 'okx-passphrase' },
+        mode: 'REAL',
+      }),
+    );
   });
 });
 

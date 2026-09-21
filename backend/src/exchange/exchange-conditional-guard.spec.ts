@@ -31,6 +31,10 @@ function walk(dir: string, files: string[] = []): string[] {
 // getExchangeForStrategy() so suporta Binance/Bybit via CCXT; o guard e um
 // capability-check que lanca erro explicito para qualquer outra corretora
 // (nunca tenta usar o client errado), nao uma decisao de negocio duplicada.
+// 'position-sync/position-sync.service.ts': 7 -> 8 (PLANO_FIX_ORDEM_OKX_NA_BINANCE
+// FASE 3) -- fetchPositions() identifica se um 401 e causado por passphrase da
+// OKX ausente (header OK-ACCESS-PASSPHRASE vazio) para dar uma mensagem de erro
+// especifica em vez de "API Key invalida"; e diagnostico, nao roteamento.
 const BASELINE: Record<string, number> = {
   'admin/admin.service.ts': 2,
   'auditor/auditor.service.ts': 2,
@@ -38,7 +42,7 @@ const BASELINE: Record<string, number> = {
   'common/symbol-rules.service.ts': 3,
   'portfolios/portfolio.entity.ts': 1,
   'portfolios/portfolios.service.ts': 7,
-  'position-sync/position-sync.service.ts': 7,
+  'position-sync/position-sync.service.ts': 8,
   'stop-loss/stop-loss.service.ts': 16,
   'strategies/strategies.service.ts': 3,
   'strategies/strategy.entity.ts': 1,
