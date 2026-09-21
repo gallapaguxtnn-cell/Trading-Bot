@@ -975,7 +975,7 @@ export class WebhookService {
     tradeId: string,
     symbol: string,
     side: 'BUY' | 'SELL',
-    strategy: any,
+    strategy: ResolvedStrategy,
     decryptedKey: string,
     decryptedSecret: string,
   ): void {
@@ -1327,7 +1327,7 @@ export class WebhookService {
     tradeId: string,
     symbol: string,
     side: 'BUY' | 'SELL',
-    strategy: any,
+    strategy: ResolvedStrategy,
     decryptedKey: string,
     decryptedSecret: string,
     orderQuantity: number,

@@ -4,6 +4,7 @@ import { PositionSyncService } from '../position-sync/position-sync.service';
 import { StrategiesService } from '../strategies/strategies.service';
 import { EncryptionUtil } from '../utils/encryption.util';
 import { Exchange } from '../strategies/strategy.entity';
+import type { ResolvedStrategy } from '../common/resolved-strategy.type';
 import { Trade } from '../strategies/trade.entity';
 import { ExecutionType } from './trade-execution.entity';
 import { CredentialsResolverService } from '../common/credentials-resolver.service';
@@ -258,7 +259,7 @@ export class TradesController {
 
   private async closeTradeOnExchange(
     trade: Trade,
-    strategy: any,
+    strategy: ResolvedStrategy,
     exchange: Exchange,
     apiKey: string,
     apiSecret: string
