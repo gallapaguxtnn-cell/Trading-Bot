@@ -89,8 +89,7 @@ export class StopLossService implements OnModuleInit {
 
     const strategy = await this.strategiesService.findOne(trade.strategyId);
     if (!strategy) return;
-    const credentials = await this.credentialsResolver.resolveCredentials(strategy);
-    const resolvedStrategy = { ...strategy, ...credentials };
+    const resolvedStrategy = await this.credentialsResolver.resolve(strategy);
 
     const exchange = resolvedStrategy.exchange || Exchange.BINANCE;
     const apiKey = (await EncryptionUtil.decrypt(resolvedStrategy.apiKey)).trim();
@@ -131,14 +130,13 @@ export class StopLossService implements OnModuleInit {
 
     const strategy = await this.strategiesService.findOne(trade.strategyId);
     if (!strategy) return;
-    const credentials = await this.credentialsResolver.resolveCredentials(strategy);
-    const resolvedStrategy = { ...strategy, ...credentials };
+    const resolvedStrategy = await this.credentialsResolver.resolve(strategy);
 
     const exchange = resolvedStrategy.exchange || Exchange.BINANCE;
     const apiKey = (await EncryptionUtil.decrypt(resolvedStrategy.apiKey)).trim();
     const apiSecret = (await EncryptionUtil.decrypt(resolvedStrategy.apiSecret)).trim();
     const client = this.exchangeFactory.get(exchange);
-    const ctx = toAccountContext(credentials, apiKey, apiSecret);
+    const ctx = toAccountContext(resolvedStrategy, apiKey, apiSecret);
 
     if (trade.stopLossOrderId && trade.stopLossOrderId.trim() !== '') {
       if (trade.stopLossOrderId.startsWith('BYBIT_TRADING_STOP')) {

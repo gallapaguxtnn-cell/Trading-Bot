@@ -218,14 +218,17 @@ describe('StopLossService (FASE 3 -- arredondamento via SymbolRulesService, nunc
 describe('StopLossService (FASE 2 -- CredentialsResolver)', () => {
   let service: StopLossService;
   let strategiesService: { findOne: jest.Mock };
-  let credentialsResolver: { resolveCredentials: jest.Mock };
+  let credentialsResolver: { resolveCredentials: jest.Mock; resolve: jest.Mock };
   let exchangeClient: ReturnType<typeof makeExchangeClient>;
   let exchangeFactory: { get: jest.Mock };
 
   beforeEach(async () => {
     jest.clearAllMocks();
     strategiesService = { findOne: jest.fn() };
-    credentialsResolver = { resolveCredentials: jest.fn() };
+    credentialsResolver = {
+      resolveCredentials: jest.fn(),
+      resolve: jest.fn(async (s: any) => ({ ...s, ...(await credentialsResolver.resolveCredentials(s)) })),
+    };
     exchangeClient = makeExchangeClient();
     exchangeFactory = { get: jest.fn().mockReturnValue(exchangeClient) };
 
@@ -443,7 +446,7 @@ describe('StopLossService (PLANO_FIX_PROTECAO_NAO_CRIADA -- FASE 2: software nao
   let tradesRepository: { save: jest.Mock; update: jest.Mock };
   let tradesService: { createExecution: jest.Mock };
   let strategiesService: { findOne: jest.Mock };
-  let credentialsResolver: { resolveCredentials: jest.Mock };
+  let credentialsResolver: { resolveCredentials: jest.Mock; resolve: jest.Mock };
   let symbolRulesService: { getSymbolRules: jest.Mock };
   let exchangeClient: ReturnType<typeof makeExchangeClient>;
   let exchangeFactory: { get: jest.Mock };
@@ -477,7 +480,10 @@ describe('StopLossService (PLANO_FIX_PROTECAO_NAO_CRIADA -- FASE 2: software nao
     tradesRepository = { save: jest.fn(), update: jest.fn() };
     tradesService = { createExecution: jest.fn() };
     strategiesService = { findOne: jest.fn().mockResolvedValue(strategy) };
-    credentialsResolver = { resolveCredentials: jest.fn().mockResolvedValue(strategy) };
+    credentialsResolver = {
+      resolveCredentials: jest.fn().mockResolvedValue(strategy),
+      resolve: jest.fn().mockResolvedValue(strategy),
+    };
     symbolRulesService = { getSymbolRules: jest.fn().mockResolvedValue({ qtyStep: '1', priceTick: '0.00001', minQty: '1', minNotional: '5' }) };
     exchangeClient = makeExchangeClient();
     exchangeFactory = { get: jest.fn().mockReturnValue(exchangeClient) };
@@ -567,7 +573,7 @@ describe('StopLossService (PLANO_FIX_BALANCE_OKX_FALLBACK_BYBIT -- FASE 4: preci
   let tradesRepository: { save: jest.Mock; update: jest.Mock };
   let tradesService: { createExecution: jest.Mock };
   let strategiesService: { findOne: jest.Mock };
-  let credentialsResolver: { resolveCredentials: jest.Mock };
+  let credentialsResolver: { resolveCredentials: jest.Mock; resolve: jest.Mock };
   let symbolRulesService: { getSymbolRules: jest.Mock };
   let exchangeClient: ReturnType<typeof makeExchangeClient>;
   let exchangeFactory: { get: jest.Mock };
@@ -601,7 +607,10 @@ describe('StopLossService (PLANO_FIX_BALANCE_OKX_FALLBACK_BYBIT -- FASE 4: preci
     tradesRepository = { save: jest.fn(), update: jest.fn() };
     tradesService = { createExecution: jest.fn() };
     strategiesService = { findOne: jest.fn().mockResolvedValue(strategy) };
-    credentialsResolver = { resolveCredentials: jest.fn().mockResolvedValue(strategy) };
+    credentialsResolver = {
+      resolveCredentials: jest.fn().mockResolvedValue(strategy),
+      resolve: jest.fn().mockResolvedValue(strategy),
+    };
     symbolRulesService = { getSymbolRules: jest.fn().mockResolvedValue({ qtyStep: '1', priceTick: '0.00001', minQty: '1', minNotional: '5' }) };
     exchangeClient = makeExchangeClient();
     exchangeFactory = { get: jest.fn().mockReturnValue(exchangeClient) };

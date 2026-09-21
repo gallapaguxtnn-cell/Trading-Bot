@@ -157,8 +157,7 @@ export class TakeProfitService implements OnModuleInit {
 
     const strategy = await this.strategiesService.findOne(trade.strategyId);
     if (!strategy) return;
-    const credentials = await this.credentialsResolver.resolveCredentials(strategy);
-    const resolvedStrategy = { ...strategy, ...credentials };
+    const resolvedStrategy = await this.credentialsResolver.resolve(strategy);
 
     const exchange = resolvedStrategy.exchange || Exchange.BINANCE;
     const apiKey = (await EncryptionUtil.decrypt(resolvedStrategy.apiKey)).trim();
@@ -166,7 +165,7 @@ export class TakeProfitService implements OnModuleInit {
 
     if (trade.takeProfitOrderId && trade.takeProfitOrderId.startsWith('BYBIT_TRADING_STOP')) {
       const client = this.exchangeFactory.get(exchange);
-      const ctx = toAccountContext(credentials, apiKey, apiSecret);
+      const ctx = toAccountContext(resolvedStrategy, apiKey, apiSecret);
       const positions = await client.getPositions(ctx, trade.symbol);
       const position = positions.find(p =>
         p.symbol === trade.symbol &&

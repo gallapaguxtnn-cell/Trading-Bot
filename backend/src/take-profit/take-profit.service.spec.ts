@@ -18,18 +18,20 @@ import { CredentialsResolverService } from '../common/credentials-resolver.servi
 import { Exchange } from '../strategies/strategy.entity';
 
 function passthroughCredentialsResolver() {
+  const resolveCredentials = jest.fn((strategy: any) =>
+    Promise.resolve({
+      apiKey: strategy.apiKey,
+      apiSecret: strategy.apiSecret,
+      exchange: strategy.exchange,
+      isTestnet: strategy.isTestnet,
+      isRealAccount: strategy.isRealAccount,
+      portfolioId: null,
+      source: 'strategy',
+    }),
+  );
   return {
-    resolveCredentials: jest.fn((strategy: any) =>
-      Promise.resolve({
-        apiKey: strategy.apiKey,
-        apiSecret: strategy.apiSecret,
-        exchange: strategy.exchange,
-        isTestnet: strategy.isTestnet,
-        isRealAccount: strategy.isRealAccount,
-        portfolioId: null,
-        source: 'strategy',
-      }),
-    ),
+    resolveCredentials,
+    resolve: jest.fn(async (strategy: any) => ({ ...strategy, ...(await resolveCredentials(strategy)) })),
   };
 }
 

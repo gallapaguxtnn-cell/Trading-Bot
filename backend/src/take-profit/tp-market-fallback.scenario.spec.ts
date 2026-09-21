@@ -21,18 +21,20 @@ import { SymbolRulesService } from '../common/symbol-rules.service';
 import { CredentialsResolverService } from '../common/credentials-resolver.service';
 
 function passthroughCredentialsResolver() {
+  const resolveCredentials = jest.fn((strategy: any) =>
+    Promise.resolve({
+      apiKey: strategy.apiKey,
+      apiSecret: strategy.apiSecret,
+      exchange: strategy.exchange,
+      isTestnet: strategy.isTestnet,
+      isRealAccount: strategy.isRealAccount,
+      portfolioId: null,
+      source: 'strategy',
+    }),
+  );
   return {
-    resolveCredentials: jest.fn((strategy: any) =>
-      Promise.resolve({
-        apiKey: strategy.apiKey,
-        apiSecret: strategy.apiSecret,
-        exchange: strategy.exchange,
-        isTestnet: strategy.isTestnet,
-        isRealAccount: strategy.isRealAccount,
-        portfolioId: null,
-        source: 'strategy',
-      }),
-    ),
+    resolveCredentials,
+    resolve: jest.fn(async (strategy: any) => ({ ...strategy, ...(await resolveCredentials(strategy)) })),
   };
 }
 
