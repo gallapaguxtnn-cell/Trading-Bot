@@ -17,7 +17,7 @@ import { BinanceWebSocketService } from '../binance-ws/binance-ws.service';
 import { AccountUpdateEvent } from '../binance-ws/dto/binance-ws-events.dto';
 import { SymbolRulesService } from '../common/symbol-rules.service';
 import { normalizeQuantity } from '../common/exchange-precision.util';
-import { CredentialsResolverService } from '../common/credentials-resolver.service';
+import { CredentialsResolverService, STRATEGY_CREDENTIAL_SELECT_COLUMNS } from '../common/credentials-resolver.service';
 import type { ResolvedStrategy } from '../common/resolved-strategy.type';
 import { toAccountContext } from '../common/account-context.util';
 import { ExchangeClientFactory } from '../exchange/exchange-client.factory';
@@ -128,7 +128,7 @@ export class PositionSyncService implements OnModuleInit {
     try {
       const activeStrategies = await this.strategiesRepository.find({
         where: { isActive: true },
-        select: ['id', 'name', 'asset', 'legacyExchange', 'legacyIsTestnet', 'legacyIsRealAccount', 'legacyApiKey', 'legacyApiSecret', 'portfolioId']
+        select: ['id', 'name', 'asset', ...STRATEGY_CREDENTIAL_SELECT_COLUMNS, 'portfolioId']
       });
 
       for (const strategy of activeStrategies) {
@@ -187,7 +187,7 @@ export class PositionSyncService implements OnModuleInit {
     const strategyIds = [...new Set(staleTrades.map(t => t.strategyId))];
     const strategies = await this.strategiesRepository.find({
       where: { id: In(strategyIds) },
-      select: ['id', 'name', 'legacyExchange', 'legacyIsTestnet', 'legacyIsRealAccount', 'legacyApiKey', 'legacyApiSecret', 'portfolioId'],
+      select: ['id', 'name', ...STRATEGY_CREDENTIAL_SELECT_COLUMNS, 'portfolioId'],
     });
     const strategyById = new Map(strategies.map(s => [s.id, s]));
 
@@ -248,7 +248,7 @@ export class PositionSyncService implements OnModuleInit {
 
     const activeStrategies = await this.strategiesRepository.find({
       where: { isActive: true },
-      select: ['id', 'name', 'asset', 'legacyExchange', 'legacyIsTestnet', 'legacyIsRealAccount', 'legacyApiKey', 'legacyApiSecret', 'portfolioId']
+      select: ['id', 'name', 'asset', ...STRATEGY_CREDENTIAL_SELECT_COLUMNS, 'portfolioId']
     });
 
     for (const strategy of activeStrategies) {
@@ -510,7 +510,7 @@ export class PositionSyncService implements OnModuleInit {
       } else {
         strategy = await this.strategiesRepository.findOne({
           where: { id: trade.strategyId },
-          select: ['id', 'name', 'legacyExchange', 'legacyIsTestnet', 'isActive', 'pauseNewOrders', 'legacyApiKey', 'legacyApiSecret', 'portfolioId'],
+          select: ['id', 'name', ...STRATEGY_CREDENTIAL_SELECT_COLUMNS, 'isActive', 'pauseNewOrders', 'portfolioId'],
         });
         strategyCache.set(trade.strategyId, strategy);
       }
