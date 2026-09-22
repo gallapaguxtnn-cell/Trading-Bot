@@ -22,6 +22,7 @@ function passthroughCredentialsResolver() {
       Promise.resolve({
         apiKey: strategy.apiKey,
         apiSecret: strategy.apiSecret,
+        apiPassphrase: strategy.apiPassphrase ?? (strategy.exchange === Exchange.OKX ? 'okx-pass' : null),
         exchange: strategy.exchange,
         isTestnet: strategy.isTestnet,
         isRealAccount: strategy.isRealAccount,

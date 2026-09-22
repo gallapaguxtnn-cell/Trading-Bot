@@ -75,7 +75,7 @@ export class TakeProfitService implements OnModuleInit {
     return `${quantity.toFixed(4)} (~${usdt.toFixed(2)} USDT)`;
   }
 
-  private buildCtx(apiKey: string, apiSecret: string, isTestnet: boolean, siteId?: string | null): AccountContext {
+  private buildCtx(apiKey: string, apiSecret: string, isTestnet: boolean, siteId: string | null | undefined, passphrase: string | null): AccountContext {
     return { credentials: { apiKey, apiSecret }, mode: isTestnet ? 'DEMO' : 'REAL', region: (siteId as any) ?? null };
   }
 

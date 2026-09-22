@@ -119,6 +119,28 @@ export class WebhookService {
     return new Promise(resolve => setTimeout(resolve, ms));
   }
 
+  private async buildCtxFor(
+    strategy: Pick<ResolvedStrategy, 'isTestnet' | 'siteId' | 'apiPassphrase' | 'exchange'>,
+    apiKey: string,
+    apiSecret: string,
+  ): Promise<AccountContext> {
+    const passphrase = strategy.apiPassphrase
+      ? (await EncryptionUtil.decrypt(strategy.apiPassphrase)).trim()
+      : null;
+
+    if (strategy.exchange === Exchange.OKX && !passphrase) {
+      throw new Error(
+        'Portfolio OKX sem passphrase cadastrada. A OKX exige OK-ACCESS-PASSPHRASE em toda requisicao privada.',
+      );
+    }
+
+    return {
+      credentials: { apiKey, apiSecret, passphrase },
+      mode: strategy.isTestnet ? 'DEMO' : 'REAL',
+      region: (strategy.siteId as any) ?? null,
+    };
+  }
+
   private buildCtx(apiKey: string, apiSecret: string, isTestnet: boolean, siteId?: string | null, passphrase?: string | null): AccountContext {
     return { credentials: { apiKey, apiSecret, passphrase }, mode: isTestnet ? 'DEMO' : 'REAL', region: (siteId as any) ?? null };
   }
@@ -454,10 +476,11 @@ export class WebhookService {
     apiKey: string,
     apiSecret: string,
     isTestnet: boolean,
-    siteId?: string | null
+    siteId?: string | null,
+    apiPassphrase?: string | null
   ): Promise<void> {
     const client = this.exchangeFactory.get(exchange);
-    const ctx = this.buildCtx(apiKey, apiSecret, isTestnet, siteId);
+    const ctx = await this.buildCtxFor({ exchange, isTestnet, siteId, apiPassphrase } as any, apiKey, apiSecret);
     await client.setMarginMode(ctx, symbol, marginMode as unknown as 'ISOLATED' | 'CROSS', leverage);
     await client.setLeverage(ctx, symbol, leverage);
   }
@@ -3208,7 +3231,8 @@ export class WebhookService {
       apiKey,
       apiSecret,
       strategy.isTestnet,
-      siteId
+      siteId,
+      strategy.apiPassphrase
     );
 
     const neutralOrderSide = (side === 'BUY' ? 'BUY' : 'SELL') as NeutralSide;
@@ -3221,7 +3245,7 @@ export class WebhookService {
     this.logger.log(`[${exchange.toUpperCase()}] Creating ${orderType} order: ${neutralOrderSide} ${formattedQty} ${symbol}`);
 
     const client = this.exchangeFactory.get(exchange);
-    const ctx = this.buildCtx(apiKey, apiSecret, strategy.isTestnet, siteId);
+    const ctx = await this.buildCtxFor({ ...strategy, siteId: siteId ?? null }, apiKey, apiSecret);
     const result = await client.createOrder(ctx, {
       symbol,
       side: neutralOrderSide,
