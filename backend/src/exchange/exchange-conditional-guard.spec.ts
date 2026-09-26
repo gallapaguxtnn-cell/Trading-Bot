@@ -35,10 +35,16 @@ function walk(dir: string, files: string[] = []): string[] {
 // FASE 3) -- fetchPositions() identifica se um 401 e causado por passphrase da
 // OKX ausente (header OK-ACCESS-PASSPHRASE vazio) para dar uma mensagem de erro
 // especifica em vez de "API Key invalida"; e diagnostico, nao roteamento.
+// 'common/account-context.util.ts': 0 -> 1 -- toAccountContext() decripta a
+// passphrase a partir do ResolvedCredentials e recusa contexto OKX sem ela
+// (a OKX exige OK-ACCESS-PASSPHRASE em toda requisicao privada; sem o check,
+// a falha aparecia so na corretora como 50104/401). E validacao de credencial
+// obrigatoria da corretora, nao roteamento de logica de negocio.
 const BASELINE: Record<string, number> = {
   'admin/admin.service.ts': 2,
   'auditor/auditor.service.ts': 2,
   'binance-ws/binance-ws-init.service.ts': 1,
+  'common/account-context.util.ts': 1,
   'common/symbol-rules.service.ts': 3,
   'portfolios/portfolio.entity.ts': 1,
   'portfolios/portfolios.service.ts': 7,

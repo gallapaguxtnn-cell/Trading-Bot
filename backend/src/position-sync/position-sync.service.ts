@@ -211,9 +211,9 @@ export class PositionSyncService implements OnModuleInit {
         if (!resolvedStrategy.apiKey || !resolvedStrategy.apiSecret) continue;
 
         const exchange = resolvedStrategy.exchange || Exchange.BINANCE;
-        const { apiKey, apiSecret, apiPassphrase } = await this.decryptCredentials(resolvedStrategy);
+        const { apiKey, apiSecret } = await this.decryptCredentials(resolvedStrategy);
         const client = this.exchangeFactory.get(exchange);
-        const ctx = toAccountContext(resolvedStrategy, apiKey, apiSecret, apiPassphrase);
+        const ctx = await toAccountContext(resolvedStrategy, apiKey, apiSecret);
         const openPositions = (await this.fetchPositions(client, ctx, exchange)).filter(p => p.size !== 0);
 
         for (const trade of trades) {
@@ -282,9 +282,9 @@ export class PositionSyncService implements OnModuleInit {
     }
 
     const exchange = resolvedStrategy.exchange || Exchange.BINANCE;
-    const { apiKey, apiSecret, apiPassphrase } = await this.decryptCredentials(resolvedStrategy);
+    const { apiKey, apiSecret } = await this.decryptCredentials(resolvedStrategy);
     const client = this.exchangeFactory.get(exchange);
-    const ctx = toAccountContext(resolvedStrategy, apiKey, apiSecret, apiPassphrase);
+    const ctx = await toAccountContext(resolvedStrategy, apiKey, apiSecret);
 
     const positions = await this.fetchPositions(client, ctx, exchange);
     const openPositions = positions.filter(p => p.size !== 0);
@@ -356,14 +356,14 @@ export class PositionSyncService implements OnModuleInit {
         imported++;
       } else if (existingTrades.length === 1) {
         if (existingTrades[0].strategyId === resolvedStrategy.id && (resolvedStrategy.breakAgain || resolvedStrategy.moveSLToBreakeven)) {
-             await this.checkBreakAgain(existingTrades[0], position, resolvedStrategy, apiKey, apiSecret, resolvedStrategy.siteId, apiPassphrase);
+             await this.checkBreakAgain(existingTrades[0], position, resolvedStrategy, apiKey, apiSecret, resolvedStrategy.siteId);
         }
 
         await this.updateTradeFromPosition(existingTrades[0], position);
         synced++;
       } else {
         if (existingTrades[0].strategyId === resolvedStrategy.id && (resolvedStrategy.breakAgain || resolvedStrategy.moveSLToBreakeven)) {
-          await this.checkBreakAgain(existingTrades[0], position, resolvedStrategy, apiKey, apiSecret, resolvedStrategy.siteId, apiPassphrase);
+          await this.checkBreakAgain(existingTrades[0], position, resolvedStrategy, apiKey, apiSecret, resolvedStrategy.siteId);
         }
 
         await this.consolidateTrades(existingTrades, position, client, ctx);
@@ -531,9 +531,9 @@ export class PositionSyncService implements OnModuleInit {
 
       try {
         const exchange = resolvedStrategy.exchange || Exchange.BINANCE;
-        const { apiKey, apiSecret, apiPassphrase } = await this.decryptCredentials(resolvedStrategy);
+        const { apiKey, apiSecret } = await this.decryptCredentials(resolvedStrategy);
         const client = this.exchangeFactory.get(exchange);
-        const ctx = toAccountContext(resolvedStrategy, apiKey, apiSecret, apiPassphrase);
+        const ctx = await toAccountContext(resolvedStrategy, apiKey, apiSecret);
         const orderStatus = await this.checkOrderStatus(trade.exchangeOrderId, trade.symbol, client, ctx);
         const s = (orderStatus || '').toLowerCase();
         const isPending = s === 'new' || s === 'partiallyfilled' || s === 'partially_filled';

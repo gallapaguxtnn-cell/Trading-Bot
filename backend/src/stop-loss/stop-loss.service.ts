@@ -136,7 +136,7 @@ export class StopLossService implements OnModuleInit {
     const apiKey = (await EncryptionUtil.decrypt(resolvedStrategy.apiKey)).trim();
     const apiSecret = (await EncryptionUtil.decrypt(resolvedStrategy.apiSecret)).trim();
     const client = this.exchangeFactory.get(exchange);
-    const ctx = toAccountContext(resolvedStrategy, apiKey, apiSecret);
+    const ctx = await toAccountContext(resolvedStrategy, apiKey, apiSecret);
 
     if (trade.stopLossOrderId && trade.stopLossOrderId.trim() !== '') {
       if (trade.stopLossOrderId.startsWith('BYBIT_TRADING_STOP')) {

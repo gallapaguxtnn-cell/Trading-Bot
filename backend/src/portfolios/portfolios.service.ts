@@ -10,6 +10,9 @@ import { ExchangeClientFactory } from '../exchange/exchange-client.factory';
 import { OkxClientService } from '../exchange/okx-client.service';
 import { classifyConnectionError } from '../utils/connection-error.util';
 import { CredentialsResolverService } from '../common/credentials-resolver.service';
+import { RateLimiterUtil } from '../utils/rate-limiter.util';
+
+const PORTFOLIO_BALANCE_TTL_MS = 30000;
 
 const PORTFOLIO_PUBLIC_COLUMNS = [
   'id',
@@ -37,6 +40,8 @@ export class PortfoliosService {
     private readonly okxClientService: OkxClientService,
     private readonly credentialsResolver: CredentialsResolverService,
   ) {}
+
+  private readonly rateLimiter = RateLimiterUtil.getInstance();
 
   private async maskApiKey(encryptedApiKey: string | null | undefined): Promise<string> {
     if (!encryptedApiKey) return '';
@@ -172,7 +177,30 @@ export class PortfoliosService {
     return { success: true };
   }
 
-  async testConnection(id: string): Promise<{
+  async testConnection(id: string, force = false): Promise<{
+    success: boolean;
+    balance?: number;
+    message?: string;
+    instrument?: { ctVal: string; ctMult: string; lotSz: string; minSz: string; tickSz: string };
+  }> {
+    const cacheKey = `portfolio:testConnection:${id}`;
+
+    if (!force) {
+      const cached = this.rateLimiter.getCached<{
+        success: boolean;
+        balance?: number;
+        message?: string;
+        instrument?: { ctVal: string; ctMult: string; lotSz: string; minSz: string; tickSz: string };
+      }>(cacheKey);
+      if (cached) return cached;
+    }
+
+    const result = await this.runConnectionCheck(id);
+    this.rateLimiter.setCached(cacheKey, result, PORTFOLIO_BALANCE_TTL_MS);
+    return result;
+  }
+
+  private async runConnectionCheck(id: string): Promise<{
     success: boolean;
     balance?: number;
     message?: string;

@@ -10,6 +10,7 @@ import { closeAllPositions, pauseAllStrategies, resumeAllStrategies, closePositi
 import { formatPrice, formatQuantity, formatPnL, formatPnLSummary, formatPercentSummary, formatDateUTC, formatTimeUTC } from '@/lib/formatters';
 
 const PORTFOLIO_FILTER_STORAGE_KEY = 'dashboard:selectedPortfolioId';
+const BALANCE_REFRESH_MS = 60000;
 
 export default function Home() {
   const { stats: liveStats, isConnected, lastUpdate, forceSync, isSyncing } = useTradesSocket();
@@ -36,7 +37,6 @@ export default function Home() {
   const loadFilteredStats = useCallback(async () => {
     if (!selectedPortfolioId) {
       setFilteredStats(null);
-      setBalanceInfo(null);
       return;
     }
     try {
@@ -44,6 +44,13 @@ export default function Home() {
       setFilteredStats(data);
     } catch (error) {
       console.error(error);
+    }
+  }, [selectedPortfolioId]);
+
+  const loadBalance = useCallback(async () => {
+    if (!selectedPortfolioId) {
+      setBalanceInfo(null);
+      return;
     }
     try {
       const balance = await testPortfolioConnection(selectedPortfolioId);
@@ -54,6 +61,12 @@ export default function Home() {
   }, [selectedPortfolioId]);
 
   useEffect(() => { loadFilteredStats(); }, [loadFilteredStats, lastUpdate]);
+
+  useEffect(() => {
+    loadBalance();
+    const interval = setInterval(loadBalance, BALANCE_REFRESH_MS);
+    return () => clearInterval(interval);
+  }, [loadBalance]);
 
   const stats = selectedPortfolioId ? filteredStats : liveStats;
   const selectedPortfolio = portfolios.find((p) => p.id === selectedPortfolioId) || null;

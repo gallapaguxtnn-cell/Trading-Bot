@@ -198,7 +198,7 @@ export class StrategiesService {
       const apiSecret = (await EncryptionUtil.decrypt(resolvedStrategy.apiSecret)).trim();
       const exchange = resolvedStrategy.exchange || Exchange.BINANCE;
       const client = this.exchangeFactory.get(exchange);
-      const ctx = toAccountContext(resolvedStrategy, apiKey, apiSecret);
+      const ctx = await toAccountContext(resolvedStrategy, apiKey, apiSecret);
 
       for (const trade of pendingTrades) {
         if (!trade.exchangeOrderId) continue;
@@ -250,7 +250,7 @@ export class StrategiesService {
     const apiSecret = (await EncryptionUtil.decrypt(resolvedStrategy.apiSecret)).trim();
     const exchange = resolvedStrategy.exchange || Exchange.BINANCE;
     const client = this.exchangeFactory.get(exchange);
-    const ctx = toAccountContext(resolvedStrategy, apiKey, apiSecret);
+    const ctx = await toAccountContext(resolvedStrategy, apiKey, apiSecret);
 
     const result: any = {
       strategy: {

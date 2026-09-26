@@ -194,6 +194,7 @@ describe('AdminService.resetTrades', () => {
     credentialsResolver.resolveCredentials.mockResolvedValue({
       apiKey: 'plain-key',
       apiSecret: 'plain-secret',
+      apiPassphrase: 'enc-pass',
       exchange: Exchange.OKX,
       isTestnet: true,
       isRealAccount: false,

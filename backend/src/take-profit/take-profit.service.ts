@@ -75,7 +75,7 @@ export class TakeProfitService implements OnModuleInit {
     return `${quantity.toFixed(4)} (~${usdt.toFixed(2)} USDT)`;
   }
 
-  private buildCtx(apiKey: string, apiSecret: string, isTestnet: boolean, siteId: string | null | undefined, passphrase: string | null): AccountContext {
+  private buildCtx(apiKey: string, apiSecret: string, isTestnet: boolean, siteId?: string | null, passphrase?: string | null): AccountContext {
     return { credentials: { apiKey, apiSecret }, mode: isTestnet ? 'DEMO' : 'REAL', region: (siteId as any) ?? null };
   }
 
@@ -165,7 +165,7 @@ export class TakeProfitService implements OnModuleInit {
 
     if (trade.takeProfitOrderId && trade.takeProfitOrderId.startsWith('BYBIT_TRADING_STOP')) {
       const client = this.exchangeFactory.get(exchange);
-      const ctx = toAccountContext(resolvedStrategy, apiKey, apiSecret);
+      const ctx = await toAccountContext(resolvedStrategy, apiKey, apiSecret);
       const positions = await client.getPositions(ctx, trade.symbol);
       const position = positions.find(p =>
         p.symbol === trade.symbol &&

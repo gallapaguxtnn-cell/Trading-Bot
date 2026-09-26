@@ -86,7 +86,7 @@ export class AdminService {
       const apiSecret = (await EncryptionUtil.decrypt(credentials.apiSecret)).trim();
       const orderId = trade.exchangeOrderId!;
       const client = this.exchangeFactory.get(credentials.exchange);
-      const ctx = toAccountContext(credentials, apiKey, apiSecret);
+      const ctx = await toAccountContext(credentials, apiKey, apiSecret);
 
       let orderInfo = await client.getOrderInfo(ctx, trade.symbol, orderId);
       if (!orderInfo) {
@@ -125,7 +125,7 @@ export class AdminService {
         const apiKey = (await EncryptionUtil.decrypt(credentials.apiKey)).trim();
         const apiSecret = (await EncryptionUtil.decrypt(credentials.apiSecret)).trim();
         const client = this.exchangeFactory.get(order.exchange);
-        const ctx = toAccountContext(credentials, apiKey, apiSecret);
+        const ctx = await toAccountContext(credentials, apiKey, apiSecret);
 
         await client.cancelOrder(ctx, order.symbol, order.orderId);
 
@@ -340,7 +340,7 @@ export class AdminService {
         const apiKey = (await EncryptionUtil.decrypt(credentials.apiKey)).trim();
         const apiSecret = (await EncryptionUtil.decrypt(credentials.apiSecret)).trim();
         const client = this.exchangeFactory.get(credentials.exchange);
-        const ctx = toAccountContext(credentials, apiKey, apiSecret);
+        const ctx = await toAccountContext(credentials, apiKey, apiSecret);
 
         const positions = await client.getPositions(ctx, trade.symbol);
         const live = positions.find((p) => p.symbol === trade.symbol && p.side === trade.side && parseFloat(p.size) > 0);

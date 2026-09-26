@@ -269,7 +269,7 @@ export class TradesController {
       this.logger.log(`[CLOSE] Starting to close trade ${trade.id} for ${trade.symbol} (hedgeMode: ${strategy.hedgeMode})`);
 
       const client = this.exchangeFactory.get(exchange);
-      const ctx = toAccountContext(strategy, apiKey, apiSecret);
+      const ctx = await toAccountContext(strategy, apiKey, apiSecret);
       const tradeSide = trade.side as NeutralSide;
 
       await client.cancelAllOrders(ctx, trade.symbol, strategy.hedgeMode ? tradeSide : undefined);
@@ -357,7 +357,7 @@ export class TradesController {
   private async getPositionSize(
     exchange: Exchange,
     client: ReturnType<ExchangeClientFactory['get']>,
-    ctx: ReturnType<typeof toAccountContext>,
+    ctx: Awaited<ReturnType<typeof toAccountContext>>,
     symbol: string,
     tradeSide: NeutralSide,
   ): Promise<number> {

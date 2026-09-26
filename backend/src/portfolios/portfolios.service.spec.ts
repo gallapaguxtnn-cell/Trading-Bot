@@ -9,6 +9,7 @@ import { ExchangeClientFactory } from '../exchange/exchange-client.factory';
 import { OkxClientService } from '../exchange/okx-client.service';
 import { CredentialsResolverService } from '../common/credentials-resolver.service';
 import { EncryptionUtil } from '../utils/encryption.util';
+import { RateLimiterUtil } from '../utils/rate-limiter.util';
 
 function createQueryBuilderMock(result: any, isMany: boolean) {
   return {
@@ -33,6 +34,7 @@ describe('PortfoliosService', () => {
 
   beforeEach(async () => {
     jest.clearAllMocks();
+    RateLimiterUtil.getInstance().clearCache();
     portfoliosRepository = {
       createQueryBuilder: jest.fn(),
       create: jest.fn((data: any) => ({ ...data })),
